@@ -72,6 +72,13 @@ make migrate                  # as the OWNER role — a deploy step, not a boot 
 make run
 ```
 
+**Never run the bare `alembic` CLI here.** It resolves `version_locations`
+before `env.py` runs, and this deployment installs wheels — so the lineages
+cannot be named in `alembic.ini`. The CLI would find no revisions and exit 0
+against an empty database. `make migrate` goes through
+`python -m dotmac_integrator.migrate`, which sets the locations first; `env.py`
+refuses loudly if it is reached without them.
+
 Registry credentials come from the environment and are never written to
 `pyproject.toml` or the lockfile:
 

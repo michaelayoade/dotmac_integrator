@@ -25,14 +25,25 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from dotmac_integrator.lineage import version_locations_setting
-
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("version_locations", version_locations_setting())
+# NOT set here — by the time `env.py` runs, Alembic has already built its
+# ScriptDirectory from the config, so setting it now changes nothing. That
+# mistake made `alembic upgrade heads` exit 0 having applied NOTHING.
+#
+# `dotmac_integrator.migrate` sets it before invoking the command. Reaching this
+# file with no locations resolved means the bare `alembic` CLI was used, so it
+# refuses loudly rather than reporting success against an empty database.
+if not (config.get_main_option("version_locations") or "").strip():
+    raise RuntimeError(
+        "no version_locations resolved. This deployment installs wheels, so the "
+        "lineages cannot be named in alembic.ini — run migrations through "
+        "`python -m dotmac_integrator.migrate upgrade heads` (or `make "
+        "migrate`), never the bare `alembic` CLI."
+    )
 
 url = os.getenv("MIGRATION_DATABASE_URL")
 if not url:

@@ -64,7 +64,15 @@ def migrated() -> Iterator[str]:
     # on the first green-connection run: alembic exited 0 and `mod_intg` was
     # empty. The whole fleet uses `heads` for the same reason.
     completed = subprocess.run(
-        ["poetry", "run", "alembic", "upgrade", "heads"],
+        [
+            "poetry",
+            "run",
+            "python",
+            "-m",
+            "dotmac_integrator.migrate",
+            "upgrade",
+            "heads",
+        ],
         capture_output=True,
         text=True,
         env={**os.environ, "MIGRATION_DATABASE_URL": scratch},

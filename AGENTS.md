@@ -17,7 +17,10 @@ This is a **thin assembly**. The reusable behaviour lives in
 4. **Routes are adapters.** No session, no query, no commit in `assembly.py`;
    that lives in `operations.py`. Same split the Starter enforces between
    `router.py` and `service.py`.
-5. **Migrations run as the owner at deploy time, never on boot.**
+5. **Migrations run as the owner at deploy time, never on boot**, and through
+   `python -m dotmac_integrator.migrate` — never the bare `alembic` CLI, which
+   resolves `version_locations` before `env.py` and would exit 0 having applied
+   nothing. Always `heads`, plural: two lineages are composed.
    `MIGRATION_DATABASE_URL` is the owner role; `DATABASE_URL` is the online
    platform role and cannot create a table.
 6. **Platform plane only.** No `tenant_id`, no RLS, no tenant context. `app_user`

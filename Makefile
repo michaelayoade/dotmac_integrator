@@ -22,9 +22,10 @@ test: ## Architecture + unit tests (no database)
 check: lint format-check type-check test ## Everything CI runs except the database job
 
 migrate: ## Apply every composed lineage AS THE OWNER. Never run on boot.
-	# `heads`, PLURAL — `head` upgrades ONE branch and reports success, which
-	# with two composed lineages means a half-migrated database that looks fine.
-	poetry run alembic upgrade heads
+	# NOT the bare `alembic` CLI: it resolves version_locations before env.py
+	# runs, finds no revisions, and exits 0 against an empty database.
+	# `heads` is plural — `head` would upgrade one of the two lineages.
+	poetry run python -m dotmac_integrator.migrate upgrade heads
 
 run: ## Development server
 	poetry run uvicorn --factory dotmac_integrator.assembly:create_app \
