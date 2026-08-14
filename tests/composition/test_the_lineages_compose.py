@@ -58,8 +58,13 @@ def migrated() -> Iterator[str]:
     # rather than like a masked credential.
     scratch = make_url(base).set(database=name).render_as_string(hide_password=False)
 
+    # `heads`, PLURAL. This deployment composes two independent lineages with
+    # distinct branch labels, and `head` upgrades one branch — silently leaving
+    # the other unapplied and reporting success. That is exactly what happened
+    # on the first green-connection run: alembic exited 0 and `mod_intg` was
+    # empty. The whole fleet uses `heads` for the same reason.
     completed = subprocess.run(
-        ["poetry", "run", "alembic", "upgrade", "head"],
+        ["poetry", "run", "alembic", "upgrade", "heads"],
         capture_output=True,
         text=True,
         env={**os.environ, "MIGRATION_DATABASE_URL": scratch},
@@ -71,7 +76,7 @@ def migrated() -> Iterator[str]:
         # here, an authentication failure — is only recoverable by digging
         # through the raw CI log. A migration failure must say why.
         pytest.fail(
-            "alembic upgrade head failed\n"
+            "alembic upgrade heads failed\n"
             f"--- stdout ---\n{completed.stdout}\n"
             f"--- stderr ---\n{completed.stderr}"
         )
