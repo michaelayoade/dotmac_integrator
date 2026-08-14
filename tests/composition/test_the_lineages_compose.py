@@ -51,12 +51,30 @@ def migrated() -> Iterator[str]:
                 )
             )
 
-    scratch = str(make_url(base).set(database=name))
-    subprocess.run(
+    # `render_as_string(hide_password=False)`, NOT `str(url)`. SQLAlchemy masks
+    # the password to `***` when a URL is stringified, so `str()` hands Alembic a
+    # DSN that cannot authenticate — and the failure surfaces as
+    # "password authentication failed", which reads like a broken CI service
+    # rather than like a masked credential.
+    scratch = make_url(base).set(database=name).render_as_string(hide_password=False)
+
+    completed = subprocess.run(
         ["poetry", "run", "alembic", "upgrade", "head"],
-        check=True,
+        capture_output=True,
+        text=True,
         env={**os.environ, "MIGRATION_DATABASE_URL": scratch},
+        check=False,
     )
+    if completed.returncode != 0:
+        # Surfaced, not swallowed. `check=True` raises a CalledProcessError whose
+        # message is the command line and nothing else, so the actual reason —
+        # here, an authentication failure — is only recoverable by digging
+        # through the raw CI log. A migration failure must say why.
+        pytest.fail(
+            "alembic upgrade head failed\n"
+            f"--- stdout ---\n{completed.stdout}\n"
+            f"--- stderr ---\n{completed.stderr}"
+        )
     try:
         yield scratch
     finally:
