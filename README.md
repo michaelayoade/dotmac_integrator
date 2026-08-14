@@ -50,7 +50,7 @@ Two roles, and they are not interchangeable:
 - `DATABASE_URL` → `platform_api`, the **online** role. Row DML and schema
   USAGE. It cannot create a table, by design.
 - `MIGRATION_DATABASE_URL` → `app_admin`, the **owner**. Used only by
-  `alembic upgrade`, at deploy time, never on boot.
+  `make migrate`, at deploy time, never on boot.
 
 ## Connectors
 
@@ -83,8 +83,8 @@ Registry credentials come from the environment and are never written to
 `pyproject.toml` or the lockfile:
 
 ```bash
-export POETRY_HTTP_BASIC_DOTMAC_USERNAME=...
-export POETRY_HTTP_BASIC_DOTMAC_PASSWORD=...   # from OpenBao, never hand-copied
+export POETRY_HTTP_BASIC_FORGEJO_USERNAME=ci-reader
+export POETRY_HTTP_BASIC_FORGEJO_PASSWORD=...   # OpenBao: secret/dotmac/forgejo/read-token
 ```
 
 ## Surface
