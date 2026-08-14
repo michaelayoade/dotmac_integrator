@@ -47,6 +47,24 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _jsonable_mapping(value: Any) -> dict[str, Any]:
+    """`_jsonable` for a value that must serialise to an object.
+
+    A checked narrowing rather than a `cast`. The module's operations return
+    dataclasses today, so this always holds — but `cast` would assert it and a
+    future return type that serialises to a list would then reach the client as
+    a JSON array from a handler typed as returning an object, which fails at the
+    consumer instead of here.
+    """
+    serialised = _jsonable(value)
+    if not isinstance(serialised, dict):
+        raise TypeError(
+            f"expected an object-shaped result, got {type(value).__name__} "
+            f"serialising to {type(serialised).__name__}"
+        )
+    return serialised
+
+
 def _uuid(raw: str, field: str) -> UUID:
     try:
         return UUID(raw)
@@ -76,7 +94,7 @@ def installed_connectors() -> dict[str, Any]:
 
 def health_report(engine: Engine) -> dict[str, Any]:
     with Session(engine) as db:
-        return _jsonable(integration.health_report(db))
+        return _jsonable_mapping(integration.health_report(db))
 
 
 def release_expired_leases(engine: Engine) -> dict[str, Any]:
@@ -110,7 +128,7 @@ def replay_delivery(engine: Engine, delivery_id: str, reason: str) -> dict[str, 
         except integration.NotRepairable as exc:
             raise HTTPException(409, str(exc)) from exc
         db.commit()
-        return _jsonable(replayed)
+        return _jsonable_mapping(replayed)
 
 
 def replay_receipt(engine: Engine, receipt_id: str, reason: str) -> dict[str, Any]:
@@ -124,4 +142,4 @@ def replay_receipt(engine: Engine, receipt_id: str, reason: str) -> dict[str, An
         except integration.NotRepairable as exc:
             raise HTTPException(409, str(exc)) from exc
         db.commit()
-        return _jsonable(replayed)
+        return _jsonable_mapping(replayed)

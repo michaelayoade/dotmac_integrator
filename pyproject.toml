@@ -39,10 +39,15 @@ mypy = "^1.13"
 # Dotmac distributions resolve here, everything else from PyPI. A primary source
 # would make the whole dependency set depend on this host being reachable.
 #
-# Credentials come from the environment
-# (POETRY_HTTP_BASIC_DOTMAC_USERNAME / _PASSWORD), never from this file.
+# Named `forgejo` to match the fleet's existing convention, so the credential
+# env vars are the ones an operator already knows:
+# POETRY_HTTP_BASIC_FORGEJO_USERNAME / _PASSWORD. Never in this file.
+#
+# The identity is `ci-reader` (read:package), NOT the publish token. This
+# assembly only ever installs from the index; handing it publish rights would
+# give every CI run the ability to overwrite a released artefact.
 [[tool.poetry.source]]
-name = "dotmac"
+name = "forgejo"
 url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/"
 priority = "supplemental"
 

@@ -31,7 +31,11 @@ EXACTLY_PINNED = ("dotmac-kernel", "dotmac-integration")
 
 def _dependencies() -> dict[str, object]:
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    return data["tool"]["poetry"]["dependencies"]
+    declared = data["tool"]["poetry"]["dependencies"]
+    # Checked, not assumed: a malformed pyproject would otherwise surface as an
+    # obscure failure several assertions later.
+    assert isinstance(declared, dict), type(declared)
+    return declared
 
 
 @pytest.mark.parametrize("distribution", EXACTLY_PINNED)

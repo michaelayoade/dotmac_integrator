@@ -6,11 +6,16 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
-# The private index is reachable with these credentials. Poetry reads them from
-# the environment; they are never written to pyproject.toml or the lockfile.
+# The private index. READ credentials only — `ci-reader` holds read:package and
+# nothing else. The publish token is deliberately not used here: this repository
+# installs from the registry and never writes to it, and a CI job that could
+# overwrite a released artefact is a supply-chain risk with no upside.
+#
+# Poetry reads these from the environment; they are never written to
+# pyproject.toml or the lockfile. Same secret name the other Dotmac repos use.
 env:
-  POETRY_HTTP_BASIC_DOTMAC_USERNAME: ci-publisher
-  POETRY_HTTP_BASIC_DOTMAC_PASSWORD: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+  POETRY_HTTP_BASIC_FORGEJO_USERNAME: ci-reader
+  POETRY_HTTP_BASIC_FORGEJO_PASSWORD: ${{ secrets.FORGEJO_READ_TOKEN }}
 
 jobs:
   quality:
