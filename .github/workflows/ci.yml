@@ -1,0 +1,61 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# The private index is reachable with these credentials. Poetry reads them from
+# the environment; they are never written to pyproject.toml or the lockfile.
+env:
+  POETRY_HTTP_BASIC_DOTMAC_USERNAME: ci-publisher
+  POETRY_HTTP_BASIC_DOTMAC_PASSWORD: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # This list must equal `make check`'s prerequisites. The Starter learned
+      # that the hard way: a matrix naming a subset let committed assets and
+      # formatting go unenforced on every PR while `make check` passed locally.
+      matrix:
+        target: [lint, format-check, type-check, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx install poetry
+      - run: poetry install
+      - run: make ${{ matrix.target }}
+
+  composition:
+    runs-on: ubuntu-latest
+    # Proves the composed lineages actually apply to a real PostgreSQL, as the
+    # owner role, and that the platform-plane contract holds afterwards.
+    # Without this the migrations would first run in production.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: integrator_test
+        # Loopback-bound: a published port on 0.0.0.0 with weak auth is
+        # reachable regardless of the host firewall.
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s
+          --health-timeout 2s --health-retries 15
+    env:
+      TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/integrator_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx install poetry
+      - run: poetry install
+      - run: poetry run pytest tests/composition -q

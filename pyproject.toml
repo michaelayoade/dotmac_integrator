@@ -1,0 +1,66 @@
+[tool.poetry]
+name = "dotmac-integrator"
+version = "0.1.0a0"
+description = "Thin assembly composing dotmac-integration as an independently deployed connector control plane"
+authors = ["Dotmac"]
+readme = "README.md"
+packages = [{ include = "dotmac_integrator", from = "src" }]
+
+# NOT published. This is a deployable application, not a distribution: nothing
+# pins it, so a version here is a deployment label rather than a contract. It is
+# absent from every release workflow deliberately.
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+
+# EXACT pins, not floors. A library declares the earliest kernel it can work
+# with; a deployment declares the exact one it was tested against. `>=` here
+# would let a `poetry install` months from now compose a combination nobody has
+# ever run, which is the failure mode an assembly exists to prevent.
+#
+# Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
+dotmac-kernel = "0.1.0a58"
+dotmac-integration = "0.1.0a1"
+
+fastapi = "^0.115"
+uvicorn = { extras = ["standard"], version = "^0.32" }
+sqlalchemy = "^2.0"
+alembic = "^1.13"
+psycopg = { extras = ["binary"], version = "^3.2" }
+pydantic-settings = "^2.6"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+ruff = "^0.8"
+mypy = "^1.13"
+
+# The private index. `priority = "supplemental"` rather than "primary": the two
+# Dotmac distributions resolve here, everything else from PyPI. A primary source
+# would make the whole dependency set depend on this host being reachable.
+#
+# Credentials come from the environment
+# (POETRY_HTTP_BASIC_DOTMAC_USERNAME / _PASSWORD), never from this file.
+[[tool.poetry.source]]
+name = "dotmac"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/"
+priority = "supplemental"
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
