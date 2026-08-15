@@ -34,6 +34,10 @@ pydantic-settings = "^2.6"
 pytest = "^8.3"
 ruff = "^0.8"
 mypy = "^1.13"
+# Required by `fastapi.testclient`, which is how the operator guard is driven
+# per route. A TEST dependency only: nothing under `src/` may import it, and
+# `test_secrets_are_held.py` fails the build if the resolution path does.
+httpx = "^0.28"
 
 # The private index. `priority = "supplemental"` rather than "primary": the two
 # Dotmac distributions resolve here, everything else from PyPI. A primary source

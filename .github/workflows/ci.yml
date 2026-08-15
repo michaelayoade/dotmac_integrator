@@ -64,3 +64,26 @@ jobs:
       - run: pipx install poetry
       - run: poetry install
       - run: poetry run pytest tests/composition -q
+
+  image:
+    runs-on: ubuntu-latest
+    # The artefact, audited as an artefact. `make check` proves the source;
+    # this proves the thing that actually ships — non-root, no migration on
+    # boot, the pinned wheels really installed, and no registry credential in a
+    # layer. Without it, all four are first observed in production.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: dotmac-integrator:ci
+          # The credential is a BuildKit secret, mounted for one RUN. `ARG` and
+          # `ENV` both survive into image metadata; this does not.
+          secrets: |
+            forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
+      - name: Audit the image
+        run: ./scripts/audit_image.sh dotmac-integrator:ci

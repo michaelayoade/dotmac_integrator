@@ -1,0 +1,89 @@
+# The deployment shape. Two services from one image, and the ORDER is the point.
+#
+#   migrate  runs `python -m dotmac_integrator.migrate upgrade heads` as the
+#            OWNER role, to completion, and exits.
+#   api      starts only after migrate exited 0, on the ONLINE platform role,
+#            and never touches DDL.
+#
+# `service_completed_successfully` is what makes that a guarantee rather than a
+# convention. Without it a rolling deploy starts N replicas that each try to
+# migrate, race each other on the same lineage, and need owner credentials in
+# the runtime environment — where a compromised web process can read them.
+#
+# Every value is an overridable knob with a documented default, per AGENTS.md
+# § "Everything by config". Nothing here is a business decision.
+
+name: ${COMPOSE_PROJECT_NAME:-integrator}
+
+x-image: &image ${INTEGRATOR_IMAGE:-registry.dotmac.io/dotmac/integrator}:${INTEGRATOR_TAG:-latest}
+
+x-secrets: &secret-material
+  # Material is dereferenced ONCE, at startup, from a read-only mount
+  # (ADR-0009). `file://` references in a configuration revision are confined
+  # to SECRET_FILE_ROOT, so this directory is the whole filesystem surface a
+  # connector's configuration can name.
+  - type: bind
+    source: ${SECRET_FILE_ROOT_HOST:-./secrets}
+    target: ${SECRET_FILE_ROOT:-/run/secrets}
+    read_only: true
+
+services:
+  migrate:
+    image: *image
+    command: ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
+    restart: "no"
+    environment:
+      # The OWNER role, and ONLY here. It is deliberately absent from `api`.
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?owner DSN is required}
+    networks: [integrator]
+
+  api:
+    image: *image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:?name this deployment}
+      # The ONLINE role. It cannot create a table, by design. There is no
+      # MIGRATION_DATABASE_URL in this service's environment at all.
+      DATABASE_URL: ${DATABASE_URL:?online platform DSN is required}
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8080}
+      PLATFORM_ROOT_DOMAIN: ${PLATFORM_ROOT_DOMAIN:?operator surface host}
+      JWT_SECRET: ${JWT_SECRET:?operator token signing secret}
+      OPERATOR_AUTH_MECHANISM: ${OPERATOR_AUTH_MECHANISM:-platform_admin}
+      SECRET_SCHEMES: ${SECRET_SCHEMES:-env,file}
+      SECRET_FILE_ROOT: ${SECRET_FILE_ROOT:-/run/secrets}
+      SECRET_ENV_PREFIX: ${SECRET_ENV_PREFIX:-INTEGRATOR_SECRET_}
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_POOL_MAX_OVERFLOW: ${DB_POOL_MAX_OVERFLOW:-5}
+    volumes: *secret-material
+    ports:
+      # Loopback-bound by default. A published port on 0.0.0.0 is reachable
+      # regardless of the host firewall, and this is a control plane.
+      - "${BIND_ADDRESS:-127.0.0.1}:${PUBLISHED_PORT:-8080}:${PORT:-8080}"
+    healthcheck:
+      # READINESS, not liveness: this decides whether the replica takes traffic.
+      # It reports 503 until the schema is present, which is the state between
+      # a first deploy's image landing and its migration finishing.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${PORT:-8080}/health/ready', timeout=3).status == 200 else 1)"]
+      interval: ${HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${HEALTHCHECK_RETRIES:-6}
+      start_period: ${HEALTHCHECK_START_PERIOD:-15s}
+    # Long enough for the lifespan to stop the sweep, let an in-flight
+    # operation finish and dispose the pool. The default of 10s cuts that off
+    # and the leases have to be reclaimed by the next sweep instead.
+    stop_grace_period: ${STOP_GRACE_PERIOD:-30s}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [integrator]
+
+networks:
+  integrator:
+    name: ${COMPOSE_NETWORK:-integrator}

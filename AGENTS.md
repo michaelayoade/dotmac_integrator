@@ -35,3 +35,39 @@ This is a **thin assembly**. The reusable behaviour lives in
    or a log line.
 10. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.
+11. **A secret is HELD, never dereferenced on a request path** (ADR-0009).
+    `secret_loading.py` may do I/O and runs at startup and on an explicit
+    refresh; `secret_resolver.py` is dict lookups and imports nothing that can
+    reach a network, a filesystem, a subprocess or the ORM
+    (`test_secrets_are_held.py`). Rotation is `POST /operations/secrets/refresh`,
+    never a TTL. A failed refresh keeps the working set. A broken MECHANISM
+    refuses the boot; one bad REFERENCE refuses only that installation's
+    enablement. No degraded-start knob exists and none may be added.
+12. **A reference is not a capability.** `env://` is confined to
+    `SECRET_ENV_PREFIX` and `file://` to `SECRET_FILE_ROOT`, resolved before
+    the containment check. References come from operator-written database rows;
+    without confinement one could name this process's own credentials.
+13. **No value is logged, serialised or persisted.** Names and references only
+    — a reference is a pointer the module already stores in an immutable
+    revision. There is no accessor that dumps held values, and the assembly
+    refuses to COMMIT a connector diagnostic that contains material.
+14. **Every route has a CLASS and every class has a rule** (`surface.py`).
+    `/health` is unauthenticated and read-only, `/operations` carries
+    `require_operator` on reads AND mutations plus a required `OperationReason`
+    on every mutation, `/ingress` is provider-authenticated and must NEVER
+    carry the operator guard. `mint`/`rotate`/`revoke`/`refresh` may appear only
+    on an operator path. `create_app` refuses to return an incorrectly
+    classified surface — it is a boot failure, not a test failure.
+15. **Operator identity is the kernel's, adapted, never reimplemented.**
+    `require_operator` calls `dotmac_kernel.platform_auth`'s own predicate with
+    this assembly's session. Actor AND reason reach the audit row; the module's
+    `actor_admin_id` default of `None` is correct for the module and wrong here.
+    A timed sweep records no actor, in a separately named function, because a
+    schedule is not a person.
+16. **`integrator.*` is this assembly's audit vocabulary and `integration.*` is
+    the module's.** Declared in `INTEGRATOR_AUDIT_ACTIONS`, enforced in both
+    directions (`test_audit_actions_are_declared.py`). Never write the module's.
+17. **The image is non-root, migrates nothing on boot, and carries no registry
+    credential.** The migration job runs as the owner and must COMPLETE before
+    any runtime container starts. Asserted against the built artefact by
+    `scripts/audit_image.sh`, which carries its own sensitivity proof.
