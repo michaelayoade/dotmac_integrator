@@ -18,6 +18,9 @@ decides anything.
   context, no RLS, and no `app_user`.
 * **No migrations on boot.** `alembic upgrade` is a deploy step run as the owner
   role. `create_app` never touches DDL.
+* **No alert thresholds.** `/metrics` publishes facts; "how late is too late"
+  is a deployment's decision and lives in `deploy/alerts/`. A threshold encoded
+  here would fork the policy between the process and the rule that fires on it.
 """
 
 from __future__ import annotations
@@ -27,12 +30,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import health, operations
+from dotmac_integrator import health, operations, telemetry
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.worker import Worker
 
@@ -110,6 +113,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health/composition", tags=["health"])
     def composed() -> dict[str, str]:
         return health.composition()
+
+    # ── Metrics ─────────────────────────────────────────────────────────────
+    # An adapter like every other handler: collect, render, return. The label
+    # vocabulary and the refusal that enforces it live in `telemetry.py`, and
+    # nothing here can widen them.
+    if settings.metrics_enabled:
+
+        @app.get(settings.metrics_path, tags=["health"], include_in_schema=False)
+        def metrics() -> PlainTextResponse:
+            return PlainTextResponse(
+                telemetry.scrape(engine, worker),
+                # The exposition format's own content type, version included.
+                # Prometheus falls back to a text parse without it, but an
+                # OpenMetrics-aware scraper will not.
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
 
     # ── Operational controls ────────────────────────────────────────────────
     # Each of these is a thin adapter: validate, delegate, serialise. The verbs

@@ -23,6 +23,8 @@ from fastapi import HTTPException
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from dotmac_integrator import telemetry
+
 
 def _jsonable(value: Any) -> Any:
     """Serialise a module result without importing its private types.
@@ -69,6 +71,10 @@ def _uuid(raw: str, field: str) -> UUID:
     try:
         return UUID(raw)
     except ValueError as exc:
+        # Counted by REASON, never by value. `raw` reaches the caller who sent
+        # it — it must not reach a metric label, where it would be stored for a
+        # year and rendered on every dashboard that groups by it.
+        telemetry.counters.record_refusal("malformed_identifier")
         raise HTTPException(422, f"{field} is not a UUID: {raw!r}") from exc
 
 
@@ -122,10 +128,12 @@ def replay_delivery(engine: Engine, delivery_id: str, reason: str) -> dict[str, 
     with Session(engine) as db:
         delivery = db.get(integration.DeliveryAttempt, identifier)
         if delivery is None:
+            telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no delivery {delivery_id}")
         try:
             replayed = integration.replay_delivery(db, delivery, reason=reason)
         except integration.NotRepairable as exc:
+            telemetry.counters.record_refusal("not_repairable")
             raise HTTPException(409, str(exc)) from exc
         db.commit()
         return _jsonable_mapping(replayed)
@@ -136,10 +144,12 @@ def replay_receipt(engine: Engine, receipt_id: str, reason: str) -> dict[str, An
     with Session(engine) as db:
         receipt = db.get(integration.InboxReceipt, identifier)
         if receipt is None:
+            telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no receipt {receipt_id}")
         try:
             replayed = integration.replay_receipt(db, receipt, reason=reason)
         except integration.NotRepairable as exc:
+            telemetry.counters.record_refusal("not_repairable")
             raise HTTPException(409, str(exc)) from exc
         db.commit()
         return _jsonable_mapping(replayed)

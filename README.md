@@ -99,10 +99,43 @@ export POETRY_HTTP_BASIC_FORGEJO_PASSWORD=...   # OpenBao: secret/dotmac/forgejo
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | Requires a `reason`. |
 | `POST /operations/receipts/{id}/replay` | Requires a `reason`. |
+| `GET /metrics` | Prometheus text exposition. `METRICS_ENABLED=false` removes it. |
 
 `reason` is required rather than defaulted: an assembly that invented one would
 put a fabricated justification into the audit record of a manual intervention,
 which is worse than no record.
+
+## Observability
+
+`GET /metrics` publishes facts; `deploy/alerts/ingress.rules.yml` decides what
+they mean; `docs/RUNBOOK-restore-and-reconciliation.md` says what to do about
+them. The split is deliberate — a threshold in the process would fork from the
+rule that fires on it, and one of the two would then be wrong forever.
+
+Three properties are worth knowing before reading `telemetry.py`:
+
+**Every backlog that can age reports a depth AND an age.** `receipts_unprocessed
+1` reads as a quiet night and is also what one receipt stuck since March looks
+like. The alerts fire on the ages.
+
+**An age with nothing to measure is absent, not zero.** Zero would mean "the
+oldest due delivery is due right now" — the healthiest reading of the
+unhealthiest cause.
+
+**No metric label can carry an identifier, structurally.** Every metric family
+declares the complete set of label values it will ever accept — from a database
+CHECK constraint, a dataclass's fields, or a closed tuple — and the renderer
+*raises* on anything else. An endpoint key, a `provider_event_id`, a phone
+number, message content or anything derived from a secret has no code path to a
+label. `tests/architecture/test_no_identifier_reaches_a_label.py` drives that
+with real-looking values, and applies the same rule to log lines. Correlate an
+alert to a customer through the audit ledger, never through a label: a scrape
+outlives the row and is readable by everyone with a dashboard.
+
+**The payload-retention period is deliberately unset.** The module refuses to
+purge until it is configured, and the alert file ships the breach rule beside a
+commented-out recording rule with no value in it — so the breach alert cannot
+fire and `IntegratorPayloadRetentionNotConfigured` does instead. See the runbook.
 
 ## Pins
 

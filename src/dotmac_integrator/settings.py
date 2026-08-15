@@ -62,6 +62,26 @@ class Settings(BaseSettings):
     worker_lease_sweep_seconds: float = Field(default=60.0, gt=0)
     worker_batch_size: int = Field(default=20, ge=1)
 
+    # ── Observability ───────────────────────────────────────────────────────
+    # The scrape endpoint is a knob, not a constant: a deployment that exports
+    # through a sidecar, or one whose ingress cannot be trusted to keep
+    # `/metrics` internal, turns it off without a code change.
+    #
+    # Note what is NOT here: the payload-retention period and the legal-policy
+    # owner. Those belong to `dotmac_integration.RetentionPolicy` and are
+    # Michael's decisions; an alert threshold that encoded a period would fork
+    # the policy between this process and the module that enforces it. The
+    # threshold lives in `deploy/alerts/ingress.rules.yml`, unset, waiting for
+    # that decision.
+    metrics_enabled: bool = Field(
+        default=True,
+        description="Expose GET /metrics in the Prometheus text format.",
+    )
+    metrics_path: str = Field(
+        default="/metrics",
+        description="Where the scrape endpoint is mounted.",
+    )
+
 
 def validate_settings(settings: Settings) -> list[str]:
     """Prod-fatal checks.

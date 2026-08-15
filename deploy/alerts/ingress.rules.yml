@@ -1,0 +1,231 @@
+# Alert rules for the Integrator's ingress, leases and payload retention.
+#
+# THRESHOLDS LIVE HERE, NOT IN THE PROCESS. "How late is too late" is a
+# deployment's decision; encoding it in `telemetry.py` would fork it from the
+# rule that fires on it, and one of the two would then be wrong forever. The
+# process publishes facts — depths, ages, counters — and this file decides what
+# they mean.
+#
+# Every number below except one is DERIVED from a documented default in
+# `src/dotmac_integrator/settings.py` or `dotmac_integration.ExecutionPolicy`,
+# and each says which. The exception is the payload-retention period, which is
+# deliberately unset — see the last group.
+#
+# Load with:  --rules.alert.file=deploy/alerts/ingress.rules.yml
+# Validate with:  promtool check rules deploy/alerts/ingress.rules.yml
+
+groups:
+  # ── The worker ────────────────────────────────────────────────────────────
+  - name: integrator-worker
+    rules:
+      - alert: IntegratorWorkerDown
+        # An API-only replica sets WORKER_ENABLED=false and exports 0 here on
+        # purpose; scope the rule to the replicas that are meant to sweep.
+        expr: integrator_worker_running == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Integrator worker is not running"
+          description: >-
+            No background sweep on this replica. Expired leases are not being
+            reclaimed, so a delivery whose worker died stays in_flight forever.
+            Expected on a replica deployed with WORKER_ENABLED=false.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#the-worker-stalled
+
+      - alert: IntegratorWorkerStalled
+        # 5x WORKER_LEASE_SWEEP_SECONDS (default 60s). The worker reports the
+        # timestamp of the last COMPLETED sweep, so this fires when sweeps are
+        # failing even though the process is healthy and the loop is alive.
+        expr: time() - integrator_worker_last_sweep_timestamp_seconds > 300
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Integrator lease sweep has not completed in 5 minutes"
+          description: >-
+            The process is up and the loop is running; the sweep itself is not
+            finishing. This is the failure that looks healthy from every other
+            angle.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#the-worker-stalled
+
+      - alert: IntegratorWorkerNeverSwept
+        # `absent()` rather than a threshold: the gauge is OMITTED until the
+        # first sweep completes, so a worker that has never succeeded has no
+        # series for the rule above to fire on.
+        expr: integrator_worker_running == 1 and absent(integrator_worker_last_sweep_timestamp_seconds)
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Integrator worker has never completed a sweep"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#the-worker-stalled
+
+      - alert: IntegratorSweepFailing
+        expr: increase(integrator_worker_sweep_failures_total[15m]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Integrator lease sweeps are raising"
+          description: >-
+            The loop survives a failed sweep by design. Surviving is what makes
+            this invisible without the counter.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#the-worker-stalled
+
+  # ── Leases and queue lag ──────────────────────────────────────────────────
+  - name: integrator-queues
+    rules:
+      - alert: IntegratorLeasesExpired
+        # Any expired lease means a worker died holding a delivery. The sweep
+        # should reclaim it within WORKER_LEASE_SWEEP_SECONDS; still present
+        # after 5m means the sweep is not doing so.
+        expr: integrator_delivery_lease_expired > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} delivery lease(s) expired and unreclaimed"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#expired-leases
+
+      - alert: IntegratorQueueLag
+        # 3x ExecutionPolicy.lease_seconds (default 300s). A delivery due for
+        # longer than three lease periods is not being picked up at all.
+        expr: integrator_delivery_oldest_due_age_seconds > 900
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Oldest due delivery has waited {{ $value | humanizeDuration }}"
+          description: >-
+            The DEPTH may look fine — this fires on the age, because one item
+            stuck at the head of a short queue is exactly what a count hides.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#queue-lag
+
+      - alert: IntegratorReceiptStuck
+        # An inbound receipt that has not reached an outcome in an hour is a
+        # customer waiting. Not derived from a policy default: it is the
+        # coarsest interval at which a human response is still timely.
+        expr: integrator_receipt_oldest_unprocessed_age_seconds > 3600
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "Oldest unprocessed receipt is {{ $value | humanizeDuration }} old"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#a-stuck-receipt
+
+      - alert: IntegratorReconciliationRequired
+        # PAGE, not a warning. `reconciliation_required` means the effect may
+        # have HALF-landed: retrying risks duplicating it and dead-lettering it
+        # hides it, so it needs a decision rather than a queue.
+        expr: integrator_delivery_queue_depth{state="reconciliation_required"} > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} delivery/deliveries need reconciliation"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation-required
+
+      - alert: IntegratorDeadLetter
+        expr: integrator_delivery_queue_depth{state="dead_letter"} > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} delivery/deliveries have dead-lettered"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#dead-letters
+
+      - alert: IntegratorCheckpointStale
+        # 1x ExecutionPolicy.stale_checkpoint_after_seconds (default 24h). A
+        # cursor that has not advanced is losing the window between the two
+        # cursors, silently.
+        expr: integrator_checkpoint_oldest_lag_seconds > 86400
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "A polling cursor has not advanced in 24h"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#a-stale-checkpoint
+
+  # ── Signatures, challenges, refusals ──────────────────────────────────────
+  - name: integrator-ingress
+    rules:
+      - alert: IntegratorSignatureRejections
+        # A handful is normal (a stale secret mid-rotation, a scanner). A burst
+        # is either a rotation that half-landed or someone probing the endpoint.
+        expr: increase(integrator_ingress_signature_verifications_total{outcome="rejected"}[10m]) > 20
+        labels: { severity: warning }
+        annotations:
+          summary: "Burst of rejected webhook signatures"
+          description: >-
+            Check whether a provider secret was rotated on one side only. The
+            metric carries NO endpoint key and no request body by construction —
+            correlate through the audit ledger, not through the label.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#signature-rejections
+
+      - alert: IntegratorChallengeRefused
+        # Any refused verification handshake means something is pointing a
+        # webhook at this deployment that this deployment does not recognise.
+        expr: increase(integrator_ingress_challenges_total{outcome="refused"}[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "A provider verification challenge was refused"
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#challenge-refusals
+
+      - alert: IntegratorUnknownTargetRefusals
+        expr: increase(integrator_ingress_refusals_total{reason="unknown_target"}[15m]) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: "Inbound events arriving for no known binding"
+          description: >-
+            Usually a binding disabled or retired while the provider still has
+            the webhook configured. Events are being refused, not queued.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#unknown-target
+
+  # ── Payload retention ─────────────────────────────────────────────────────
+  #
+  # THE ONE NUMBER THIS FILE REFUSES TO INVENT.
+  #
+  # `dotmac_integration.retention` ships no default retention period and no
+  # default legal-policy owner, and refuses to run until both are configured. A
+  # threshold written here would be the same smuggled default with a different
+  # file extension: whoever typed it would have set the fleet's data-retention
+  # posture.
+  #
+  # So the breach alert compares the published AGE against a recording rule the
+  # deployment defines, and that recording rule is commented out below with no
+  # value in it. Until it is defined:
+  #
+  #   * IntegratorPayloadRetentionOverdue cannot fire — its right-hand side has
+  #     no data, so the comparison yields nothing;
+  #   * IntegratorPayloadRetentionNotConfigured fires immediately and says so.
+  #
+  # That is fail-closed and visible, which is the same posture the module takes.
+  #
+  # TO CONFIGURE: uncomment the recording rule and set it to the SAME number of
+  # seconds as INTEGRATION_PAYLOAD_RETENTION_DAYS. Two places, one decision —
+  # the module enforces it, this file notices when enforcement is behind.
+  - name: integrator-retention
+    rules:
+      # - record: integrator_payload_retention_period_seconds
+      #   expr: <RETENTION_DAYS> * 86400   # must equal INTEGRATION_PAYLOAD_RETENTION_DAYS
+
+      - alert: IntegratorPayloadRetentionNotConfigured
+        expr: absent(integrator_payload_retention_period_seconds)
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "No payload retention period is configured"
+          description: >-
+            The Integrator publishes the age of its oldest un-redacted payload,
+            but nothing has said how old is too old. dotmac_integration.retention
+            refuses to run in the same state, so payloads are being kept
+            indefinitely. Set INTEGRATION_PAYLOAD_RETENTION_DAYS and
+            INTEGRATION_RETENTION_LEGAL_POLICY_OWNER, then uncomment the
+            recording rule in this file.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#payload-retention
+
+      - alert: IntegratorPayloadRetentionOverdue
+        expr: >-
+          integrator_receipt_oldest_retained_payload_age_seconds
+          > on() group_left() integrator_payload_retention_period_seconds
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "A payload is being kept past its retention period"
+          description: >-
+            The purge is not keeping up, or every candidate is being refused —
+            a legal hold, a claimed receipt, an unresolved one, or one awaiting
+            reconciliation. The refusal reasons are in the platform audit
+            ledger, written by each sweep; they are deliberately NOT metric
+            labels.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#payload-retention

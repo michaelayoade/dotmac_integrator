@@ -26,7 +26,7 @@ import logging
 
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import operations
+from dotmac_integrator import operations, telemetry
 from dotmac_integrator.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,11 @@ class Worker:
         self._settings = settings
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
+        #: Unix time of the last COMPLETED sweep. `None` until one finishes —
+        #: seeding it at construction would make a worker that has never run
+        #: look freshly swept, which is the exact failure a stall alert exists
+        #: to catch.
+        self.last_sweep_epoch: float | None = None
 
     @property
     def running(self) -> bool:
@@ -81,11 +86,24 @@ class Worker:
                 # Log and keep the loop alive. A sweep failing because the
                 # database blipped must not kill the only periodic task in the
                 # process and leave leases held until the next deploy.
+                #
+                # Counted as well as logged, because surviving is exactly what
+                # makes this invisible: the loop keeps running, the process
+                # stays healthy, and `last_sweep_epoch` stops advancing. The
+                # counter and the stall alert are the two halves of noticing.
+                telemetry.counters.record_sweep_failure()
                 logger.exception("lease sweep failed; continuing")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
 
     def _sweep_once(self) -> None:
         result = operations.release_expired_leases(self._engine)
+        # Stamped AFTER the sweep returns, never before. A timestamp written on
+        # entry would keep advancing while every sweep failed, and the stall
+        # alert would report a healthy worker doing nothing.
+        self.last_sweep_epoch = telemetry.now_epoch()
         if result["released"]:
+            # A COUNT. Not the delivery ids, not the installation, not the
+            # idempotency key — a log line is read by more people and kept in
+            # more places than the row it describes.
             logger.info("released %s expired lease(s)", result["released"])
