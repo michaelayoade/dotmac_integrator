@@ -30,6 +30,18 @@ GET /operations/health-report   the MODULE's verdict on what is stuck
 GET /metrics              the facts the alerts fire on
 ```
 
+`/metrics` is **bearer-authenticated** and answers **404** when it is not
+satisfied — a 403 would tell a prober the endpoint exists. So a 404 from
+`/metrics` during an incident means the token is wrong or unset, not that the
+route is missing:
+
+```bash
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://<replica>/metrics | head
+```
+
+An unset `METRICS_TOKEN` restricts the endpoint to loopback and is fatal at boot
+in production, so a production replica that started at all has one.
+
 `/operations/health-report` and `/metrics` answer different questions on
 purpose. The health report is `dotmac_integration`'s own verdict — it is the
 authority. `/metrics` adds the shapes a time series needs: per-state depths, and

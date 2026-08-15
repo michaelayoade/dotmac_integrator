@@ -50,5 +50,11 @@ This is a **thin assembly**. The reusable behaviour lives in
     payload-retention period is the one threshold that is deliberately UNSET in
     both places: `dotmac_integration.retention` refuses to purge until it is
     configured, and the alert file fails closed and visible instead of guessing.
-12. **Validate before pushing**: `make check`. CI is the acceptance owner —
+12. **`/metrics` authenticates, and unauthorized is 404.** `Authorization:
+    Bearer $METRICS_TOKEN`, `secrets.compare_digest`, 404 rather than 403 (a
+    403 is an oracle telling a prober the path exists). An unset token falls
+    back to **loopback only, never to open**, and `validate_settings` makes it
+    prod-fatal. The fleet's observability auth standard; the closed label
+    vocabulary is a second line of defence, not a substitute.
+13. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.

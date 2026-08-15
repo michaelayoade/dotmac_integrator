@@ -48,6 +48,7 @@ late" is a deployment's decision and putting it here would fork it.
 from __future__ import annotations
 
 import dataclasses
+import secrets
 import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -78,6 +79,7 @@ __all__ = [
     "now_epoch",
     "render",
     "scrape",
+    "scrape_is_authorized",
     "snapshot",
 ]
 
@@ -636,3 +638,43 @@ def scrape(engine: Engine, worker: Any | None = None) -> str:
 def now_epoch() -> float:
     """Wall-clock seconds, isolated so the worker can be tested without sleeping."""
     return time.time()
+
+
+#: Hosts a scrape may come from when no token is configured. The fail-closed
+#: fallback, not a convenience: a `/metrics` with neither a token nor a client
+#: restriction publishes queue depths, dead-letter counts and this deployment's
+#: operational shape to anyone who can reach the port.
+_LOOPBACK: Final[frozenset[str]] = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def scrape_is_authorized(
+    *, token: str | None, authorization: str | None, client_host: str | None
+) -> bool:
+    """The fleet's observability auth standard, as one testable predicate.
+
+    `Authorization: Bearer <METRICS_TOKEN>`, compared in CONSTANT TIME. The
+    caller answers 404 rather than 403 on a false — a 403 is an oracle telling
+    a prober the endpoint exists.
+
+    With no token configured this falls back to loopback only, never to open.
+    A deployment that wants no scrape endpoint sets `METRICS_ENABLED=false`;
+    an unset token is a half-configured deployment, and half-configured must
+    mean closed. `validate_settings` makes it fatal in production rather than
+    letting a routable replica sit on the loopback fallback, which would be an
+    endpoint nobody can scrape on a port anybody can reach.
+
+    Written as a pure function so it can be driven with a wrong token, a
+    right token, a missing header and a remote client without an HTTP client
+    in the loop.
+    """
+    if token is None or not token.strip():
+        return client_host in _LOOPBACK
+    if not authorization:
+        return False
+    scheme, _, presented = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return False
+    # `compare_digest`, not `==`. String equality returns early on the first
+    # differing byte, and the timing of that is a byte-at-a-time oracle over
+    # the token.
+    return secrets.compare_digest(presented.strip(), token.strip())

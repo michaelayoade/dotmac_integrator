@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine
@@ -121,7 +121,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.metrics_enabled:
 
         @app.get(settings.metrics_path, tags=["health"], include_in_schema=False)
-        def metrics() -> PlainTextResponse:
+        def metrics(request: Request) -> PlainTextResponse:
+            if not telemetry.scrape_is_authorized(
+                token=settings.metrics_token,
+                authorization=request.headers.get("authorization"),
+                client_host=request.client.host if request.client else None,
+            ):
+                # 404, never 403. A 403 is an oracle: it tells a prober the
+                # endpoint exists and is worth attacking. Unauthorized must be
+                # indistinguishable from absent (fleet observability standard).
+                return PlainTextResponse("Not Found", status_code=404)
             return PlainTextResponse(
                 telemetry.scrape(engine, worker),
                 # The exposition format's own content type, version included.

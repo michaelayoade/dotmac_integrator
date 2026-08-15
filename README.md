@@ -99,7 +99,7 @@ export POETRY_HTTP_BASIC_FORGEJO_PASSWORD=...   # OpenBao: secret/dotmac/forgejo
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | Requires a `reason`. |
 | `POST /operations/receipts/{id}/replay` | Requires a `reason`. |
-| `GET /metrics` | Prometheus text exposition. `METRICS_ENABLED=false` removes it. |
+| `GET /metrics` | Prometheus text exposition, bearer-authenticated. 404 when unauthorized. `METRICS_ENABLED=false` removes it. |
 
 `reason` is required rather than defaulted: an assembly that invented one would
 put a fabricated justification into the audit record of a manual intervention,
@@ -131,6 +131,15 @@ label. `tests/architecture/test_no_identifier_reaches_a_label.py` drives that
 with real-looking values, and applies the same rule to log lines. Correlate an
 alert to a customer through the audit ledger, never through a label: a scrape
 outlives the row and is readable by everyone with a dashboard.
+
+**`/metrics` authenticates.** `Authorization: Bearer $METRICS_TOKEN`, compared
+in constant time, and unauthorized is answered **404 rather than 403** — a 403
+is an oracle telling a prober the endpoint exists. An unset token falls back to
+**loopback only, never to open**, and is prod-fatal in `validate_settings`,
+because a production replica binds a routable interface and "loopback only"
+there is an endpoint nobody can scrape on a port anybody can reach. This is the
+fleet's observability auth standard; the labels carrying no identifier is a
+second line of defence, not a reason to skip the first.
 
 **The payload-retention period is deliberately unset.** The module refuses to
 purge until it is configured, and the alert file ships the breach rule beside a

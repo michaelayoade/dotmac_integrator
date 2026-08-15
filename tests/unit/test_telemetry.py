@@ -22,6 +22,7 @@ from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import Session
 
 from dotmac_integrator import telemetry
+from dotmac_integrator.settings import Settings, validate_settings
 from dotmac_integrator.telemetry import (
     DELIVERY_STATES,
     RECEIPT_STATES,
@@ -313,6 +314,75 @@ def test_every_declared_refusal_reason_gets_a_series_from_the_first_scrape() -> 
     output = render(IngressCounters().samples())
     for reason in telemetry.REFUSAL_REASONS:
         assert f'reason="{reason}"' in output
+
+
+# ── Scrape authorisation ────────────────────────────────────────────────────
+#
+# The fleet's observability auth standard: bearer token, constant-time compare,
+# 404 rather than 403 (the caller's job), and loopback-only when unset — never
+# open. That the labels here carry no identifier is a SECOND line of defence,
+# not a reason to skip the first: queue depths, dead-letter counts and this
+# deployment's operational shape are worth keeping inside the perimeter.
+
+
+def test_a_configured_token_admits_only_that_token() -> None:
+    assert telemetry.scrape_is_authorized(
+        token="s3cret", authorization="Bearer s3cret", client_host="10.0.0.9"
+    )
+    assert not telemetry.scrape_is_authorized(
+        token="s3cret", authorization="Bearer wrong", client_host="10.0.0.9"
+    )
+    assert not telemetry.scrape_is_authorized(
+        token="s3cret", authorization=None, client_host="10.0.0.9"
+    )
+
+
+def test_a_configured_token_is_not_bypassed_by_being_on_loopback() -> None:
+    """Otherwise anything that can reach the port from inside — a sidecar, a
+    compromised neighbour container, an SSH tunnel — reads the endpoint."""
+    assert not telemetry.scrape_is_authorized(
+        token="s3cret", authorization=None, client_host="127.0.0.1"
+    )
+
+
+def test_the_wrong_scheme_is_refused() -> None:
+    assert not telemetry.scrape_is_authorized(
+        token="s3cret", authorization="Basic s3cret", client_host="10.0.0.9"
+    )
+
+
+def test_an_unset_token_falls_back_to_loopback_never_to_open() -> None:
+    """Half-configured must mean closed. `METRICS_ENABLED=false` is how a
+    deployment says it wants no scrape endpoint."""
+    assert telemetry.scrape_is_authorized(
+        token=None, authorization=None, client_host="127.0.0.1"
+    )
+    assert not telemetry.scrape_is_authorized(
+        token=None, authorization=None, client_host="10.0.0.9"
+    )
+    assert not telemetry.scrape_is_authorized(
+        token="   ", authorization=None, client_host="10.0.0.9"
+    )
+
+
+def test_production_refuses_to_boot_with_an_unauthenticated_scrape_endpoint() -> None:
+    """The loopback fallback is not a production posture: a production replica
+    binds a routable interface, so it would be an endpoint nobody can scrape on
+    a port anybody can reach."""
+    settings = Settings(
+        environment="production",
+        deployment_id="integrator-prod",
+        database_url="postgresql+psycopg://platform_api@db.internal:5432/i",
+        migration_database_url="postgresql+psycopg://app_admin@db.internal:5432/i",
+        host="0.0.0.0",  # noqa: S104 — the check under test is about METRICS_TOKEN
+        metrics_enabled=True,
+        metrics_token=None,
+    )
+    problems = validate_settings(settings)
+    assert any("METRICS_TOKEN" in problem for problem in problems), problems
+
+    settings_with_token = settings.model_copy(update={"metrics_token": "s3cret"})
+    assert validate_settings(settings_with_token) == []
 
 
 def test_the_sweep_failure_counter_is_exported() -> None:

@@ -81,6 +81,22 @@ class Settings(BaseSettings):
         default="/metrics",
         description="Where the scrape endpoint is mounted.",
     )
+    # The fleet's observability auth standard: `Authorization: Bearer
+    # METRICS_TOKEN`, compared in constant time, and unauthorized answered with
+    # 404 rather than 403 so the endpoint is indistinguishable from absent —
+    # a 403 is an oracle telling a prober the path exists.
+    #
+    # Unset fails CLOSED to loopback only. A world-readable /metrics is how a
+    # queue depth, a dead-letter count and an installation's operational shape
+    # leave the perimeter; that this deployment's labels carry no identifier is
+    # a second line of defence, not a reason to skip the first.
+    metrics_token: str | None = Field(
+        default=None,
+        description=(
+            "Bearer token for GET /metrics. Unset restricts the endpoint to "
+            "loopback. Value comes from the environment; never committed."
+        ),
+    )
 
 
 def validate_settings(settings: Settings) -> list[str]:
@@ -103,6 +119,16 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append(
             "HOST is loopback; a production replica behind a proxy must bind "
             "the interface the proxy reaches"
+        )
+    if settings.metrics_enabled and not settings.metrics_token:
+        # Fatal rather than degraded-to-loopback. A production replica binds a
+        # routable interface (checked above), so "loopback only" is not a
+        # fallback there — it is an endpoint nobody can scrape sitting on a
+        # port anybody can reach.
+        problems.append(
+            "METRICS_ENABLED is on with no METRICS_TOKEN. Set the token, or "
+            "set METRICS_ENABLED=false — an unauthenticated /metrics on a "
+            "routable interface publishes this deployment's operational shape"
         )
     return problems
 
