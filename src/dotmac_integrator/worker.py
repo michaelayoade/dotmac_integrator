@@ -12,6 +12,14 @@ Sweeping expired leases is idempotent, needs no connector, and is safe to run
 before any connector exists — a lease whose holder died must be reclaimed
 whether or not anything can dispatch.
 
+## What this pump deliberately does NOT do
+
+It does not refresh secret material. ADR-0009 makes rotation an explicit
+operator act, never a timer: material must change when someone says so, and a
+process that re-read a store every N seconds would put that store back on the
+path of everything it authenticates. `POST /operations/secrets/refresh` is the
+whole rotation mechanism.
+
 The dispatch pump is deliberately NOT here. It cannot be written honestly until
 a real connector exists to dispatch to, and a pump written against no connector
 would be shaped by guesses. It arrives with the Meta/WhatsApp ingress-only
@@ -97,13 +105,15 @@ class Worker:
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
 
     def _sweep_once(self) -> None:
-        result = operations.release_expired_leases(self._engine)
+        # The TIMED variant, which records no actor: a schedule is not a
+        # person, and an audit row naming one would be a lie about who decided.
+        released = operations.sweep_expired_leases(self._engine)
         # Stamped AFTER the sweep returns, never before. A timestamp written on
         # entry would keep advancing while every sweep failed, and the stall
         # alert would report a healthy worker doing nothing.
         self.last_sweep_epoch = telemetry.now_epoch()
-        if result["released"]:
+        if released:
             # A COUNT. Not the delivery ids, not the installation, not the
             # idempotency key — a log line is read by more people and kept in
             # more places than the row it describes.
-            logger.info("released %s expired lease(s)", result["released"])
+            logger.info("released %s expired lease(s)", released)

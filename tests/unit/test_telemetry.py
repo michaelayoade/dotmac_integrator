@@ -375,6 +375,11 @@ def test_production_refuses_to_boot_with_an_unauthenticated_scrape_endpoint() ->
         database_url="postgresql+psycopg://platform_api@db.internal:5432/i",
         migration_database_url="postgresql+psycopg://app_admin@db.internal:5432/i",
         host="0.0.0.0",  # noqa: S104 — the check under test is about METRICS_TOKEN
+        # The operator knobs are prod-fatal too, and set correctly here so the
+        # second half of this test ("with a token, nothing is wrong") is about
+        # METRICS_TOKEN rather than about whatever else is unset.
+        platform_root_domain="integrator.dotmac.io",
+        jwt_secret="a-real-signing-secret-from-the-store",
         metrics_enabled=True,
         metrics_token=None,
     )

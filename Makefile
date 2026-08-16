@@ -1,8 +1,15 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint format-check type-check test check migrate run outdated
+.PHONY: help install lint format-check type-check test check migrate run outdated \
+        image image-audit compose-up compose-down bootstrap-operator
+
+# Every value is an overridable knob with a documented default (AGENTS.md
+# § "Everything by config"). Nothing below hardcodes a registry, tag or port.
+INTEGRATOR_IMAGE ?= registry.dotmac.io/dotmac/integrator
+INTEGRATOR_TAG   ?= dev
+IMAGE            ?= $(INTEGRATOR_IMAGE):$(INTEGRATOR_TAG)
 
 help: ## List targets
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n",$$1,$$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n",$$1,$$2}'
 
 install: ## Install pinned dependencies (needs registry credentials)
 	poetry install
@@ -33,3 +40,25 @@ run: ## Development server
 
 outdated: ## Show newer releases of the pinned Dotmac distributions
 	poetry show --outdated dotmac-kernel dotmac-integration || true
+
+bootstrap-operator: ## Create/reset the first operator. OWNER credentials, out of band.
+	# The operations surface is guarded, so the first operator cannot be made
+	# through it — and there is no HTTP self-registration path for a platform
+	# actor, ever. Password from OPERATOR_PASSWORD or a prompt; never argv.
+	poetry run python -m dotmac_integrator.bootstrap_operator --email "$(EMAIL)"
+
+image: ## Build the runtime image. Registry token via a BuildKit secret, never a layer.
+	@test -n "$$POETRY_HTTP_BASIC_FORGEJO_PASSWORD" || \
+		{ echo "POETRY_HTTP_BASIC_FORGEJO_PASSWORD is unset (OpenBao: secret/dotmac/forgejo/read-token)"; exit 1; }
+	DOCKER_BUILDKIT=1 docker build \
+		--secret id=forgejo_token,env=POETRY_HTTP_BASIC_FORGEJO_PASSWORD \
+		-t $(IMAGE) .
+
+image-audit: ## What CI asserts about the built image: non-root, no boot migration, pins.
+	./scripts/audit_image.sh $(IMAGE)
+
+compose-up: ## Migration job to completion, THEN the runtime. Never the other order.
+	docker compose up -d --wait
+
+compose-down: ## Stop the runtime. Data survives; this deployment owns no volume.
+	docker compose down

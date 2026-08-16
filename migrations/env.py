@@ -23,7 +23,21 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from dotmac_kernel.prerequisites import install_prerequisite_bindings
 from sqlalchemy import engine_from_config, pool
+
+from dotmac_integrator.migration_bindings import ASSEMBLY_PREREQUISITE_BINDINGS
+
+# Installed at IMPORT, which is still before the revision map exists: Alembic
+# walks the version directories lazily, inside `run_migrations()`. A composed
+# module lineage resolving its `depends_on` from these bindings therefore sees
+# them, and an assembly composing a module whose requirements it never answered
+# fails loudly rather than ordering wrongly. See `migration_bindings.py`.
+#
+# `migrate.py` additionally exports `DOTMAC_MIGRATION_BINDINGS`, because the
+# commands that build a revision map WITHOUT running this file (`heads`,
+# `history`, `show`) can be reached no other way.
+install_prerequisite_bindings(ASSEMBLY_PREREQUISITE_BINDINGS)
 
 config = context.config
 

@@ -1,0 +1,217 @@
+"""Every route is classified, and each class's rule is proved to bite.
+
+`create_app` already refuses to return an app whose surface breaks a rule, so
+the first test here is nearly a formality — it fails only if the mounted
+surface regressed. The rest is the part that matters: an auditor that reports
+nothing is evidence only once it has been shown to report something.
+
+The planted app is deliberately built out of the mistakes that are actually
+available to make. Each of them is one plausible diff away:
+
+* mounting the coming ingress adapter at `/webhooks/...` — unclassified, so no
+  rule applies to it at all;
+* copying an operations route and forgetting the guard;
+* copying one and forgetting the reason;
+* giving the ingress adapter the operator guard "for now";
+* putting the guard on `/health/ready` so the probe "is consistent";
+* hanging endpoint rotation off the ingress router because that is where the
+  provider's credential is used.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+
+from dotmac_integrator.assembly import create_app
+from dotmac_integrator.operator_auth import OperationReason, Operator
+from dotmac_integrator.surface import (
+    CREDENTIAL_LIFECYCLE_VERBS,
+    RouteClass,
+    SurfaceViolation,
+    audit_routes,
+    classify,
+    require_a_correct_surface,
+)
+from tests.support import build_settings
+
+#: The configured scrape path. Passed to every audit here rather than assumed,
+#: because `METRICS_PATH` is a knob and `classify` is deliberately told its
+#: value instead of hardcoding one — see `surface.classify`.
+METRICS_PATH = "/metrics"
+
+
+def test_the_real_surface_is_correct() -> None:
+    settings = build_settings()
+    assert audit_routes(create_app(settings), metrics_path=settings.metrics_path) == []
+
+
+def test_every_mounted_route_is_classified() -> None:
+    """Read positively: the audit above would also pass over an empty app."""
+    from fastapi.routing import APIRoute
+
+    settings = build_settings()
+    app = create_app(settings)
+    paths = [r.path for r in app.routes if isinstance(r, APIRoute)]
+    assert len(paths) >= 9, paths
+    assert all(
+        classify(path, metrics_path=settings.metrics_path) is not None for path in paths
+    )
+    classes = {classify(path, metrics_path=settings.metrics_path) for path in paths}
+    assert RouteClass.OPERATOR in classes
+    assert RouteClass.PROBE in classes
+    assert RouteClass.SCRAPE in classes
+
+
+def test_no_ingress_route_is_mounted_yet() -> None:
+    """The classification exists BEFORE the surface it governs.
+
+    Slice 3 of the assembly plan (the public ingress adapter) waits for the
+    module release. Asserted so that whoever lands it reads this file first —
+    the rule they must satisfy is already written, and it is the one that keeps
+    a provider's signature scheme and an operator's bearer token apart.
+    """
+    from fastapi.routing import APIRoute
+
+    app = create_app(build_settings())
+    assert not [
+        r.path
+        for r in app.routes
+        if isinstance(r, APIRoute) and classify(r.path) is RouteClass.INGRESS
+    ]
+
+
+# ── Sensitivity proof (ADR-0018) ────────────────────────────────────────────
+
+
+def _planted() -> FastAPI:
+    app = FastAPI()
+
+    @app.post("/webhooks/provider")
+    def unclassified() -> dict[str, str]:
+        return {}
+
+    @app.post("/operations/unguarded")
+    def unguarded(body: OperationReason) -> dict[str, str]:
+        return {}
+
+    @app.post("/operations/reasonless")
+    def reasonless(_actor: Operator) -> dict[str, str]:
+        return {}
+
+    @app.post("/ingress/provider")
+    def ingress_with_operator_guard(_actor: Operator) -> dict[str, str]:
+        return {}
+
+    @app.get("/health/ready")
+    def guarded_probe(_actor: Operator) -> dict[str, str]:
+        return {}
+
+    @app.post("/ingress/endpoints/rotate")
+    def rotation_outside_the_operator_surface() -> dict[str, str]:
+        return {}
+
+    # The scrape endpoint with its authentication written in the handler BODY
+    # instead of as a dependency — which is exactly what it looked like before
+    # `ScrapeGuard` existed, and exactly what the dependency walk cannot see.
+    @app.get("/metrics")
+    def unguarded_scrape() -> dict[str, str]:
+        return {}
+
+    return app
+
+
+def test_the_auditor_reports_every_planted_mistake() -> None:
+    violations = "\n".join(audit_routes(_planted(), metrics_path=METRICS_PATH))
+
+    assert "/webhooks/provider is unclassified" in violations
+    assert "/operations/unguarded" in violations and "require_operator" in violations
+    assert "/operations/reasonless" in violations and "OperationReason" in violations
+    assert "/ingress/provider" in violations and "public ingress" in violations
+    assert "/health/ready" in violations and "probe carrying the operator" in violations
+    assert "/ingress/endpoints/rotate" in violations
+    assert "/metrics" in violations and "ScrapeGuard" in violations
+
+
+def test_require_a_correct_surface_raises_on_the_planted_app() -> None:
+    with pytest.raises(SurfaceViolation):
+        require_a_correct_surface(_planted(), metrics_path=METRICS_PATH)
+
+
+# ── The SCRAPE class, both directions ───────────────────────────────────────
+
+
+def test_an_unclassified_metrics_path_is_reported_rather_than_waved_through() -> None:
+    """`METRICS_PATH` is a knob, so the auditor is TOLD the value.
+
+    A deployment that moved the scrape endpoint and an auditor that assumed
+    `/metrics` would disagree silently, and the disagreement resolves in the
+    unsafe direction: the route falls out of every class and out of every rule.
+    Here the auditor is told the wrong path, and the real one must be reported
+    as unclassified rather than quietly accepted.
+    """
+    app = FastAPI()
+
+    @app.get("/internal/telemetry")
+    def moved_scrape() -> dict[str, str]:
+        return {}
+
+    violations = "\n".join(audit_routes(app, metrics_path="/metrics"))
+    assert "/internal/telemetry is unclassified" in violations
+
+    # Told the truth, the same route is a correctly-classified SCRAPE route —
+    # which then fails only for the reason it should: it carries no guard.
+    violations = "\n".join(audit_routes(app, metrics_path="/internal/telemetry"))
+    assert "unclassified" not in violations
+    assert "ScrapeGuard" in violations
+
+
+def test_a_guarded_read_only_scrape_route_is_accepted() -> None:
+    """The other direction. A rule that reported every scrape route as a
+    violation would be removed the first time someone shipped a correct one."""
+    from fastapi import Depends
+
+    from dotmac_integrator.telemetry import ScrapeGuard
+
+    app = FastAPI()
+
+    @app.get("/metrics", dependencies=[Depends(ScrapeGuard(build_settings()))])
+    def scrape() -> dict[str, str]:
+        return {}
+
+    assert audit_routes(app, metrics_path="/metrics") == []
+
+
+def test_a_scrape_route_may_not_carry_the_operator_guard_or_mutate() -> None:
+    """A monitoring system holds a scrape token, not an operator identity."""
+    from fastapi import Depends
+
+    from dotmac_integrator.telemetry import ScrapeGuard
+
+    app = FastAPI()
+
+    @app.post("/metrics", dependencies=[Depends(ScrapeGuard(build_settings()))])
+    def mutating_scrape(_actor: Operator) -> dict[str, str]:
+        return {}
+
+    violations = "\n".join(audit_routes(app, metrics_path="/metrics"))
+    assert "carrying the operator guard" in violations
+    assert "mutating scrape" in violations
+
+
+def test_the_credential_verb_list_is_not_empty() -> None:
+    """The verb scan iterates this tuple. Empty, it would inspect nothing while
+    every case above still passed on its other rules."""
+    assert set(CREDENTIAL_LIFECYCLE_VERBS) >= {"mint", "rotate", "revoke"}
+
+
+def test_a_credential_verb_on_an_operator_path_is_accepted() -> None:
+    """The other direction: the verb rule must not forbid the correct
+    placement, or the first real rotation route gets it deleted."""
+    app = FastAPI()
+
+    @app.post("/operations/secrets/refresh")
+    def refresh(body: OperationReason, _actor: Operator) -> dict[str, str]:
+        return {}
+
+    assert audit_routes(app, metrics_path=METRICS_PATH) == []

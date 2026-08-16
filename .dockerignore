@@ -1,0 +1,25 @@
+# Everything the image must not contain. `.env` first and deliberately: a real
+# deployment's DSNs and its JWT secret live there, and a build context carrying
+# it puts them in a layer that `docker history` will read back.
+#
+# `README.md` is NOT excluded — `pyproject.toml` names it as the project readme
+# and poetry fails the build without it.
+.env
+.env.*
+
+.git
+.github
+.venv
+venv
+tests
+docs
+Makefile
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/

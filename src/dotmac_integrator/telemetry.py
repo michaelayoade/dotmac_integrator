@@ -58,6 +58,7 @@ from typing import Any, Final
 
 import dotmac_integration as integration
 import sqlalchemy as sa
+from fastapi import HTTPException, Request
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -72,6 +73,7 @@ __all__ = [
     "SIGNATURE_OUTCOMES",
     "IngressCounters",
     "MetricFamily",
+    "ScrapeGuard",
     "Sample",
     "UndeclaredLabel",
     "collect",
@@ -157,15 +159,14 @@ HEALTH_SIGNALS: Final[tuple[str, ...]] = tuple(
 )
 
 #: The retention tombstone key `dotmac-integration` writes over an expired
-#: payload. A CROSS-REPOSITORY wire contract: the Starter pins this exact
-#: literal in `tests/unit/test_integration_retention.py
-#: ::test_the_redaction_marker_is_a_wire_contract`.
+#: payload. IMPORTED, not restated: the metric counts receipts that do NOT
+#: carry this key, so a copy that drifted by one character would count every
+#: redacted row as still holding content and the backlog would never fall.
 #:
-#: Matched as a literal rather than imported because the pinned release
-#: (`dotmac-integration 0.1.0a1`) predates the retention module. When the pin
-#: moves to a release that exports `REDACTION_MARKER`, import it and delete
-#: this constant — the metric is meaningless if the two ever disagree.
-REDACTION_MARKER: Final = "__dotmac_redacted__"
+#: It was a local literal while the pin was `0.1.0a1`, which predates the
+#: retention module. `0.1.0a3` exports it, so the copy is gone — which was the
+#: instruction the literal carried, not a nice-to-have.
+REDACTION_MARKER: Final = integration.REDACTION_MARKER
 
 
 # ── Families ────────────────────────────────────────────────────────────────
@@ -694,3 +695,34 @@ def scrape_is_authorized(
     # differing byte, and the timing of that is a byte-at-a-time oracle over
     # the token.
     return secrets.compare_digest(presented.strip(), token.strip())
+
+
+class ScrapeGuard:
+    """`scrape_is_authorized` as a DEPENDENCY, so the surface auditor can see it.
+
+    An instance rather than a closure because `surface.audit_routes` identifies
+    guards structurally, by walking a route's dependency tree. A check performed
+    in the handler BODY — which is what this replaced — is invisible to that
+    walk, so a future `/metrics` variant mounted without any authentication at
+    all would have audited clean. The guard being a dependency is what makes
+    "every scrape route authenticates" a property of the surface rather than a
+    property of one handler someone remembered to write.
+
+    It raises **404**, and the body is FastAPI's own `{"detail": "Not Found"}`
+    rather than a hand-written one. That is the second half of the same
+    reasoning that chose 404 over 403: a 403 tells a prober the path exists, and
+    so does a 404 whose body does not match what this application returns for a
+    path that genuinely does not exist. Unauthorized is now byte-identical to
+    absent.
+    """
+
+    def __init__(self, settings: Any) -> None:
+        self._settings = settings
+
+    def __call__(self, request: Request) -> None:
+        if not scrape_is_authorized(
+            token=self._settings.metrics_token,
+            authorization=request.headers.get("authorization"),
+            client_host=request.client.host if request.client else None,
+        ):
+            raise HTTPException(status_code=404, detail="Not Found")
