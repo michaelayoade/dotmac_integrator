@@ -57,7 +57,15 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import health, ingress, operations, secret_loading, telemetry
+from dotmac_integrator import (
+    delivery,
+    health,
+    ingress,
+    operations,
+    product_port,
+    secret_loading,
+    telemetry,
+)
 from dotmac_integrator.operator_auth import OperationReason, Operator
 from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
@@ -108,7 +116,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # BEFORE the worker and before the first request. Everything this
         # deployment can authenticate with is in memory from this line onward,
         # so no store outage can reach a dispatch or an enablement.
-        secret_loading.install_secrets(engine, settings)
+        report = secret_loading.install_secrets(engine, settings)
+        if settings.product_port_enabled:
+            # Installed BEFORE the worker starts, so the pump never observes a
+            # half-composed deployment — and AFTER the material is held, so an
+            # unresolvable destination credential refuses the boot here rather
+            # than failing every delivery later with a 401 that reads as the
+            # destination's problem.
+            client, registry = product_port.build_from_settings(
+                settings, held_references=report.held
+            )
+            delivery.install_product_port(client, registry=registry)
         await worker.start()
         try:
             yield

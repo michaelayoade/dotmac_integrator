@@ -146,5 +146,50 @@ This is a **thin assembly**. The reusable behaviour lives in
     `test_the_assembly_stays_thin.py`, with a sensitivity proof. The product
     port is INSTALLED at startup (ADR-0009 shape) and the pump fails closed
     without one; it never marks a receipt done that it did not deliver.
-25. **Validate before pushing**: `make check`. CI is the acceptance owner —
+25. **The destination's wire contract is IMPLEMENTED here, never authored
+    here.** `product_port.py` is transcribed from the destination
+    application's own merged port (`dotmac_sub`'s
+    `app/api/integrator_observations.py` and
+    `app/schemas/integrator_observation.py`); a disagreement is a defect in
+    this file, or a contract change that happens in THAT repository first.
+    Three consequences that are easy to get wrong and expensive to discover:
+    `provider_event_id` crosses the wire RAW because the destination
+    namespaces it itself; the transport fingerprint covers the destination's
+    OWN canonical body — every declared field present, optionals explicitly
+    null — not the sparse dict a connector supplied; and a 409 identity
+    collision ESCALATES (`INDETERMINATE`) rather than reporting
+    `already_applied`, because the owning service is saying two producers
+    disagree about what the provider said.
+26. **A product port declares its DIRECTION, and shadow never settles.** The
+    destination exposes a write port and a strictly narrower shadow port that
+    records nothing; the narrowness is the safety property and this side
+    honours it. `install_product_port` requires a boolean `writes` — required,
+    never defaulted, because neither default is safe — a `MIRROR` client's
+    `deliver` raises, `deliver_due_receipts` refuses a non-writing port, and
+    `mirror_due_receipts` is what a shadow deployment runs: it claims nothing,
+    settles nothing, and returns verdict COUNTS. A shadow run that marked
+    receipts `processed` would look exactly like a completed cutover while
+    losing every event. One switch (`PRODUCT_PORT_MODE`), read once, by the
+    client; the worker starts the matching loop from the client's own
+    declaration rather than from a second flag.
+27. **The destination-side binding id and the capability declaration are
+    CONFIGURED, never derived.** The destination's port is keyed on ITS
+    capability-binding UUID, in ITS database; this deployment's is a different
+    UUID and no derivation exists. Both the pairing
+    (`PRODUCT_PORT_BINDINGS`) and the capability vocabulary
+    (`PRODUCT_PORT_CAPABILITIES`) are operator-supplied, both fail LOUD when
+    absent — a refused boot, or a pre-network `UNAVAILABLE` naming the gap —
+    and both are stopgaps whose provenance is an open decision recorded in the
+    destination's cutover document. The Integrator may never mint a capability
+    declaration.
+28. **The destination credential reaches no log, no traceback and no metric
+    label.** Held at startup like any other material (rule 11), resolved per
+    call as a dict lookup so a rotation takes effect without a restart, and
+    never interpolated into a message. Every outbound string goes through
+    `secret_resolver.redact`, because the destination's refusal text is
+    third-party content; the frames that hold the value `del` it in a
+    `finally`, so an error reporter capturing frame locals finds nothing. All
+    three carry sensitivity proofs
+    (`test_the_destination_credential_never_escapes.py`).
+29. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.

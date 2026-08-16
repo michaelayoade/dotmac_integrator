@@ -150,6 +150,91 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Receipt → product delivery ──────────────────────────────────────────
+    # WHERE recorded observations land, and with what credential. Everything
+    # here is transport addressing; nothing here is a business decision. In
+    # particular there is no retry count, no wait and no attempt limit —
+    # `dotmac_integration.ExecutionPolicy` owns those and a knob here would be a
+    # second answer.
+    product_port_enabled: bool = Field(
+        default=False,
+        description=(
+            "Install a client for the destination application at startup. OFF "
+            "by default: a deployment with no destination configured must fail "
+            "closed and say so, never deliver nowhere and mark receipts done."
+        ),
+    )
+    product_port_mode: str = Field(
+        default="mirror",
+        description=(
+            "'mirror' posts to the destination's SHADOW port, which records "
+            "nothing and answers with a parity verdict; 'write' posts to the "
+            "port that records. Defaults to the safe one — a deployment "
+            "misconfigured into shadow produces evidence, one misconfigured "
+            "into write records facts nobody agreed to record."
+        ),
+    )
+    product_port_application: str = Field(
+        default="",
+        description=(
+            "The destination application this client serves. Checked against "
+            "the application the module resolved from the capability's declared "
+            "owner; a mismatch is refused rather than delivered."
+        ),
+    )
+    product_port_base_url: str = Field(
+        default="",
+        description="Scheme and host of the destination, e.g. https://sub.example.com",
+    )
+    product_port_api_path_prefix: str = Field(
+        default="/api/v1",
+        description=(
+            "Path the destination mounts its API under. A knob because the "
+            "router's own prefix and the mounted prefix differ, and the mounted "
+            "one is what a client must use."
+        ),
+    )
+    product_port_api_key_ref: str = Field(
+        default="",
+        description=(
+            "Reference to the machine credential presented as X-Api-Key — "
+            "`env://INTEGRATOR_SECRET_...` or `file:///run/secrets/...`. A "
+            "REFERENCE, never a value: it is dereferenced once at startup and "
+            "held (ADR-0009), and this file is committed."
+        ),
+    )
+    product_port_bindings: str = Field(
+        default="",
+        description=(
+            "`<local-binding-uuid>=<destination-binding-uuid>` pairs, comma "
+            "separated. The destination's port is keyed on ITS OWN capability "
+            "binding UUID, which lives in ITS database and is NOT derivable "
+            "from this deployment's. Supplying it is an operator act; how the "
+            "value gets here is an open decision recorded in the destination's "
+            "cutover document."
+        ),
+    )
+    product_port_capabilities: str = Field(
+        default="",
+        description=(
+            "`<capability.id.vN> = <application>/<module> : <summary>` entries, "
+            "`;` separated. The capability vocabulary this deployment routes "
+            "by. A STOPGAP: a capability is declared by its owning business "
+            "module, and how that declaration reaches this assembly is an open "
+            "decision — the Integrator may never mint one, so it is transcribed "
+            "here rather than defaulted."
+        ),
+    )
+    product_port_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "How long one delivery call may take. A TRANSPORT bound, not a "
+            "retry decision: it must stay comfortably inside the module's own "
+            "receipt lease so a call cannot outlive the claim it was made under."
+        ),
+    )
+
     # ── Observability ───────────────────────────────────────────────────────
     # The scrape endpoint is a knob, not a constant: a deployment that exports
     # through a sidecar, or one whose ingress cannot be trusted to keep
@@ -193,6 +278,54 @@ class Settings(BaseSettings):
 #: through the guard (ADR-0008's shape).
 OPERATOR_AUTH_MECHANISMS: tuple[str, ...] = ("platform_admin",)
 
+#: The two ports the destination exposes. A registry rather than a free string
+#: so a typo is a refused boot naming both, instead of a deployment that quietly
+#: matched neither branch — and the shadow one stays a first-class mode rather
+#: than "write, but don't".
+PRODUCT_PORT_MODES: tuple[str, ...] = ("mirror", "write")
+
+
+def _product_port_problems(settings: Settings) -> list[str]:
+    """Everything a configured destination must have before the port is built.
+
+    Checked here rather than at the first delivery. A half-configured port that
+    starts and fails per receipt burns an attempt on each one and reports it as
+    a product problem; refusing at boot names the missing knob while somebody is
+    watching.
+    """
+    if settings.product_port_mode not in PRODUCT_PORT_MODES:
+        return [
+            f"PRODUCT_PORT_MODE={settings.product_port_mode!r} is not one of "
+            f"{list(PRODUCT_PORT_MODES)}. 'mirror' records nothing and produces "
+            "parity evidence; 'write' records"
+        ]
+    if not settings.product_port_enabled:
+        return []
+
+    problems: list[str] = []
+    required = {
+        "PRODUCT_PORT_APPLICATION": settings.product_port_application,
+        "PRODUCT_PORT_BASE_URL": settings.product_port_base_url,
+        "PRODUCT_PORT_API_KEY_REF": settings.product_port_api_key_ref,
+        "PRODUCT_PORT_BINDINGS": settings.product_port_bindings,
+        "PRODUCT_PORT_CAPABILITIES": settings.product_port_capabilities,
+    }
+    for name, value in required.items():
+        if not value.strip():
+            problems.append(
+                f"PRODUCT_PORT_ENABLED is on and {name} is empty; a port that "
+                "cannot address the destination would fail every receipt"
+            )
+    reference = settings.product_port_api_key_ref.strip()
+    if reference and not reference.startswith(("env://", "file://")):
+        problems.append(
+            "PRODUCT_PORT_API_KEY_REF must be an `env://` or `file://` "
+            "reference. It is dereferenced once at startup and held; a literal "
+            "credential here would sit in a committed file and in the process "
+            "environment of everything that reads this configuration"
+        )
+    return problems
+
 
 def validate_settings(settings: Settings) -> list[str]:
     """Configuration checks. Everything unconditional first, prod-fatal after.
@@ -211,6 +344,8 @@ def validate_settings(settings: Settings) -> list[str]:
             "is deliberately no 'none' — an unauthenticated /operations "
             "surface can replay deliveries and enable connectors"
         )
+
+    problems.extend(_product_port_problems(settings))
 
     if settings.environment != "production":
         return problems
@@ -243,6 +378,18 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append(
             "SECRET_FILE_ROOT is under /tmp, which is world-writable on most "
             "hosts; mount secret material somewhere only this process can read"
+        )
+    if settings.product_port_enabled and settings.product_port_base_url.startswith(
+        "http://"
+    ):
+        # The envelope carries a customer's message body and the request carries
+        # the machine credential. Over plaintext both are readable by every hop,
+        # and the credential is replayable afterwards.
+        problems.append(
+            "PRODUCT_PORT_BASE_URL is http://; the observation envelope carries "
+            "message content and the request carries the destination "
+            "credential, neither of which may cross a production network in "
+            "the clear"
         )
     if settings.metrics_enabled and not settings.metrics_token:
         # Fatal rather than degraded-to-loopback. A production replica binds a
