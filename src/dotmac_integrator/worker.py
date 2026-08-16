@@ -34,7 +34,7 @@ import logging
 
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import operations
+from dotmac_integrator import delivery, operations, telemetry
 from dotmac_integrator.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,21 @@ class Worker:
         self._engine = engine
         self._settings = settings
         self._task: asyncio.Task[None] | None = None
+        self._delivery_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
+        #: Unix time of the last COMPLETED sweep. `None` until one finishes —
+        #: seeding it at construction would make a worker that has never run
+        #: look freshly swept, which is the exact failure a stall alert exists
+        #: to catch.
+        self.last_sweep_epoch: float | None = None
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def delivering(self) -> bool:
+        return self._delivery_task is not None and not self._delivery_task.done()
 
     async def start(self) -> None:
         if not self._settings.worker_enabled:
@@ -69,15 +79,34 @@ class Worker:
             "worker started; lease sweep every %ss",
             self._settings.worker_lease_sweep_seconds,
         )
+        if not delivery.product_port_installed():
+            # Loud, and NOT a fallback. A deployment receiving provider events
+            # with nowhere to deliver them is accumulating a backlog behind a
+            # control plane that already answered 200 to the provider.
+            logger.warning(
+                "no product port installed; recorded receipts will NOT be "
+                "delivered. Call delivery.install_product_port(...) at startup"
+            )
+            return
+        self._delivery_task = asyncio.create_task(
+            self._deliver_forever(), name="receipt-delivery"
+        )
+        logger.info(
+            "receipt delivery started; polling every %ss in batches of %s",
+            self._settings.worker_poll_seconds,
+            self._settings.worker_batch_size,
+        )
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
         self._stopping.set()
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
-        self._task = None
+        for name in ("_delivery_task", "_task"):
+            task = getattr(self, name)
+            if task is None:
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            setattr(self, name, None)
         logger.info("worker stopped")
 
     async def _run(self) -> None:
@@ -89,13 +118,55 @@ class Worker:
                 # Log and keep the loop alive. A sweep failing because the
                 # database blipped must not kill the only periodic task in the
                 # process and leave leases held until the next deploy.
+                #
+                # Counted as well as logged, because surviving is exactly what
+                # makes this invisible: the loop keeps running, the process
+                # stays healthy, and `last_sweep_epoch` stops advancing. The
+                # counter and the stall alert are the two halves of noticing.
+                telemetry.counters.record_sweep_failure()
                 logger.exception("lease sweep failed; continuing")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    async def _deliver_forever(self) -> None:
+        interval = self._settings.worker_poll_seconds
+        while not self._stopping.is_set():
+            try:
+                await asyncio.to_thread(self._deliver_once)
+            except Exception:
+                # Survive, count, and keep polling — same reasoning as the
+                # sweep. A product being unreachable is not a reason to stop
+                # the only thing that will notice when it comes back.
+                telemetry.counters.record_sweep_failure()
+                logger.exception("receipt delivery pass failed; continuing")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    def _deliver_once(self) -> None:
+        counted = delivery.deliver_due_receipts(
+            self._engine, self._settings.worker_batch_size
+        )
+        if counted["claimed"] or counted["lost"]:
+            # COUNTS. Not the receipt ids, not the destination, not the
+            # idempotency key — the per-receipt outcome is on the row and in
+            # the audit ledger, both of which are access-controlled in a way a
+            # log line is not.
+            logger.info(
+                "delivered %s receipt(s); %s lost claim(s)",
+                counted["claimed"],
+                counted["lost"],
+            )
 
     def _sweep_once(self) -> None:
         # The TIMED variant, which records no actor: a schedule is not a
         # person, and an audit row naming one would be a lie about who decided.
         released = operations.sweep_expired_leases(self._engine)
+        # Stamped AFTER the sweep returns, never before. A timestamp written on
+        # entry would keep advancing while every sweep failed, and the stall
+        # alert would report a healthy worker doing nothing.
+        self.last_sweep_epoch = telemetry.now_epoch()
         if released:
+            # A COUNT. Not the delivery ids, not the installation, not the
+            # idempotency key — a log line is read by more people and kept in
+            # more places than the row it describes.
             logger.info("released %s expired lease(s)", released)

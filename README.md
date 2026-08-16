@@ -116,6 +116,9 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | |
 | `POST /operations/receipts/{id}/replay` | |
+| `GET /ingress/{endpoint_key}` | Provider activation handshake. Answers for a CONFIGURED but still DISABLED binding. |
+| `POST /ingress/{endpoint_key}` | Provider delivery. Requires binding AND installation enabled. |
+| `GET /metrics` | Prometheus text exposition, bearer-authenticated. 404 when unauthorized. `METRICS_ENABLED=false` removes it. |
 
 `reason` is required rather than defaulted: an assembly that invented one would
 put a fabricated justification into the audit record of a manual intervention,
@@ -161,6 +164,47 @@ self-registration path for a platform actor:
 ```bash
 OPERATOR_PASSWORD='…' make bootstrap-operator EMAIL=you@dotmac.io
 ```
+
+## Observability
+
+`GET /metrics` publishes facts; `deploy/alerts/ingress.rules.yml` decides what
+they mean; `docs/RUNBOOK-restore-and-reconciliation.md` says what to do about
+them. The split is deliberate — a threshold in the process would fork from the
+rule that fires on it, and one of the two would then be wrong forever.
+
+Three properties are worth knowing before reading `telemetry.py`:
+
+**Every backlog that can age reports a depth AND an age.** `receipts_unprocessed
+1` reads as a quiet night and is also what one receipt stuck since March looks
+like. The alerts fire on the ages.
+
+**An age with nothing to measure is absent, not zero.** Zero would mean "the
+oldest due delivery is due right now" — the healthiest reading of the
+unhealthiest cause.
+
+**No metric label can carry an identifier, structurally.** Every metric family
+declares the complete set of label values it will ever accept — from a database
+CHECK constraint, a dataclass's fields, or a closed tuple — and the renderer
+*raises* on anything else. An endpoint key, a `provider_event_id`, a phone
+number, message content or anything derived from a secret has no code path to a
+label. `tests/architecture/test_no_identifier_reaches_a_label.py` drives that
+with real-looking values, and applies the same rule to log lines. Correlate an
+alert to a customer through the audit ledger, never through a label: a scrape
+outlives the row and is readable by everyone with a dashboard.
+
+**`/metrics` authenticates.** `Authorization: Bearer $METRICS_TOKEN`, compared
+in constant time, and unauthorized is answered **404 rather than 403** — a 403
+is an oracle telling a prober the endpoint exists. An unset token falls back to
+**loopback only, never to open**, and is prod-fatal in `validate_settings`,
+because a production replica binds a routable interface and "loopback only"
+there is an endpoint nobody can scrape on a port anybody can reach. This is the
+fleet's observability auth standard; the labels carrying no identifier is a
+second line of defence, not a reason to skip the first.
+
+**The payload-retention period is deliberately unset.** The module refuses to
+purge until it is configured, and the alert file ships the breach rule beside a
+commented-out recording rule with no value in it — so the breach alert cannot
+fire and `IntegratorPayloadRetentionNotConfigured` does instead. See the runbook.
 
 ## Pins
 
@@ -239,3 +283,57 @@ same list plus two more jobs: **composition**, which applies every lineage to a
 real PostgreSQL as the owner role and audits the result — without it, these
 migrations would first run in production — and **image**, which audits the
 artefact that actually ships.
+
+## Public ingress
+
+Two routes into `dotmac_integration`'s three-phase engine, and three things
+this assembly owns that the engine correctly refuses to.
+
+**The body is bounded as it is read.** `read_capped_body` consumes
+`request.stream()` and refuses on byte `limit + 1`. Reading an unbounded body
+in order to reject it is the denial of service the cap exists to prevent, and
+doing it before an HMAC is worse: a signature covers the whole body, so
+verifying first means buffering first. `INGRESS_MAX_BODY_BYTES` is the knob;
+the 413 and the code come from the module's own `PayloadTooLarge`, because an
+ingress status is a retry instruction to the provider and inventing one
+silently destroys events.
+
+**The endpoint key never reaches a log.** It is a bearer credential carried in
+the URL path — whoever holds it can drive that connector's `verify`. The module
+takes structural care to keep it out of its own error text and cannot help with
+the URL, because it never sees one. `redaction.py` closes that: a filter on the
+loggers, a `del` in the route so no frame local survives for a locals-capturing
+error reporter, an unvalidated path parameter so no 422 echoes it, and a closed
+label vocabulary. Each surface has a sensitivity proof showing the value DOES
+appear when the redaction is removed.
+
+**Handshake and delivery do not share an eligibility rule, and must not.** GET
+answers for a binding that is configured but still disabled; POST requires the
+binding and its installation both enabled. A single predicate makes activation
+circular with any provider that requires a completed handshake before a
+subscription can be enabled: the operator cannot enable the binding until the
+provider is subscribed, and the provider cannot subscribe until the endpoint
+answers. Nothing about verification is relaxed — only which binding may be
+addressed.
+
+## Receipt delivery
+
+Recording that a provider event arrived is not delivering it. The worker's
+second pump lands recorded observations in the product that owns them, through
+`dotmac_integration.receipt_delivery` — `ReceiptClaims` for the claim
+(a conditional UPDATE where `rowcount == 1` IS the claim) and `deliver_receipt`
+for the ordering (claim → call with no session held → settle). Neither is
+reimplemented here, and a test bans the SQL that would mean they had been.
+
+`due_receipt_ids` is a plain unlocked SELECT. Two workers being handed the same
+id is expected and costs one losing UPDATE — much cheaper than a row lock held
+while the product is contacted, which is what `FOR UPDATE SKIP LOCKED` quietly
+becomes.
+
+**No product client ships in this repository.** `ProductPortClient` is a port
+the deployment installs at startup, held in memory (ADR-0009), and with none
+installed the pump does not run and says so. It does not fall back to marking
+receipts delivered — that would be the inbox lying at a different layer. The
+client belongs with the checked-in contract of the application it speaks to;
+authoring it here would make this assembly the sole author of a wire contract
+two systems must agree on (ADR-0024).

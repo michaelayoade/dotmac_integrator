@@ -49,7 +49,7 @@ from fastapi import HTTPException
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import secret_loading
+from dotmac_integrator import secret_loading, telemetry
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
     missing_references,
@@ -168,6 +168,10 @@ def _uuid(raw: str, field: str) -> UUID:
     try:
         return UUID(raw)
     except ValueError as exc:
+        # Counted by REASON, never by value. `raw` reaches the caller who sent
+        # it — it must not reach a metric label, where it would be stored for a
+        # year and rendered on every dashboard that groups by it.
+        telemetry.counters.record_refusal("malformed_identifier")
         raise HTTPException(422, f"{field} is not a UUID: {raw!r}") from exc
 
 
@@ -455,12 +459,14 @@ def replay_delivery(
     with Session(engine) as db:
         delivery = db.get(integration.DeliveryAttempt, identifier)
         if delivery is None:
+            telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no delivery {delivery_id}")
         try:
             replayed = integration.replay_delivery(
                 db, delivery, actor_admin_id=actor.admin_id, reason=reason
             )
         except integration.NotRepairable as exc:
+            telemetry.counters.record_refusal("not_repairable")
             raise HTTPException(409, str(exc)) from exc
         db.commit()
         return _repaired(replayed)
@@ -473,12 +479,14 @@ def replay_receipt(
     with Session(engine) as db:
         receipt = db.get(integration.InboxReceipt, identifier)
         if receipt is None:
+            telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no receipt {receipt_id}")
         try:
             replayed = integration.replay_receipt(
                 db, receipt, actor_admin_id=actor.admin_id, reason=reason
             )
         except integration.NotRepairable as exc:
+            telemetry.counters.record_refusal("not_repairable")
             raise HTTPException(409, str(exc)) from exc
         db.commit()
         return _repaired(replayed)

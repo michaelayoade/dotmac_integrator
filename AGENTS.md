@@ -43,8 +43,6 @@ This is a **thin assembly**. The reusable behaviour lives in
     demonstrated on this composition. Never add an "is the provider revision in
     `alembic_version`?" check: that table holds the current head of each branch,
     not the history, so it is wrong against every advanced database.
-11. **Validate before pushing**: `make check`. CI is the acceptance owner —
-    local runs are not evidence.
 11. **A secret is HELD, never dereferenced on a request path** (ADR-0009).
     `secret_loading.py` may do I/O and runs at startup and on an explicit
     refresh; `secret_resolver.py` is dict lookups and imports nothing that can
@@ -81,3 +79,66 @@ This is a **thin assembly**. The reusable behaviour lives in
     credential.** The migration job runs as the owner and must COMPLETE before
     any runtime container starts. Asserted against the built artefact by
     `scripts/audit_image.sh`, which carries its own sensitivity proof.
+18. **A metric label is a closed vocabulary, and a log line carries no
+    identifier.** Every `MetricFamily` in `telemetry.py` declares the complete
+    set of label values it will ever accept — sourced from a database CHECK
+    constraint, a dataclass's fields, or a closed tuple in that file — and
+    `render` RAISES on anything else, as do the counter methods. An endpoint
+    key, a `provider_event_id`, a phone number, message content or anything
+    derived from a secret therefore has no code path to a label; the same rule
+    applies to log lines (ADR-0009: names are logged, values never). A new
+    labelled metric means declaring its values, not widening the check.
+    Enforced by `tests/architecture/test_no_identifier_reaches_a_label.py`,
+    driven with real-looking identifiers rather than placeholders.
+19. **Thresholds live in `deploy/alerts/`, never in the process.** `/metrics`
+    publishes facts. "How late is too late" is a deployment's decision, and a
+    number in `telemetry.py` would fork from the rule that fires on it. The
+    payload-retention period is the one threshold that is deliberately UNSET in
+    both places: `dotmac_integration.retention` refuses to purge until it is
+    configured, and the alert file fails closed and visible instead of guessing.
+20. **`/metrics` authenticates, and unauthorized is 404.** `Authorization:
+    Bearer $METRICS_TOKEN`, `secrets.compare_digest`, 404 rather than 403 (a
+    403 is an oracle telling a prober the path exists). An unset token falls
+    back to **loopback only, never to open**, and `validate_settings` makes it
+    prod-fatal. The fleet's observability auth standard; the closed label
+    vocabulary is a second line of defence, not a substitute.
+21. **An inbound body is bounded AS IT IS READ, before buffering and before
+    any signature.** `ingress.read_capped_body` consumes `request.stream()` and
+    refuses on byte `limit + 1`; `await request.body()` is forbidden on that
+    path by `test_the_assembly_stays_thin.py`. Measuring after buffering makes
+    the limit an amplifier for the denial of service it exists to prevent, and
+    an HMAC covers the whole body — verifying first means buffering first, so a
+    10 GB body from an unauthenticated sender would be held in memory to
+    discover it was not signed. `Content-Length` is absent under chunked
+    encoding and attacker-supplied when present: a hint, never the control.
+22. **The ingress endpoint key is a BEARER credential in the URL PATH, and it
+    reaches no log, body or label.** The module guards everything it can see and
+    cannot see the URL, so `redaction.py` owns this: a filter on the LOGGERS
+    (not the handlers — this application does not own those) collapsing `msg`
+    and `args` together, the route `del`ing the raw string so no frame local
+    survives for a locals-capturing error reporter, an unvalidated `str` path
+    parameter so no 422 echoes it, and the closed label vocabulary. Every
+    surface carries a SENSITIVITY PROOF that the same value DOES appear when
+    the redaction is removed — a `not in` assertion passes trivially if the
+    value never had a route there.
+23. **Handshake and delivery never share an eligibility predicate.** `GET
+    /ingress/{key}` answers for a CONFIGURED but still DISABLED binding; `POST`
+    requires binding and installation both enabled. One predicate makes
+    activation CIRCULAR for every provider that requires a completed handshake
+    before a subscription can be enabled — the endpoint refuses the one request
+    that would unblock it, forever. Two routes, two engine façades, no flag.
+    This relaxes WHICH BINDING may be addressed, never WHAT THE REQUEST MUST
+    PROVE: the connector's `challenge` still runs and still verifies.
+24. **At-most-once belongs to the module, and the selector is a HINT.**
+    `ReceiptClaims` (conditional UPDATE, `rowcount == 1` IS the claim) and
+    `deliver_receipt` (claim → call with NO session held → settle) are
+    `dotmac_integration`'s. `delivery.due_receipt_ids` is an unlocked SELECT and
+    two workers seeing one id is the expected case: the database evaluates the
+    real predicate inside the UPDATE and the loser gets `None`. No `FOR
+    UPDATE`, no `SKIP LOCKED`, no hand-written state UPDATE — a lock taken here
+    would be held across the product call. Enforced by
+    `test_the_assembly_stays_thin.py`, with a sensitivity proof. The product
+    port is INSTALLED at startup (ADR-0009 shape) and the pump fails closed
+    without one; it never marks a receipt done that it did not deliver.
+25. **Validate before pushing**: `make check`. CI is the acceptance owner —
+    local runs are not evidence.

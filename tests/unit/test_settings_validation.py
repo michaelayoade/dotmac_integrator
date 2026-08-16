@@ -31,6 +31,11 @@ def _production(**overrides: object) -> Settings:
         "platform_root_domain": "integrator.dotmac.io",
         "jwt_secret": "a-real-signing-secret-from-the-store",
         "secret_file_root": "/run/secrets",
+        # The scrape endpoint is prod-fatal without a token. Present here
+        # because this fixture's whole job is to be a configuration with
+        # NOTHING wrong with it — a missing knob would make the "no problems"
+        # direction pass for the wrong reason.
+        "metrics_token": "a-real-scrape-token-from-the-store",
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 

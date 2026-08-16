@@ -27,7 +27,24 @@ prove the auditor bites.
                              knows it. Must never carry the operator guard:
                              the two populations share no credential, no
                              token audience and no failure mode.
+`SCRAPE`     `METRICS_PATH`  A monitoring system. Read-only, and
+                             authenticated by a scrape token that is neither
+                             an operator credential nor a provider signature.
 ============================ ===============================================
+
+## Why `/metrics` is a fourth class and not a probe
+
+It is the closest fit and it is still wrong. PROBE's rule is that the route is
+*unauthenticated by design*, because an orchestrator cannot present a
+credential — so filing `/metrics` there would licence someone to remove its
+token later and audit clean while doing it. `/metrics` publishes queue depths,
+dead-letter counts and this deployment's operational shape; it must
+authenticate. A fourth population with its own rule is the honest model, and
+the rule it gets is the inverse of PROBE's: it MUST carry a guard.
+
+Its path is the configured `METRICS_PATH` rather than a fixed prefix, so
+`classify` is told the configured value. A knob whose value changes which
+rules apply cannot be classified by a constant.
 
 ## Why reads are guarded too
 
@@ -54,6 +71,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from dotmac_integrator.operator_auth import OperationReason, require_operator
+from dotmac_integrator.telemetry import ScrapeGuard
 
 __all__ = [
     "CREDENTIAL_LIFECYCLE_VERBS",
@@ -75,6 +93,7 @@ class RouteClass(StrEnum):
     PROBE = "probe"
     OPERATOR = "operator"
     INGRESS = "ingress"
+    SCRAPE = "scrape"
 
 
 #: Prefix → class. Derived, not a second list of routes to keep in sync with
@@ -91,7 +110,16 @@ class SurfaceViolation(RuntimeError):
     """The mounted surface breaks a class rule. Raised at app construction."""
 
 
-def classify(path: str) -> RouteClass | None:
+def classify(path: str, *, metrics_path: str | None = None) -> RouteClass | None:
+    """The class governing `path`, or `None` when nothing does.
+
+    `metrics_path` is passed rather than assumed because it is a deployment
+    knob (`METRICS_PATH`). Hardcoding `/metrics` here would silently unclassify
+    the scrape endpoint of any deployment that moved it — and an unclassified
+    route is exactly what this module refuses to serve.
+    """
+    if metrics_path and path == metrics_path:
+        return RouteClass.SCRAPE
     for prefix, route_class in _PREFIXES:
         if path.startswith(prefix):
             return route_class
@@ -140,7 +168,7 @@ def _api_routes(app: FastAPI) -> Iterator[APIRoute]:
             yield route
 
 
-def audit_routes(app: FastAPI) -> list[str]:
+def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
     """Every rule violation on `app`'s mounted surface. Empty means correct."""
     violations: list[str] = []
 
@@ -148,7 +176,7 @@ def audit_routes(app: FastAPI) -> list[str]:
         path = route.path
         # FastAPI mounts its own docs/openapi as non-APIRoute routes, so
         # everything reaching here is a route this assembly declared.
-        route_class = classify(path)
+        route_class = classify(path, metrics_path=metrics_path)
         if route_class is None:
             violations.append(
                 f"{path} is unclassified. Mount it under /health, /operations "
@@ -188,6 +216,28 @@ def audit_routes(app: FastAPI) -> list[str]:
                 "provider holds no operator credential; sharing the guard ends "
                 "with the operator guard loosened until both fit through it"
             )
+        elif route_class is RouteClass.SCRAPE:
+            if guarded:
+                violations.append(
+                    f"{path} is a scrape endpoint carrying the operator guard. "
+                    "A monitoring system holds a scrape token, not an operator "
+                    "identity, and every scrape would 401"
+                )
+            if mutating:
+                violations.append(f"{sorted(methods)} {path} is a mutating scrape")
+            if not any(
+                isinstance(call, ScrapeGuard) for call in _dependency_calls(route)
+            ):
+                # The INVERSE of the probe rule, and the reason this is not a
+                # probe. A scrape endpoint with no guard publishes queue depths,
+                # dead-letter counts and this deployment's operational shape to
+                # anyone who can reach the port.
+                violations.append(
+                    f"{path} is a scrape endpoint with no `ScrapeGuard` "
+                    "dependency. An authentication check written in the handler "
+                    "BODY is invisible to this audit, which is how an "
+                    "unauthenticated /metrics would pass it"
+                )
 
         lowered = path.lower()
         for verb in CREDENTIAL_LIFECYCLE_VERBS:
@@ -201,14 +251,14 @@ def audit_routes(app: FastAPI) -> list[str]:
     return violations
 
 
-def require_a_correct_surface(app: FastAPI) -> None:
+def require_a_correct_surface(app: FastAPI, *, metrics_path: str | None = None) -> None:
     """`audit_routes`, raising. Called by `create_app` before it returns.
 
     At construction rather than in a test alone: a deployment that mounted an
     unguarded operations route must not start, and a test proves only the
     routes the test knows about.
     """
-    violations = audit_routes(app)
+    violations = audit_routes(app, metrics_path=metrics_path)
     if violations:
         raise SurfaceViolation(
             "refusing to serve an incorrectly classified surface:\n  - "
