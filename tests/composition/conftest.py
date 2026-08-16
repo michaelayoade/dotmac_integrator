@@ -17,6 +17,22 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+#: The posture `module_database_roles.v1` requires, which is also exactly what
+#: kernel `0001_initial_tenant_schema` creates when the roles are absent.
+#:
+#: Pre-creating them here is not decoration — the scratch database is created
+#: before the migration runs, and a deployment's roles are provisioned by an
+#: operator rather than by a migration. But `_ensure_roles` only creates what is
+#: MISSING, so a plain `CREATE ROLE app_admin LOGIN` here left `app_admin`
+#: without `BYPASSRLS` and the kernel's own verifier refused the composition —
+#: caught by `test_the_bindings_are_proven.py`, which is what a live proof is
+#: for. The attributes are stated rather than assumed for that reason.
+ROLE_ATTRIBUTES = {
+    "app_admin": "LOGIN BYPASSRLS",
+    "app_user": "LOGIN NOBYPASSRLS",
+    "platform_api": "LOGIN NOBYPASSRLS",
+}
+
 
 def _admin_url() -> str:
     url = os.getenv("TEST_MIGRATION_DATABASE_URL")
@@ -38,13 +54,20 @@ def migrated() -> Iterator[str]:
     root = create_engine(base, isolation_level="AUTOCOMMIT")
     with root.connect() as conn:
         conn.execute(text(f'CREATE DATABASE "{name}"'))
-        for role in ("app_user", "platform_api", "app_admin"):
+        for role, attributes in ROLE_ATTRIBUTES.items():
             conn.execute(
                 text(
                     "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE "
-                    f"rolname='{role}') THEN CREATE ROLE {role} LOGIN; END IF; END$$"
+                    f"rolname='{role}') THEN CREATE ROLE {role} {attributes}; "
+                    "END IF; END$$"
                 )
             )
+            # Repairs a role a previous run (or another repository's fixture)
+            # left in this cluster with the wrong posture. Roles are CLUSTER
+            # objects, so a scratch DATABASE isolates tables and nothing else,
+            # and `CREATE ROLE … IF NOT EXISTS` silently accepts whatever is
+            # already there.
+            conn.execute(text(f"ALTER ROLE {role} {attributes}"))
 
     # `render_as_string(hide_password=False)`, NOT `str(url)`. SQLAlchemy masks
     # the password to `***` when a URL is stringified, so `str()` hands Alembic a
