@@ -281,14 +281,14 @@ wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a1"
+version = "0.1.0a3"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a1-py3-none-any.whl", hash = "sha256:57f466981a7ba4376a9dd774285d7bcdf932b6b0f67872c9203407f8a8089a4a"},
-    {file = "dotmac_integration-0.1.0a1.tar.gz", hash = "sha256:4455f33758f52c47c9416a5c89a82067a83f9107f322a391ba6ace5140d83fca"},
+    {file = "dotmac_integration-0.1.0a3-py3-none-any.whl", hash = "sha256:283bc73e21934a2a76682c5f1f22cd101d56c859e1fdca331678db68e7b3ab56"},
+    {file = "dotmac_integration-0.1.0a3.tar.gz", hash = "sha256:88cdae325039e0fd7d567ff89c6d238a09487d3ef437e05ab82fdc0e27a12389"},
 ]
 
 [package.dependencies]
@@ -302,14 +302,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-kernel"
-version = "0.1.0a58"
+version = "0.1.0a67"
 description = "DotMac platform kernel — multi-tenant FastAPI foundation (config, RLS db, identity/tenancy models, security, platform auth, middleware, settings, features registry, audit)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_kernel-0.1.0a58-py3-none-any.whl", hash = "sha256:7371bf691bc98bc08e87ffdf1c27de64684fa3799d760bfd5ae0d1f09ab2d59a"},
-    {file = "dotmac_kernel-0.1.0a58.tar.gz", hash = "sha256:1c6bab7fcf695b3b6c4dd0d2c49bcc24ba24eacbdd43a132712e4998098c180c"},
+    {file = "dotmac_kernel-0.1.0a67-py3-none-any.whl", hash = "sha256:38813d3fc92232e55a5e7bab621dfc7a85830bdf7c6263ead017a8025eabe48c"},
+    {file = "dotmac_kernel-0.1.0a67.tar.gz", hash = "sha256:2127ad86717a7cab1c1f483c6e4b0afd4fa44062bf13c6a1931343b4af3372e4"},
 ]
 
 [package.dependencies]
@@ -1945,4 +1945,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "03a0a6034e2f0aafa390403ce5c10b63334266f19b8f0ccf035cc7b9a1201fb9"
+content-hash = "71be84e08c42680fedb03a069958d98a4fd3cc5fade4bb05d7b56d4537f52979"

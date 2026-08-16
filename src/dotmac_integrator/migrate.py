@@ -32,8 +32,10 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from dotmac_kernel.prerequisites import BINDINGS_ENV_VAR
 
 from dotmac_integrator.lineage import version_locations_setting
+from dotmac_integrator.migration_bindings import BINDINGS_REFERENCE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,6 +46,16 @@ def build_config(database_url: str | None = None) -> Config:
     config = Config(str(ini)) if ini.exists() else Config()
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
     config.set_main_option("version_locations", version_locations_setting())
+
+    # `heads`, `history` and `show` build the revision map WITHOUT running
+    # `env.py`, so a composed module lineage resolving `depends_on` from this
+    # assembly's bindings would crash on exactly the commands an operator reaches
+    # for while diagnosing. The environment variable is the one channel both
+    # paths share.
+    #
+    # `setdefault`, not assignment: an operator debugging an alternative binding
+    # set exports it, and this must not overwrite them.
+    os.environ.setdefault(BINDINGS_ENV_VAR, BINDINGS_REFERENCE)
 
     url = database_url or os.getenv("MIGRATION_DATABASE_URL")
     if not url:
