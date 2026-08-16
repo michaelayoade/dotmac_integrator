@@ -20,8 +20,8 @@ python = ">=3.11,<3.14"
 # ever run, which is the failure mode an assembly exists to prevent.
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
-dotmac-kernel = "0.1.0a58"
-dotmac-integration = "0.1.0a1"
+dotmac-kernel = "0.1.0a67"
+dotmac-integration = "0.1.0a3"
 
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.32" }

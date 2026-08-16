@@ -33,7 +33,17 @@ This is a **thin assembly**. The reusable behaviour lives in
 9. **Secrets are referenced, never stored.** Registry credentials come from the
    environment; nothing secret enters `pyproject.toml`, the lockfile, a commit,
    or a log line.
-10. **Validate before pushing**: `make check`. CI is the acceptance owner —
+10. **A lineage binding is proven, never asserted.** A module declares the
+    database *effects* it needs; this assembly answers which revision supplies
+    each, in `src/dotmac_integrator/migration_bindings.py`. Every answer is
+    checked statically against the revisions actually composed
+    (`tests/architecture/test_bindings_are_declared.py`) and against a live
+    catalog through the kernel's own verifiers
+    (`tests/composition/test_the_bindings_are_proven.py`), with the refusal
+    demonstrated on this composition. Never add an "is the provider revision in
+    `alembic_version`?" check: that table holds the current head of each branch,
+    not the history, so it is wrong against every advanced database.
+11. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.
 11. **A secret is HELD, never dereferenced on a request path** (ADR-0009).
     `secret_loading.py` may do I/O and runs at startup and on an explicit

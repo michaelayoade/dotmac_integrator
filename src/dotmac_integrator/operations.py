@@ -308,7 +308,15 @@ def enable_installation(
                 "enablement is refused rather than attempted without it",
             )
 
-        secrets = resolve_secrets(secret_refs)
+        # A FRESH `dict[str, object]`, not the resolver's `dict[str, str]`.
+        # `lifecycle.enable` takes `dict[str, object] | None` and `dict` is
+        # invariant, so handing it the resolver's mapping does not type — and a
+        # `cast` would be the wrong repair, because the widened parameter says
+        # the module may put a non-`str` into whatever it is given. Copying is
+        # what makes that its business rather than a mutation of the assembly's
+        # resolved set. Surfaced by the a1 -> a3 pin bump, which widened the
+        # parameter; there is no behaviour change.
+        secrets: dict[str, object] = dict(resolve_secrets(secret_refs))
         registry = integration.discover()
         try:
             integration.enable(
