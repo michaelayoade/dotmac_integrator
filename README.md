@@ -320,6 +320,19 @@ assembly:
 > bindings are. ERP is the standing example: it hosts `public.tenants` in its own
 > lineage, so kernel `0001` would collide, permanently.
 
+This is demonstrated rather than argued. Compose only the `ig` lineage and
+building the revision map raises:
+
+```
+KeyError: '0001_initial_tenant_schema'
+```
+
+Note *when* that happens: Alembic builds the revision map **before any command
+runs**, so such an adopter cannot even `alembic history` the lineage to find out
+what is wrong, let alone `upgrade` it. There is no partial mode, no
+"install-without-that-edge", and no binding that helps — a binding answers which
+revision supplies an *effect*, and this is a hard-coded revision *id*.
+
 This deployment is unaffected only because it composes that exact revision. That
 is coping, not agreement, and no binding can rewrite an edge a released migration
 hard-codes.
