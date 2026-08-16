@@ -117,3 +117,48 @@ def test_the_orphan_detector_bites() -> None:
     assert "integrator_ingress_refusals_totals" not in declared  # typo'd name
     invented = set(_METRIC.findall("expr: integrator_a_metric_nobody_publishes > 0"))
     assert invented and not (invented & declared)
+
+
+# ── The runbook link ────────────────────────────────────────────────────────
+
+RUNBOOK = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "RUNBOOK-restore-and-reconciliation.md"
+)
+
+_RUNBOOK_LINK = re.compile(r"RUNBOOK-restore-and-reconciliation\.md#([a-z0-9-]+)")
+_HEADING = re.compile(r"^#{2,3} (.+)$", re.MULTILINE)
+
+
+def _anchors() -> set[str]:
+    """GitHub's slug rule, for the subset of characters these headings use."""
+    return {
+        re.sub(r"[^a-z0-9 -]", "", heading.lower()).replace(" ", "-")
+        for heading in _HEADING.findall(RUNBOOK.read_text(encoding="utf-8"))
+    }
+
+
+def test_every_alert_runbook_link_resolves_to_a_real_section() -> None:
+    """An alert whose runbook link 404s is the same defect one layer out.
+
+    It fires correctly, wakes someone at 03:00, and hands them a dead link —
+    which is when they discover the procedure was never written. This caught a
+    real one: the delivery alerts pointed at `#reconciliation`, and the heading
+    is "Reconciliation required" (`#reconciliation-required`).
+    """
+    anchors = _anchors()
+    referenced = set(_RUNBOOK_LINK.findall(RULES.read_text(encoding="utf-8")))
+    assert referenced, "no runbook links found — the scan is broken"
+    missing = sorted(referenced - anchors)
+    assert not missing, (
+        f"these alerts link to runbook sections that do not exist: {missing}. "
+        f"Sections present: {sorted(anchors)}"
+    )
+
+
+def test_the_anchor_detector_bites() -> None:
+    """Sensitivity proof (ADR-0018)."""
+    anchors = _anchors()
+    assert "undelivered-receipts" in anchors, "the slug rule stopped working"
+    assert "a-section-nobody-wrote" not in anchors

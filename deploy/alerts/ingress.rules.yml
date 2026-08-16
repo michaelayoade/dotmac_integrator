@@ -246,7 +246,7 @@ groups:
             The connector could not tell whether the consequence landed AND
             knows the idempotency key will not protect a retry. This does not
             resolve itself: a human or a repair command must decide.
-          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#undelivered-receipts
 
       - alert: IntegratorDeliveryRejected
         expr: increase(integrator_receipt_deliveries_total{acceptance="rejected"}[15m]) > 5
@@ -257,7 +257,7 @@ groups:
             Terminal refusals — retrying cannot help. Usually a contract
             version the destination has not deployed, or a credential whose
             scope was narrowed.
-          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#undelivered-receipts
 
       - alert: IntegratorDeliveryUnreachable
         expr: increase(integrator_receipt_deliveries_total{acceptance="unavailable"}[15m]) > 20
@@ -269,7 +269,7 @@ groups:
             Safe to retry and being retried — the idempotency key is stable
             across attempts. Alerting because the backlog behind it is growing
             and the provider has already been told 200.
-          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#undelivered-receipts
 
       # The lease is shorter than the product's real latency. Invisible
       # otherwise: every affected receipt is delivered by SOMEBODY, so nothing
@@ -283,7 +283,7 @@ groups:
             A worker's lease ran out while the destination was being contacted,
             so another worker took the receipt over and this one's outcome was
             discarded. Nothing was lost, but the call was made twice.
-          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#undelivered-receipts
 
   # ── Payload retention ─────────────────────────────────────────────────────
   #

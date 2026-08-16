@@ -262,6 +262,50 @@ deduplication makes a redelivery safe.
 
 ---
 
+## Undelivered receipts
+
+`IntegratorDeliveryIndeterminate`, `IntegratorDeliveryRejected`,
+`IntegratorDeliveryUnreachable`, `IntegratorLostClaims`.
+
+**Why this class is quiet.** The provider was told 200 and will not send the
+event again. So a delivery pump that has stopped is invisible from the
+provider's side, and the inbox's depth alone does not distinguish "nothing
+arrived" from "everything arrived and none of it landed". These alerts are the
+only signal.
+
+**First: is a product port installed at all?** With none installed the worker
+logs `no product port installed; recorded receipts will NOT be delivered` at
+startup and the pump does not run — deliberately, because marking receipts
+delivered without delivering them would be the inbox lying at a different
+layer. `integrator_receipt_queue_depth{state="verified"}` will climb steadily
+and no delivery counter will move at all. That is a deployment defect, not an
+incident in the product.
+
+**`unavailable`** — the destination is not answering. Safe, and already being
+retried: the idempotency key is stable across attempts, so a product that
+committed before timing out answers `already_applied` on the retry rather than
+acting twice. Fix the destination; the backlog drains itself.
+
+**`rejected`** — terminal. Retrying cannot help. Usually a contract version the
+destination has not deployed (`DestinationProfile.contract_versions` is checked
+at lookup precisely so this refuses loudly instead of being mis-parsed), or a
+credential whose scope was narrowed. Repair the cause, then
+`POST /operations/receipts/{id}/replay` with a stated reason.
+
+**`indeterminate`** — the one that needs a person. The connector cannot tell
+whether the consequence landed AND knows the idempotency key will not protect a
+retry. Do not replay it blind: check the destination for the consequence first,
+using `product_ref` and `delivery_idempotency_key` on the receipt row. This
+state never resolves itself.
+
+**`IntegratorLostClaims`** — leases expiring mid-call. Nothing is lost and
+nothing fails: another worker took the receipt over and delivered it. The cost
+is that the call was made twice, and the cause is that the lease is shorter
+than the destination's real latency. If it is persistent, the destination is
+slow rather than the lease being wrong — measure before changing the lease,
+because a longer lease also lengthens recovery when a worker dies.
+
+
 ## Payload retention
 
 *Alerts: `IntegratorPayloadRetentionNotConfigured`,
