@@ -52,8 +52,8 @@ def kernel_versions() -> Path:
 def integration_versions() -> Path:
     """The `ig` lineage shipped by `dotmac-integration`.
 
-    Computed rather than requested from the module: `dotmac-integration 0.1.0a3`
-    still ships no `versions_dir()` helper of its own — re-checked at the pin
+    Computed rather than requested from the module: `dotmac-integration 0.1.0a4`
+    still ships no `versions_dir()` helper of its own — re-checked at each pin
     bump rather than assumed. If a later release adds one, prefer it here: a
     package describing its own layout beats an assembly inferring it.
     """

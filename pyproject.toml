@@ -21,7 +21,7 @@ python = ">=3.11,<3.14"
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
 dotmac-kernel = "0.1.0a67"
-dotmac-integration = "0.1.0a3"
+dotmac-integration = "0.1.0a4"
 
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.32" }

@@ -8,9 +8,21 @@ the catalog can, and this is where it is asked.
 The question each assertion answers is the one a requiring migration asks at
 deploy time, through the same function: `require_prerequisites`. Running it here
 means a binding that has quietly stopped being true fails in CI rather than
-during `make migrate` on a deploy night, and — for the effects
-`dotmac-integration 0.1.0a3` depends on at RUNTIME without declaring
-(`platform_idempotency_records`) — rather than on the first guarded delivery.
+during `make migrate` on a deploy night.
+
+## What `dotmac-integration 0.1.0a4` changed
+
+Under a3 the module declared nothing, so `alembic upgrade heads` never consulted
+a binding and this file was the ONLY thing checking the effects the module writes
+at runtime. a4 declares them, and `ig_0007_idempotency_ledger` calls
+`require_prerequisites` before any DDL — so the `migrated` fixture's own
+`upgrade heads` now exercises the real deploy-time path, and
+`test_the_upgrade_itself_verified_the_prerequisites` asserts that it did.
+
+That makes this file's job the narrower and better one it should always have had:
+not standing in for a check the module was missing, but proving that the check
+the module now performs is passing against THIS composition, and that it is
+capable of failing here.
 
 Requires a real database; skipped without one. CI does not skip. The scratch
 database is `tests/composition/conftest.py`'s `migrated` fixture.
@@ -18,6 +30,7 @@ database is `tests/composition/conftest.py`'s `migrated` fixture.
 
 from __future__ import annotations
 
+import dotmac_integration
 import pytest
 from dotmac_kernel.migrations.verify import (
     PrerequisiteNotSatisfiedError,
@@ -69,16 +82,47 @@ def test_each_bound_effect_has_a_verifier(effect: str) -> None:
     assert effect in registered_verifiers()
 
 
+def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
+    """The fixture's `alembic upgrade heads` ran `ig_0007`, so the DEPLOY path
+    was exercised — not merely this file's re-check afterwards.
+
+    `ig_0007_idempotency_ledger` creates nothing. Its entire body is
+    `require_prerequisites(op.get_bind(), REQUIRES)`, and it resolves its
+    `depends_on` from this assembly's bindings at import. So its presence in
+    `alembic_version` is evidence of three separate things at once: the bindings
+    were installed before the revision map was built, the ordering edge they
+    produced was real, and the effects verified against this database at migrate
+    time.
+
+    Asserted on the head of the `ig` branch rather than by scanning history,
+    because `alembic_version` holds current heads and nothing else — the same
+    fact that makes an order canary the wrong instrument. `ig_0007` IS the head
+    at a4, so the row is the right question to ask.
+    """
+    engine = create_engine(migrated)
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT version_num FROM alembic_version"))
+        applied = {row[0] for row in rows}
+    engine.dispose()
+    assert "ig_0007_idempotency_ledger" in applied, (
+        f"alembic_version holds {sorted(applied)}. The `ig` head at "
+        "dotmac-integration 0.1.0a4 is ig_0007_idempotency_ledger, whose only "
+        "body is require_prerequisites — if it did not run, the deploy-time "
+        "verification did not happen and `upgrade heads` applied one branch."
+    )
+
+
 def test_the_ledger_this_deployment_writes_at_runtime_is_present(
     migrated: str,
 ) -> None:
     """`platform_idempotency_records`, named on its own.
 
-    `dotmac-integration 0.1.0a3` declares no prerequisites, and its
-    `idempotency.run_effect_once` writes this table on every guarded delivery.
-    So until the a4 pin lands, THIS assertion is the only thing standing between
-    a clean migration and an `UndefinedTable` on the first delivery — worth its
-    own failure message rather than being one name inside a set.
+    `dotmac_integration.idempotency.run_effect_once` writes this table on every
+    guarded delivery. a4 declares that as `idempotency_ledger.v1` and `ig_0007`
+    verifies it at migrate time — so this is no longer the only thing standing
+    between a clean migration and an `UndefinedTable`. It stays because it is the
+    one effect whose absence would be silent until a real delivery, and a named
+    failure beats one name inside a set.
     """
     engine = create_engine(migrated)
     with engine.connect() as conn:
@@ -134,7 +178,20 @@ def test_the_verification_bites_on_this_database(migrated: str) -> None:
     engine.dispose()
 
 
-def test_the_bound_effect_list_is_not_empty() -> None:
-    """Two of the checks above iterate `BOUND_EFFECTS`; an emptied binding
-    tuple would collect nothing and report success."""
-    assert len(BOUND_EFFECTS) == 4
+def test_the_bound_effect_list_matches_what_the_module_requires() -> None:
+    """Two of the checks above iterate `BOUND_EFFECTS`; an emptied binding tuple
+    would collect nothing and report success.
+
+    Compared against the installed manifest rather than a literal, so this stays
+    true through a pin bump that legitimately changes the set — while the count
+    keeps an emptied tuple from passing. The static suite owns the reasoning
+    about WHICH effects; this only refuses to run blind.
+    """
+    required = frozenset(
+        (
+            *dotmac_integration.module.requires,
+            *dotmac_integration.module.platform_requires,
+        )
+    )
+    assert len(BOUND_EFFECTS) == 2
+    assert frozenset(BOUND_EFFECTS) == required

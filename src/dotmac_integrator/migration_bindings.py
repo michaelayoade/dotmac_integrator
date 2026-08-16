@@ -15,20 +15,27 @@ hosts `public.tenants` in its own lineage and structurally cannot run kernel
 
 ## A binding is proven, never believed
 
-Three independent controls sit under these four lines of declaration, and none
-of them is this file:
+Three independent controls sit under these two declarations, and none of them is
+this file:
 
 1. **Static** — `tests/architecture/test_bindings_are_declared.py` requires every
    `provider_revision` below to be a revision id that actually exists in a
-   lineage this assembly composes. A binding naming a revision nobody runs is
-   caught without a database.
+   lineage this assembly composes, and every effect a composed manifest requires
+   to be bound. Caught without a database.
 2. **Live** — `tests/composition/test_the_bindings_are_proven.py` runs the
    kernel's own verifier for each bound effect against the migrated scratch
    database, and proves each verifier *bites* on this composition. Reading the
    catalog is the only thing that can tell a supplied effect from a stamped one.
-3. **At migration time** — `require_prerequisites` re-checks the same effects
-   before a requiring migration's DDL, so a wrong answer here fails
-   `alembic upgrade` rather than at runtime.
+3. **At migration time** — `ig_0007_idempotency_ledger` calls
+   `require_prerequisites` before any DDL, so a wrong answer here fails
+   `alembic upgrade` rather than on the first guarded delivery.
+
+Control 3 became real at `dotmac-integration 0.1.0a4`. Under a3 nothing declared
+a requirement, so nothing consulted a binding and the first two controls were the
+only ones; a4's `ig_0007` resolves its `depends_on` from these bindings AT IMPORT
+and verifies them at upgrade, which is why `env.py` installs them before the
+revision map is walked and `migrate.py` exports `DOTMAC_MIGRATION_BINDINGS` for
+the commands that never run `env.py`.
 
 Deliberately absent: an "is the provider revision in `alembic_version`?" canary.
 That table records the current head of each branch, not the history of applied
@@ -36,43 +43,58 @@ revisions, so the check fails against every database whose kernel lineage has
 advanced past `0001`. Kernel 0.1.0a67's `require_prerequisites` docstring records
 the same lesson; do not reintroduce it here.
 
-## Nothing composed *requires* these yet — and they are still declared
+## Two effects, because two are required — and two were RETIRED
 
-`dotmac-integration 0.1.0a3` declares `requires=()`, so no composed lineage
-consults a binding today. Two reasons the file exists anyway rather than being
-an empty tuple waiting for a4:
+`dotmac-integration 0.1.0a4` declares
+`requires = ("module_database_roles.v1", "idempotency_ledger.v1")`. Both are
+bound below, and nothing else is.
 
-* The module already **writes** the at-most-once ledger at request time —
-  `dotmac_integration.idempotency` calls
-  `dotmac_kernel.idempotency.execute_once_platform`, so
-  `public.platform_idempotency_records` is a runtime dependency of every guarded
-  delivery. `dotmac-integration 0.1.0a4` declares it as
-  `idempotency_ledger.v1`; until then the dependency is real, undeclared, and
-  satisfied here only because this assembly composes the whole kernel lineage.
-  Binding it now means the a4 pin bump is a version change with a test already
-  standing behind it.
-* The live proof above is worth having against effects this deployment genuinely
-  depends on, whether or not a manifest has got around to naming them.
+Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
+Both were truthful — this deployment composes the whole kernel lineage, so kernel
+`0001` really does create `public.tenants` and `0012` really does complete the
+relay — and both are now **retired**, because a truthful answer to a question
+nobody asks is not a binding, it is decoration that CI must maintain:
 
-`platform_audit_events` is the same shape and has no binding, because the kernel
-registers no prerequisite name for it — `dotmac_integration.operations` adapts
-`dotmac_kernel.audit.write_platform_audit_event` and nothing can declare that
-dependency yet. An effect with no name cannot be bound; it is recorded here so
-the gap is visible rather than mistaken for completeness.
+* `tenant_scope_catalog.v1` — a4 does not require it, and the reason is
+  structural rather than an oversight: every foreign key in the `ig` lineage
+  targets `mod_intg.*`, and this deployment owns no tenant plane at all
+  (`module.tables == ()`). There is no FK for a tenant catalogue to be the target
+  of.
+* `outbox_relay.v1` — nothing composed here touches `dotmac_kernel.messaging`.
+  The module's own "outbox" is `mod_intg.delivery_attempts` with its own claim
+  loop; the name collides with the kernel relay and the machinery does not.
+  Verifying the relay contract — dispatcher roles, the `SECURITY DEFINER`
+  claim/settle pairs, the grant posture — would turn any kernel-side relay change
+  into a red build here for a facility this deployment never calls.
 
-## The `ig_0001` literal edge
+Retired is not unavailable. Both effects are still SUPPLIED by the composed
+kernel lineage, so if a future connector module requires one, re-binding it is
+the three lines below and `binding_for` fails closed with an explicit message in
+the meantime. That is the designed behaviour, not a gap.
 
-`ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)` — a
-physical edge naming a foreign revision, which is exactly what the prerequisite
-vocabulary exists to replace. It is a known defect in the module, resolved in the
-Starter rather than here.
+`platform_audit_events` is a third dependency and has no binding, because the
+kernel registers no prerequisite name for it — `dotmac_integration.operations`
+adapts `dotmac_kernel.audit.write_platform_audit_event` regardless. That is a
+kernel gap of the same class `idempotency_ledger.v1` and `outbox_relay.v1` closed
+in a66/a67, and it is deliberately NOT worked around here: an effect with no name
+cannot be bound, and inventing a local one would make this assembly a second
+authority over the kernel's vocabulary.
 
-This assembly copes today by *composing the lineage that contains that revision
-id*: kernel `0001_initial_tenant_schema` is in `version_locations()`, so Alembic
-resolves the edge and orders correctly. That is coping, not agreement — an
-adopter that does not run kernel `0001` cannot install the module at all, which
-is the defect. Nothing below papers over it: a binding cannot rewrite an edge a
-released migration hard-codes.
+## The `ig_0001` literal edge — unrepaired through a4
+
+`ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
+at `0.1.0a4` — a physical edge naming a foreign revision, which is exactly what
+the prerequisite vocabulary exists to replace. It cannot be repaired at any
+version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
+the Starter does not own, and `alembic_version` records that a revision ran, never
+which version of it. a4 added `ig_0007` rather than editing the root for that
+reason.
+
+So the constraint is permanent for this lineage: **an adopter that cannot run
+kernel `0001_initial_tenant_schema` cannot install `dotmac-integration` at all**,
+however correct its bindings are. This assembly is unaffected only because it
+composes that exact revision. That is coping, not agreement, and nothing below
+papers over it — a binding cannot rewrite an edge a released migration hard-codes.
 """
 
 from __future__ import annotations
@@ -84,8 +106,6 @@ from typing import Final
 from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
     MODULE_DATABASE_ROLES_V1,
-    OUTBOX_RELAY_V1,
-    TENANT_SCOPE_CATALOG_V1,
     PrerequisiteBinding,
 )
 
@@ -101,16 +121,11 @@ BINDINGS_REFERENCE: Final[str] = (
 )
 
 ASSEMBLY_PREREQUISITE_BINDINGS: Final[tuple[PrerequisiteBinding, ...]] = (
-    # Kernel `0001` creates `tenants`/`tenant_domains` and
-    # `app_current_tenant_id()`, and the three grantable roles. This deployment
-    # owns no tenant plane at all, and still supplies both: `mod_intg` is
-    # created by a lineage that is ordered after `0001`, and every module
-    # migration GRANTs to roles it must never create itself.
-    PrerequisiteBinding(
-        prerequisite=TENANT_SCOPE_CATALOG_V1.name,
-        provider_revision="0001_initial_tenant_schema",
-        provider_owner="kernel",
-    ),
+    # `_ensure_roles` in kernel `0001` creates `app_admin`, `app_user` and
+    # `platform_api`. Every `ig` migration GRANTs to roles it must never create
+    # itself — creating a role needs privileges a module migration cannot assume,
+    # and a module that invented its own would be a second authority over cluster
+    # access. This is the effect `ig_0001`'s literal edge was standing in for.
     PrerequisiteBinding(
         prerequisite=MODULE_DATABASE_ROLES_V1.name,
         provider_revision="0001_initial_tenant_schema",
@@ -119,21 +134,11 @@ ASSEMBLY_PREREQUISITE_BINDINGS: Final[tuple[PrerequisiteBinding, ...]] = (
     # `0018`, not the lineage root. A binding names the revision that SUPPLIES
     # the effect: `0018_idempotency_one_owner` created
     # `idempotency_records`/`platform_idempotency_records` (ADR-0014). Bound to
-    # `0001`, a database stopped at `0017` would satisfy the binding and fail on
-    # the first guarded delivery.
+    # `0001`, a database stopped at `0017` would order correctly, satisfy the
+    # binding, and have no ledger for the first guarded delivery to write.
     PrerequisiteBinding(
         prerequisite=IDEMPOTENCY_LEDGER_V1.name,
         provider_revision="0018_idempotency_one_owner",
-        provider_owner="kernel",
-    ),
-    # The relay is assembled across three kernel revisions and the binding names
-    # the LAST: `0008` created `outbox_events`, `0011` added leasing, the
-    # reclaim index and the dispatcher role, and `0012` added the whole platform
-    # peer. Only after `0012` is the effect whole, and the platform half is the
-    # only half a platform-plane deployment could ever use.
-    PrerequisiteBinding(
-        prerequisite=OUTBOX_RELAY_V1.name,
-        provider_revision="0012_platform_outbox",
         provider_owner="kernel",
     ),
 )
@@ -182,16 +187,20 @@ def bindings_naming_uncomposed_revisions(
     }
 
 
-def unbound_prerequisites(required: frozenset[str]) -> frozenset[str]:
-    """Everything `required` that this assembly binds no provider for.
+def unbound_prerequisites(
+    required: frozenset[str],
+    bindings: tuple[PrerequisiteBinding, ...] = ASSEMBLY_PREREQUISITE_BINDINGS,
+) -> frozenset[str]:
+    """Everything `required` that `bindings` names no provider for.
 
-    Pure, and takes its input rather than reading the manifests, so the
-    fail-closed direction can be exercised against a requirement set that does
-    not exist yet — `dotmac-integration 0.1.0a3` requires nothing, and a check
-    that could only ever look at today's manifests would report success without
-    being able to fail.
+    Pure, and takes BOTH sides rather than reading the manifest and the module
+    global. That is what lets the fail-closed direction be exercised: with
+    `dotmac-integration 0.1.0a4` the real requirement set is finally non-empty,
+    so the proof that this check bites is to drive the REAL requirements against
+    a binding set with one removed — which is the mistake it exists to catch, and
+    which no amount of asserting the passing case would demonstrate.
     """
-    bound = {binding.prerequisite for binding in ASSEMBLY_PREREQUISITE_BINDINGS}
+    bound = {binding.prerequisite for binding in bindings}
     return frozenset(required - bound)
 
 

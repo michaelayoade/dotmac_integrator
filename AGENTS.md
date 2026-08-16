@@ -40,9 +40,15 @@ This is a **thin assembly**. The reusable behaviour lives in
     (`tests/architecture/test_bindings_are_declared.py`) and against a live
     catalog through the kernel's own verifiers
     (`tests/composition/test_the_bindings_are_proven.py`), with the refusal
-    demonstrated on this composition. Never add an "is the provider revision in
+    demonstrated on this composition. Bind what a composed manifest REQUIRES and
+    nothing else — a binding nothing resolves can never fail at `alembic
+    upgrade`, so it is decoration CI must maintain; re-bind a retired effect
+    beside the module that needs it. Never add an "is the provider revision in
     `alembic_version`?" check: that table holds the current head of each branch,
     not the history, so it is wrong against every advanced database.
+    Re-derive the bindings at every pin bump; a release that changes `requires`
+    changes what this assembly must assert about it, so the bump is never one
+    line.
 11. **A secret is HELD, never dereferenced on a request path** (ADR-0009).
     `secret_loading.py` may do I/O and runs at startup and on an explicit
     refresh; `secret_resolver.py` is dict lookups and imports nothing that can

@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel 0.1.0a67  ──┐
                           ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a3┘         (this repo)          (installed, discovered)
+dotmac-integration 0.1.0a4┘         (this repo)          (installed, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -215,13 +215,30 @@ months from now compose a combination nobody has ever run.
 
 | Distribution | Pin | Why this one |
 |---|---|---|
-| `dotmac-integration` | `0.1.0a3` | The newest **published** release — `dotmac-integration-v0.1.0a3`, tagged from the Starter and verified on the registry. `0.1.0a4` exists only as an open pull request and cannot be installed. |
-| `dotmac-kernel` | `0.1.0a67` | The newest published kernel. `0.1.0a3` floors at `>=0.1.0a58`, so a58…a67 all satisfy it; a67 is chosen because it is the first release registering `outbox_relay.v1`, the last of the four effects bound in `migration_bindings.py`, and because `0.1.0a4` will floor at `>=0.1.0a66` — pinning below that would make the next pin bump two changes instead of one. |
+| `dotmac-integration` | `0.1.0a4` | The newest **published** release — `dotmac-integration-v0.1.0a4`, tagged from Starter `306a40e` and verified on the registry. It is the first release that DECLARES the prerequisites it has always depended on. |
+| `dotmac-kernel` | `0.1.0a67` | The newest published kernel. `0.1.0a4` floors at `>=0.1.0a66` (a capability raise: a58…a65 have the ledger TABLES but not the `idempotency_ledger.v1` NAME, so the manifest will not import). a67 also registers `outbox_relay.v1`, which this deployment does not use. |
 
-**When `dotmac-integration 0.1.0a4` is published**, the bump is one line here and
-one line in `pyproject.toml`. Its manifest declares `idempotency_ledger.v1`,
-which this assembly already binds and already proves against a real database, so
-nothing else has to move — that is the whole reason the binding landed first.
+### What a pin bump actually costs
+
+An earlier draft of this file claimed the a3 → a4 bump was "one line here and one
+line in `pyproject.toml`". That was wrong, and it was wrong in an instructive
+way: a4's whole content is that it declares `requires`, and this repository's
+tests were written to assert the SHAPE of a release that declared nothing. A bump
+that changes what the module says about itself changes what the assembly must
+assert about the module.
+
+The real cost, as a checklist:
+
+1. `pyproject.toml`, and `poetry lock` regenerated with a Poetry matching CI's.
+2. **The bindings** — re-derived from the new `requires`, not assumed unchanged.
+   a4 both added two requirements and made two previously bound effects
+   unrequired; see below.
+3. **The tests that assert the old shape** — the empty-`requires` case became a
+   populated one, which flipped which sensitivity proof is the meaningful one.
+4. This section, and the "Lineage bindings" section.
+
+What genuinely did *not* move: the kernel pin, because it was chosen at the a3
+bump to already satisfy a4's floor. That much of the earlier claim holds.
 
 Moving a pin is a reviewed diff with its own CI run — `make outdated` shows
 what is available. The lockfile must be regenerated with it (`poetry lock`),
@@ -235,29 +252,77 @@ foreign revision, because the answer differs per assembly.
 and the answers are **proven, not believed**:
 
 - statically, that every bound revision exists in a lineage this assembly
-  actually composes (`tests/architecture/test_bindings_are_declared.py`);
+  actually composes, and that every effect a composed manifest requires is bound
+  (`tests/architecture/test_bindings_are_declared.py`);
 - against a live PostgreSQL, by running the kernel's own verifier for each bound
   effect — and by proving that verification *bites* on this composition
   (`tests/composition/test_the_bindings_are_proven.py`);
-- at deploy time, by `require_prerequisites` inside any requiring migration.
+- at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`,
+  whose entire body is that call.
 
-Two things about the current release are worth knowing rather than discovering:
+`dotmac-integration 0.1.0a4` requires two effects, and both are bound:
 
-1. **`dotmac-integration 0.1.0a3` declares no prerequisites at all**, yet
-   `idempotency.run_effect_once` writes `public.platform_idempotency_records` on
-   every guarded delivery. The dependency is real, undeclared until `0.1.0a4`,
-   and satisfied here only because this deployment composes the whole kernel
-   lineage. It is bound and proven now so that is a fact rather than luck.
-   `platform_audit_events` is the same shape and cannot be bound: the kernel
-   registers no prerequisite name for it yet.
-2. **`ig_0001_connector_cp` ships a literal `depends_on =
-   ("0001_initial_tenant_schema",)`** — a physical edge naming a foreign
-   revision, which is the thing the prerequisite vocabulary exists to replace.
-   It is a known module defect, resolved in the Starter rather than here. This
-   assembly copes by composing the lineage that contains that exact revision id,
-   so Alembic resolves the edge; an adopter that does not run kernel `0001`
-   cannot install the module at all. No binding can rewrite an edge a released
-   migration hard-codes.
+| Effect | Provider revision | Why the module needs it |
+|---|---|---|
+| `module_database_roles.v1` | kernel `0001_initial_tenant_schema` | every `ig` migration GRANTs to `app_admin`/`platform_api`/`app_user` and must never create a role itself |
+| `idempotency_ledger.v1` | kernel `0018_idempotency_one_owner` | `idempotency.run_effect_once` writes `public.platform_idempotency_records` on every guarded delivery |
+
+Neither names the lineage root by default: `0018` is bound rather than `0001`
+because a database stopped at `0017` would order correctly, satisfy a
+root-binding, and have no ledger.
+
+### Two bindings were RETIRED at the a4 bump
+
+Under a3 this assembly also bound `tenant_scope_catalog.v1` and
+`outbox_relay.v1`. Both were truthful — the composed kernel lineage really does
+supply them — and both are gone, because a truthful answer to a question nobody
+asks is decoration that CI has to maintain:
+
+- **`tenant_scope_catalog.v1`** — not required by a4, and structurally so: every
+  foreign key in the `ig` lineage targets `mod_intg.*`, and this deployment owns
+  no tenant plane at all (`module.tables == ()`). There is no FK for a tenant
+  catalogue to be the target of.
+- **`outbox_relay.v1`** — nothing composed here touches
+  `dotmac_kernel.messaging`. The module's own "outbox" is
+  `mod_intg.delivery_attempts` with its own claim loop; the name collides with
+  the kernel relay and the machinery does not.
+
+Retired is not unavailable: both effects are still *supplied* by the composed
+kernel lineage, so re-binding one is three lines — landed beside the module that
+requires it — and `binding_for` fails closed with an explicit message meanwhile.
+
+### `platform_audit_events` is a kernel gap, not worked around here
+
+`dotmac_integration.operations` adapts
+`dotmac_kernel.audit.write_platform_audit_event`, so this deployment depends on
+that table at request time. It has no binding because the kernel registers no
+prerequisite name for it — the same class of gap `idempotency_ledger.v1` and
+`outbox_relay.v1` closed in kernel a66 and a67. It is deliberately **not**
+worked around in the assembly: an effect with no name cannot be bound, and
+inventing a local one would make this assembly a second authority over the
+kernel's vocabulary.
+
+### `ig_0001`'s literal edge is permanent — and it is the adoption constraint
+
+`ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
+physical edge naming a foreign revision, the exact thing the prerequisite
+vocabulary exists to replace. **It is still there at `0.1.0a4`, and it cannot be
+repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
+run in databases the Starter does not own, and `alembic_version` records that a
+revision ran, never which version of it. a4 added `ig_0007` rather than editing
+the root for precisely that reason.
+
+So, plainly, and it is the single biggest constraint on who can adopt this
+assembly:
+
+> **An adopter that cannot run kernel `0001_initial_tenant_schema` cannot install
+> `dotmac-integration` at all** — regardless of how correct its prerequisite
+> bindings are. ERP is the standing example: it hosts `public.tenants` in its own
+> lineage, so kernel `0001` would collide, permanently.
+
+This deployment is unaffected only because it composes that exact revision. That
+is coping, not agreement, and no binding can rewrite an edge a released migration
+hard-codes.
 
 ## Deployment
 
