@@ -523,9 +523,25 @@ def snapshot(db: Session, *, now: datetime | None = None) -> list[Sample]:
     )
 
     # ── Payload-retention backlog ───────────────────────────────────────────
+    # `.as_string()` is LOAD-BEARING, and its absence was a real defect on this
+    # branch. Without it SQLAlchemy renders the extracted element for SQLite as
+    # `JSON_QUOTE(JSON_EXTRACT(...))`, and `JSON_QUOTE(NULL)` returns the STRING
+    # 'null' rather than SQL NULL — so `IS NULL` was never true, the predicate
+    # matched NOTHING, and the backlog gauge read a permanent, reassuring zero.
+    #
+    # It rendered correctly on PostgreSQL (`payload_json -> 'k'` really is SQL
+    # NULL for a missing key), which is exactly what makes the class of bug
+    # dangerous: the metric would have been right in production and wrong in
+    # every test, so the natural repair is to "fix the test" and delete the
+    # only signal that the query is dialect-sensitive at all.
+    #
+    # `dotmac_integration.retention._expired_with_content` carries the identical
+    # predicate, with the identical `.as_string()`, for the identical reason.
+    # Two copies of one predicate is the smell; they cannot be collapsed until
+    # the pin moves to a release that exports it (see `REDACTION_MARKER`).
     retained = (
         receipt.payload_json.is_not(None),
-        receipt.payload_json[REDACTION_MARKER].is_(None),
+        receipt.payload_json[REDACTION_MARKER].as_string().is_(None),
     )
     samples.append(
         Sample(
