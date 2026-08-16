@@ -266,3 +266,64 @@ def test_the_policy_detector_bites() -> None:
         if isinstance(t, ast.Name)
     ]
     assert "max_attempts" in found
+
+
+# ── 7. The body is bounded as it is READ ────────────────────────────────────
+
+#: Every way Starlette will hand over a fully-buffered body. Each of them reads
+#: the whole stream into memory and only then offers a length to check, so a
+#: cap applied afterwards has already accepted the memory it was refusing.
+BUFFERING_CALLS = ("request.body()", "request.json()", "request.form()")
+
+
+@pytest.mark.parametrize("call", BUFFERING_CALLS)
+def test_the_ingress_edge_never_buffers_before_it_caps(call: str) -> None:
+    """A request-size limit measured after buffering is an amplifier for the
+    denial of service it exists to prevent, and it is worse still before an
+    HMAC: verifying first means buffering first, so a 10 GB body from an
+    unauthenticated sender would be held in memory to discover it was not
+    signed.
+
+    The cap therefore consumes `request.stream()` and refuses on byte
+    `limit + 1`. This is a source check because the mistake is a one-line
+    convenience edit that every behavioural test would still pass — the
+    RESULT of `await request.body()` plus a length check is identical.
+    """
+    for name in ("assembly.py", "ingress.py"):
+        code = _source_without_docstrings(SRC / name)
+        assert call not in code, (
+            f"{name} calls {call}, which buffers the whole body before the cap "
+            "can refuse it — read `request.stream()` instead"
+        )
+
+
+def test_the_ingress_edge_does_consume_the_stream() -> None:
+    """Read positively. The check above would also pass over a file that read
+    no body at all, which is what it would look like if someone deleted the
+    cap rather than moved it."""
+    code = _source_without_docstrings(SRC / "assembly.py")
+    assert "request.stream()" in code
+    assert "read_capped_body" in code
+
+
+def test_the_buffering_detector_bites() -> None:
+    """Sensitivity proof (ADR-0018). The substring scan above is only evidence
+    once it has been shown to fire on the diff it is there to catch."""
+    plausible = "    body = await request.body()\n    if len(body) > limit: ..."
+    assert any(call in plausible for call in BUFFERING_CALLS)
+    assert "request.stream()" not in plausible
+
+
+def test_no_ingress_status_code_is_written_by_this_assembly() -> None:
+    """An ingress status IS a retry instruction to the provider — 200 means
+    "never send this again" — and only the engine knows whether the batch
+    committed. `refusal_outcome` is the one place a status is chosen, and the
+    edge uses it too: it constructs `PayloadTooLarge()` and passes it there
+    rather than writing `413` itself."""
+    code = _source_without_docstrings(SRC / "assembly.py")
+    assert "refusal_outcome" in code
+    for invented in ("413", "status_code=401", "status_code=503"):
+        assert invented not in code, (
+            f"assembly.py writes {invented!r} on the ingress path; the status "
+            "belongs to `dotmac_integration.refusal_outcome`"
+        )

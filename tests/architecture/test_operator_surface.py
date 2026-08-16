@@ -63,21 +63,51 @@ def test_every_mounted_route_is_classified() -> None:
     assert RouteClass.SCRAPE in classes
 
 
-def test_no_ingress_route_is_mounted_yet() -> None:
-    """The classification exists BEFORE the surface it governs.
+def test_the_ingress_routes_are_mounted_and_carry_no_operator_guard() -> None:
+    """The rule was written before the surface it governs; this is the surface.
 
-    Slice 3 of the assembly plan (the public ingress adapter) waits for the
-    module release. Asserted so that whoever lands it reads this file first —
-    the rule they must satisfy is already written, and it is the one that keeps
-    a provider's signature scheme and an operator's bearer token apart.
+    `/ingress/**` is a PROVIDER calling in. It authenticates by that provider's
+    own signature scheme, inside the connector that knows it, and it must never
+    carry `require_operator` — a provider holds no operator credential, so
+    sharing the guard ends with the operator guard loosened until both fit
+    through it. `audit_routes` enforces that; this asserts the routes exist, so
+    the enforcement is not passing over an empty set.
     """
     from fastapi.routing import APIRoute
 
-    app = create_app(build_settings())
-    assert not [
-        r.path
+    settings = build_settings()
+    app = create_app(settings)
+    ingress_routes = [
+        r
         for r in app.routes
-        if isinstance(r, APIRoute) and classify(r.path) is RouteClass.INGRESS
+        if isinstance(r, APIRoute)
+        and classify(r.path, metrics_path=settings.metrics_path) is RouteClass.INGRESS
+    ]
+    assert ingress_routes, "the ingress adapter is not mounted"
+
+    methods = {m for r in ingress_routes for m in (r.methods or set())} - {"HEAD"}
+    # TWO operations with two eligibility rules, stated by the request line
+    # rather than guessed from a byte count. Inferring a handshake from an empty
+    # body is wrong in both directions: a bodyless POST is still a delivery, and
+    # a provider that confirms a subscription with a bodied request could not
+    # handshake at all.
+    assert methods == {"GET", "POST"}, methods
+
+    assert audit_routes(app, metrics_path=settings.metrics_path) == []
+
+
+def test_ingress_is_not_mounted_when_the_deployment_turns_it_off() -> None:
+    """The other direction, and a real deployment shape: an operator-and-worker
+    replica in a different network zone from the one taking provider traffic."""
+    from fastapi.routing import APIRoute
+
+    settings = build_settings(ingress_enabled=False)
+    app = create_app(settings)
+    assert not [
+        r
+        for r in app.routes
+        if isinstance(r, APIRoute)
+        and classify(r.path, metrics_path=settings.metrics_path) is RouteClass.INGRESS
     ]
 
 

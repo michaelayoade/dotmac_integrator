@@ -293,14 +293,16 @@ def test_a_family_with_no_samples_emits_no_header() -> None:
 
 def test_counters_render_under_their_declared_labels() -> None:
     counters = IngressCounters()
-    counters.record_refusal("signature_invalid")
-    counters.record_refusal("signature_invalid")
+    counters.record_refusal("not_found")
+    counters.record_refusal("not_found")
     counters.record_signature("rejected")
     counters.record_challenge("refused")
+    counters.record_ingress_outcome("signature_rejected")
 
     output = render(counters.samples())
 
-    assert 'integrator_ingress_refusals_total{reason="signature_invalid"} 2' in output
+    assert 'integrator_ingress_refusals_total{reason="not_found"} 2' in output
+    assert 'integrator_ingress_outcomes_total{code="signature_rejected"} 1' in output
     assert (
         'integrator_ingress_signature_verifications_total{outcome="rejected"} 1'
         in output
@@ -314,6 +316,26 @@ def test_every_declared_refusal_reason_gets_a_series_from_the_first_scrape() -> 
     output = render(IngressCounters().samples())
     for reason in telemetry.REFUSAL_REASONS:
         assert f'reason="{reason}"' in output
+    for code in telemetry.INGRESS_CODES:
+        assert f'code="{code}"' in output
+
+
+def test_the_ingress_vocabulary_is_the_MODULES_own_and_not_a_guess() -> None:
+    """It replaced six hand-written reasons, not one of which the engine
+    produces. A restated vocabulary drifts, and the drift is a dashboard that
+    never moves — discovered months after the alert on it was written."""
+    import dotmac_integration as integration
+
+    assert set(telemetry.INGRESS_CODES) == {
+        code.value for code in integration.IngressCode
+    }
+    # The success codes are IN, deliberately: a refusal rate has no meaning
+    # without a denominator, and "accepted" falling to zero is the alert.
+    assert "accepted" in telemetry.INGRESS_CODES
+    assert "challenge_answered" in telemetry.INGRESS_CODES
+    # And the guesses are gone.
+    assert "unknown_target" not in telemetry.INGRESS_CODES
+    assert "unknown_target" not in telemetry.REFUSAL_REASONS
 
 
 # ── Scrape authorisation ────────────────────────────────────────────────────

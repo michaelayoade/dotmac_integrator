@@ -121,6 +121,35 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Public ingress ──────────────────────────────────────────────────────
+    ingress_enabled: bool = Field(
+        default=True,
+        description=(
+            "Mount GET/POST /ingress/{endpoint_key}. False for a replica that "
+            "runs the worker and the operator surface but takes no provider "
+            "traffic — the split a deployment makes when the ingress replicas "
+            "sit in a different network zone from the operator ones."
+        ),
+    )
+    # A GENERIC cap, and it has to be: a byte limit that varied by connector
+    # would be connector-specific policy, which neither this assembly nor
+    # `dotmac_integration` may hold (the module says so where it defines
+    # `PayloadTooLarge` — "DEFINED here, RAISED at the edge", and no engine
+    # function takes a max_bytes).
+    #
+    # 1 MiB comfortably holds a provider webhook batch. It is a knob because
+    # the right number is a deployment's, and it is enforced AS THE BODY IS
+    # READ rather than measured afterwards — see `ingress.read_capped_body`.
+    ingress_max_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1,
+        description=(
+            "Largest inbound provider body read, enforced while streaming and "
+            "before any signature check. Refused as the module's own "
+            "PayloadTooLarge (413)."
+        ),
+    )
+
     # ── Observability ───────────────────────────────────────────────────────
     # The scrape endpoint is a knob, not a constant: a deployment that exports
     # through a sidecar, or one whose ingress cannot be trusted to keep

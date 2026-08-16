@@ -102,5 +102,32 @@ This is a **thin assembly**. The reusable behaviour lives in
     back to **loopback only, never to open**, and `validate_settings` makes it
     prod-fatal. The fleet's observability auth standard; the closed label
     vocabulary is a second line of defence, not a substitute.
-21. **Validate before pushing**: `make check`. CI is the acceptance owner —
+21. **An inbound body is bounded AS IT IS READ, before buffering and before
+    any signature.** `ingress.read_capped_body` consumes `request.stream()` and
+    refuses on byte `limit + 1`; `await request.body()` is forbidden on that
+    path by `test_the_assembly_stays_thin.py`. Measuring after buffering makes
+    the limit an amplifier for the denial of service it exists to prevent, and
+    an HMAC covers the whole body — verifying first means buffering first, so a
+    10 GB body from an unauthenticated sender would be held in memory to
+    discover it was not signed. `Content-Length` is absent under chunked
+    encoding and attacker-supplied when present: a hint, never the control.
+22. **The ingress endpoint key is a BEARER credential in the URL PATH, and it
+    reaches no log, body or label.** The module guards everything it can see and
+    cannot see the URL, so `redaction.py` owns this: a filter on the LOGGERS
+    (not the handlers — this application does not own those) collapsing `msg`
+    and `args` together, the route `del`ing the raw string so no frame local
+    survives for a locals-capturing error reporter, an unvalidated `str` path
+    parameter so no 422 echoes it, and the closed label vocabulary. Every
+    surface carries a SENSITIVITY PROOF that the same value DOES appear when
+    the redaction is removed — a `not in` assertion passes trivially if the
+    value never had a route there.
+23. **Handshake and delivery never share an eligibility predicate.** `GET
+    /ingress/{key}` answers for a CONFIGURED but still DISABLED binding; `POST`
+    requires binding and installation both enabled. One predicate makes
+    activation CIRCULAR for every provider that requires a completed handshake
+    before a subscription can be enabled — the endpoint refuses the one request
+    that would unblock it, forever. Two routes, two engine façades, no flag.
+    This relaxes WHICH BINDING may be addressed, never WHAT THE REQUEST MUST
+    PROVE: the connector's `challenge` still runs and still verifies.
+24. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.

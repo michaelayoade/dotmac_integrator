@@ -67,6 +67,7 @@ __all__ = [
     "DELIVERY_STATES",
     "FAMILIES",
     "HEALTH_SIGNALS",
+    "INGRESS_CODES",
     "RECEIPT_STATES",
     "REDACTION_MARKER",
     "REFUSAL_REASONS",
@@ -106,18 +107,29 @@ class UndeclaredLabel(ValueError):
 #: the ingress handler is a separate slice, and a vocabulary that arrives with
 #: its first caller cannot be reviewed as a whole.
 REFUSAL_REASONS: Final[tuple[str, ...]] = (
-    # Ingress: the request did not prove it was who it claimed to be.
-    "signature_invalid",
-    "signature_missing",
-    "challenge_failed",
-    "unknown_target",
-    "payload_too_large",
-    "replay_window_expired",
-    # Operational surface: the request was authentic and still could not be
-    # served.
+    # The OPERATOR surface: the request was authentic and still could not be
+    # served. Ingress refusals are NOT here — see `INGRESS_CODES` below.
     "malformed_identifier",
     "not_found",
     "not_repairable",
+)
+
+#: Every outcome the ingress engine can reach, success and refusal alike,
+#: sourced from `dotmac_integration.IngressCode` rather than restated.
+#:
+#: This REPLACED six hand-written reasons ("signature_invalid",
+#: "unknown_target", "replay_window_expired" and three more) that were declared
+#: before the ingress adapter existed. Not one of them was a name the engine
+#: actually produces, so the vocabulary they described was a guess — and the
+#: guess would have been discovered by an operator reading a dashboard that
+#: never moved, months after the alert on it was written.
+#:
+#: Read from the enum for the reason `DELIVERY_STATES` is read from a CHECK
+#: constraint: a second hand-maintained list drifts, and a drifted list means a
+#: real outcome with no series at all. Adding an outcome to the module now adds
+#: its series here with no edit; the closed set stays closed because the enum is.
+INGRESS_CODES: Final[tuple[str, ...]] = tuple(
+    sorted(code.value for code in integration.IngressCode)
 )
 
 #: A signature was checked and it either verified or it did not. Two values, and
@@ -303,6 +315,15 @@ FAMILIES: Final[tuple[MetricFamily, ...]] = (
         allowed=REFUSAL_REASONS,
     ),
     MetricFamily(
+        "integrator_ingress_outcomes_total",
+        "Inbound provider requests by the ENGINE's own outcome code. Includes "
+        "the success codes: a refusal rate is meaningless without a "
+        "denominator, and 'accepted' falling to zero is the interesting alert.",
+        "counter",
+        label="code",
+        allowed=INGRESS_CODES,
+    ),
+    MetricFamily(
         "integrator_ingress_signature_verifications_total",
         "Signature checks, by outcome.",
         "counter",
@@ -343,6 +364,7 @@ class IngressCounters:
         self._refusals: dict[str, int] = dict.fromkeys(REFUSAL_REASONS, 0)
         self._signatures: dict[str, int] = dict.fromkeys(SIGNATURE_OUTCOMES, 0)
         self._challenges: dict[str, int] = dict.fromkeys(CHALLENGE_OUTCOMES, 0)
+        self._ingress: dict[str, int] = dict.fromkeys(INGRESS_CODES, 0)
         self._sweep_failures = 0
 
     @staticmethod
@@ -371,6 +393,18 @@ class IngressCounters:
         with self._lock:
             self._challenges[key] += 1
 
+    def record_ingress_outcome(self, code: str) -> None:
+        """One inbound request reached one engine outcome.
+
+        `code` is an `IngressCode` VALUE, and the check refuses anything else —
+        which is what keeps a provider's error string, a `provider_event_id` or
+        an endpoint key from becoming a time series even though all three are in
+        scope a few frames away.
+        """
+        key = self._checked(code, INGRESS_CODES, "ingress outcome code")
+        with self._lock:
+            self._ingress[key] += 1
+
     def record_sweep_failure(self) -> None:
         with self._lock:
             self._sweep_failures += 1
@@ -380,6 +414,7 @@ class IngressCounters:
             refusals = dict(self._refusals)
             signatures = dict(self._signatures)
             challenges = dict(self._challenges)
+            ingress = dict(self._ingress)
             failures = self._sweep_failures
         return [
             *(
@@ -397,6 +432,10 @@ class IngressCounters:
             *(
                 Sample("integrator_ingress_challenges_total", count, outcome)
                 for outcome, count in challenges.items()
+            ),
+            *(
+                Sample("integrator_ingress_outcomes_total", count, code)
+                for code, count in ingress.items()
             ),
             Sample("integrator_worker_sweep_failures_total", failures),
         ]

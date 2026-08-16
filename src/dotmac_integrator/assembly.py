@@ -26,10 +26,12 @@ decides anything.
   and lifecycle transitions all live in `dotmac_integration`. An assembly that
   reimplemented any of them would become a second writer for a decision that
   already has an owner (ADR-0024).
-* **No public ingress adapter.** `/ingress/**` is CLASSIFIED in `surface.py` and
-  unmounted. The classification exists first on purpose: the adapter is
-  provider-authenticated and must never share the operator guard, and the rule
-  that says so is easier to write before there is a route arguing with it.
+* **No connector-specific ingress behaviour.** `/ingress/{endpoint_key}` is
+  mounted (`surface.RouteClass.INGRESS`) and is two calls into the module's
+  three-phase engine. This assembly supplies only what the engine correctly
+  refuses to own: the unit of work, the secret resolver, and a GENERIC body cap.
+  It authenticates nothing itself — the provider's signature scheme lives in the
+  connector that knows it — and it must never carry the operator guard.
 * **No installation authoring.** There is no route that drafts an installation
   or writes a configuration revision. A draft pins the connector installed at
   that moment, so the first of those routes belongs with the first connector,
@@ -49,13 +51,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI
+import dotmac_integration as integration
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import health, operations, secret_loading, telemetry
+from dotmac_integrator import health, ingress, operations, secret_loading, telemetry
 from dotmac_integrator.operator_auth import OperationReason, Operator
+from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
 from dotmac_integrator.worker import Worker
@@ -79,6 +83,12 @@ def build_engine(settings: Settings) -> Engine:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+
+    # BEFORE anything can log. The ingress endpoint key is a bearer credential
+    # carried in the URL PATH, and the access log is the surface the engine's
+    # own careful redaction cannot reach — it never sees the URL. See
+    # `redaction.py`.
+    install_log_redaction()
 
     problems = validate_settings(settings)
     if problems:
@@ -242,6 +252,112 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: Operator,
     ) -> dict[str, Any]:
         return operations.replay_receipt(engine, receipt_id, actor, body.reason)
+
+    # ── Public ingress ──────────────────────────────────────────────────────
+    # A PROVIDER calling in (`surface.RouteClass.INGRESS`). Authenticated by
+    # that provider's own signature scheme, inside the connector that knows it,
+    # and NEVER by the operator guard — the two populations share no
+    # credential, no token audience and no failure mode.
+    #
+    # Two routes, two engine façades, two eligibility rules. GET is the
+    # activation handshake and answers for a CONFIGURED but still DISABLED
+    # binding; POST is delivery and requires the binding and its installation
+    # both enabled. They are separate calls on purpose: one function with a
+    # flag is one edit away from being one predicate, and one predicate makes
+    # activation circular for every provider that requires a completed
+    # handshake before a subscription can be enabled. See `ingress.py`.
+    if settings.ingress_enabled:
+
+        def _answer(outcome: Any) -> Response:
+            """Write the engine's decision. No status is invented here.
+
+            `outcome.status_code` is a retry instruction to the provider, and
+            only the engine knows whether the batch committed. A refusal body
+            carries the engine's classification and NOTHING else — not the
+            installation id, not the binding id, not the endpoint key: those are
+            operator-meaningful and the reader here is a third party.
+            """
+            acknowledgement = outcome.acknowledgement
+            if acknowledgement is None:
+                return JSONResponse(
+                    {"code": outcome.code.value}, status_code=outcome.status_code
+                )
+            return Response(
+                content=acknowledgement.body,
+                status_code=outcome.status_code,
+                media_type=acknowledgement.media_type,
+            )
+
+        # `endpoint_key` is an UNVALIDATED `str` on purpose. A constrained path
+        # parameter would let FastAPI answer 422 with the rejected value echoed
+        # into `detail.input` — the credential, in a response body and in the
+        # log line that response produces. The engine already treats a malformed
+        # key and an unknown one as the same `EndpointUnknown`, deliberately, so
+        # that the endpoint is not a probing oracle for the right SHAPE.
+
+        @app.get("/ingress/{endpoint_key}", tags=["ingress"], include_in_schema=False)
+        async def ingress_handshake(endpoint_key: str, request: Request) -> Response:
+            endpoint = integration.EndpointAddress(endpoint_key)
+            # The raw string stops HERE. `EndpointAddress` is `repr`-less, so
+            # the credential no longer renders; but the parameter itself is a
+            # frame local that every traceback through this handler pins, and an
+            # error reporter configured to capture locals uploads frame locals
+            # verbatim. Deleting the binding is what makes that impossible
+            # rather than unlikely — the module makes the same move for the same
+            # reason, and it cannot make it for the one frame it does not own.
+            del endpoint_key
+            try:
+                body = await ingress.read_capped_body(
+                    request.stream(), settings.ingress_max_body_bytes
+                )
+            except ingress.BodyTooLarge:
+                outcome = integration.refusal_outcome(integration.PayloadTooLarge())
+                telemetry.counters.record_ingress_outcome(outcome.code.value)
+                telemetry.counters.record_challenge("refused")
+                return _answer(outcome)
+            return _answer(
+                ingress.answer_handshake(
+                    engine,
+                    endpoint=endpoint,
+                    request=ingress.build_request(
+                        raw_body=body,
+                        headers=dict(request.headers),
+                        params=dict(request.query_params),
+                    ),
+                )
+            )
+
+        @app.post("/ingress/{endpoint_key}", tags=["ingress"], include_in_schema=False)
+        async def ingress_delivery(endpoint_key: str, request: Request) -> Response:
+            endpoint = integration.EndpointAddress(endpoint_key)
+            del endpoint_key
+            try:
+                # BEFORE the endpoint is looked up and before any signature is
+                # computed. An HMAC covers the whole body, so verifying first
+                # means buffering first — a 10 GB body from an unauthenticated
+                # sender would be held in memory to discover it was not signed.
+                body = await ingress.read_capped_body(
+                    request.stream(), settings.ingress_max_body_bytes
+                )
+            except ingress.BodyTooLarge:
+                # The module's own refusal, handed to the module's own
+                # `refusal_outcome`. This assembly never writes `413`: an
+                # ingress status is a retry instruction, and inventing one is
+                # the one mistake here that silently destroys events.
+                outcome = integration.refusal_outcome(integration.PayloadTooLarge())
+                telemetry.counters.record_ingress_outcome(outcome.code.value)
+                return _answer(outcome)
+            return _answer(
+                ingress.receive_delivery(
+                    engine,
+                    endpoint=endpoint,
+                    request=ingress.build_request(
+                        raw_body=body,
+                        headers=dict(request.headers),
+                        params=dict(request.query_params),
+                    ),
+                )
+            )
 
     require_a_correct_surface(app, metrics_path=settings.metrics_path)
     return app

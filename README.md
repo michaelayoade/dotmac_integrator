@@ -116,6 +116,8 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | |
 | `POST /operations/receipts/{id}/replay` | |
+| `GET /ingress/{endpoint_key}` | Provider activation handshake. Answers for a CONFIGURED but still DISABLED binding. |
+| `POST /ingress/{endpoint_key}` | Provider delivery. Requires binding AND installation enabled. |
 | `GET /metrics` | Prometheus text exposition, bearer-authenticated. 404 when unauthorized. `METRICS_ENABLED=false` removes it. |
 
 `reason` is required rather than defaulted: an assembly that invented one would
@@ -281,3 +283,35 @@ same list plus two more jobs: **composition**, which applies every lineage to a
 real PostgreSQL as the owner role and audits the result — without it, these
 migrations would first run in production — and **image**, which audits the
 artefact that actually ships.
+
+## Public ingress
+
+Two routes into `dotmac_integration`'s three-phase engine, and three things
+this assembly owns that the engine correctly refuses to.
+
+**The body is bounded as it is read.** `read_capped_body` consumes
+`request.stream()` and refuses on byte `limit + 1`. Reading an unbounded body
+in order to reject it is the denial of service the cap exists to prevent, and
+doing it before an HMAC is worse: a signature covers the whole body, so
+verifying first means buffering first. `INGRESS_MAX_BODY_BYTES` is the knob;
+the 413 and the code come from the module's own `PayloadTooLarge`, because an
+ingress status is a retry instruction to the provider and inventing one
+silently destroys events.
+
+**The endpoint key never reaches a log.** It is a bearer credential carried in
+the URL path — whoever holds it can drive that connector's `verify`. The module
+takes structural care to keep it out of its own error text and cannot help with
+the URL, because it never sees one. `redaction.py` closes that: a filter on the
+loggers, a `del` in the route so no frame local survives for a locals-capturing
+error reporter, an unvalidated path parameter so no 422 echoes it, and a closed
+label vocabulary. Each surface has a sensitivity proof showing the value DOES
+appear when the redaction is removed.
+
+**Handshake and delivery do not share an eligibility rule, and must not.** GET
+answers for a binding that is configured but still disabled; POST requires the
+binding and its installation both enabled. A single predicate makes activation
+circular with any provider that requires a completed handshake before a
+subscription can be enabled: the operator cannot enable the binding until the
+provider is subscribed, and the provider cannot subscribe until the endpoint
+answers. Nothing about verification is relaxed — only which binding may be
+addressed.
