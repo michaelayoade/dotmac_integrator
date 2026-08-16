@@ -281,18 +281,18 @@ wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a3"
+version = "0.1.0a4"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a3-py3-none-any.whl", hash = "sha256:283bc73e21934a2a76682c5f1f22cd101d56c859e1fdca331678db68e7b3ab56"},
-    {file = "dotmac_integration-0.1.0a3.tar.gz", hash = "sha256:88cdae325039e0fd7d567ff89c6d238a09487d3ef437e05ab82fdc0e27a12389"},
+    {file = "dotmac_integration-0.1.0a4-py3-none-any.whl", hash = "sha256:1e98428bb7796d00a844141fcac89d956dbadc5adb13b1f5fa9123c50256742a"},
+    {file = "dotmac_integration-0.1.0a4.tar.gz", hash = "sha256:a51360491fb236853437277dbb727350a76f35f32bcfabcc7c87d7cc46f07f7f"},
 ]
 
 [package.dependencies]
-dotmac-kernel = ">=0.1.0a58"
+dotmac-kernel = ">=0.1.0a66"
 sqlalchemy = ">=2.0,<3.0"
 
 [package.source]
@@ -1945,4 +1945,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "71be84e08c42680fedb03a069958d98a4fd3cc5fade4bb05d7b56d4537f52979"
+content-hash = "d2beffbdad1652d56fea58ee8df1f0f7ed684574feb20c72f4d97c238c288c4d"
