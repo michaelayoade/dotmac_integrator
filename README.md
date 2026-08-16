@@ -315,3 +315,25 @@ subscription can be enabled: the operator cannot enable the binding until the
 provider is subscribed, and the provider cannot subscribe until the endpoint
 answers. Nothing about verification is relaxed — only which binding may be
 addressed.
+
+## Receipt delivery
+
+Recording that a provider event arrived is not delivering it. The worker's
+second pump lands recorded observations in the product that owns them, through
+`dotmac_integration.receipt_delivery` — `ReceiptClaims` for the claim
+(a conditional UPDATE where `rowcount == 1` IS the claim) and `deliver_receipt`
+for the ordering (claim → call with no session held → settle). Neither is
+reimplemented here, and a test bans the SQL that would mean they had been.
+
+`due_receipt_ids` is a plain unlocked SELECT. Two workers being handed the same
+id is expected and costs one losing UPDATE — much cheaper than a row lock held
+while the product is contacted, which is what `FOR UPDATE SKIP LOCKED` quietly
+becomes.
+
+**No product client ships in this repository.** `ProductPortClient` is a port
+the deployment installs at startup, held in memory (ADR-0009), and with none
+installed the pump does not run and says so. It does not fall back to marking
+receipts delivered — that would be the inbox lying at a different layer. The
+client belongs with the checked-in contract of the application it speaks to;
+authoring it here would make this assembly the sole author of a wire contract
+two systems must agree on (ADR-0024).

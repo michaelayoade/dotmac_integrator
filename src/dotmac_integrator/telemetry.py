@@ -68,6 +68,7 @@ __all__ = [
     "FAMILIES",
     "HEALTH_SIGNALS",
     "INGRESS_CODES",
+    "PRODUCT_ACCEPTANCES",
     "RECEIPT_STATES",
     "REDACTION_MARKER",
     "REFUSAL_REASONS",
@@ -130,6 +131,18 @@ REFUSAL_REASONS: Final[tuple[str, ...]] = (
 #: its series here with no edit; the closed set stays closed because the enum is.
 INGRESS_CODES: Final[tuple[str, ...]] = tuple(
     sorted(code.value for code in integration.IngressCode)
+)
+
+#: What the destination application said about a delivered observation, from
+#: `dotmac_integration.ProductAcceptance` rather than restated. Five values,
+#: and the two that look redundant are the interesting ones: `already_applied`
+#: is the EVIDENCE that the idempotency key did its job — collapsing it into
+#: `accepted` would hide a double-send behind a success — and `indeterminate`
+#: says retrying is NOT safe, which is the opposite instruction to
+#: `unavailable`. An alert that cannot tell those apart is an alert that pages
+#: for the wrong reason.
+PRODUCT_ACCEPTANCES: Final[tuple[str, ...]] = tuple(
+    sorted(acceptance.value for acceptance in integration.ProductAcceptance)
 )
 
 #: A signature was checked and it either verified or it did not. Two values, and
@@ -288,6 +301,24 @@ FAMILIES: Final[tuple[MetricFamily, ...]] = (
         "in the alert rule, not in this process.",
         "gauge",
     ),
+    # ── Receipt → product delivery ──────────────────────────────────────────
+    MetricFamily(
+        "integrator_receipt_deliveries_total",
+        "Receipts landed in the destination application, by what the product "
+        "said. `already_applied` is the idempotency key working, not a "
+        "duplicate; `indeterminate` needs a human.",
+        "counter",
+        label="acceptance",
+        allowed=PRODUCT_ACCEPTANCES,
+    ),
+    MetricFamily(
+        "integrator_receipt_lost_claims_total",
+        "Settlements refused because the lease expired mid-call and another "
+        "worker took over. A rising rate means the lease is shorter than the "
+        "product's real latency — invisible otherwise, and eventually work "
+        "done twice.",
+        "counter",
+    ),
     # ── The worker itself ───────────────────────────────────────────────────
     MetricFamily(
         "integrator_worker_running",
@@ -365,6 +396,8 @@ class IngressCounters:
         self._signatures: dict[str, int] = dict.fromkeys(SIGNATURE_OUTCOMES, 0)
         self._challenges: dict[str, int] = dict.fromkeys(CHALLENGE_OUTCOMES, 0)
         self._ingress: dict[str, int] = dict.fromkeys(INGRESS_CODES, 0)
+        self._acceptances: dict[str, int] = dict.fromkeys(PRODUCT_ACCEPTANCES, 0)
+        self._lost_claims = 0
         self._sweep_failures = 0
 
     @staticmethod
@@ -405,6 +438,15 @@ class IngressCounters:
         with self._lock:
             self._ingress[key] += 1
 
+    def record_product_acceptance(self, acceptance: str) -> None:
+        key = self._checked(acceptance, PRODUCT_ACCEPTANCES, "product acceptance")
+        with self._lock:
+            self._acceptances[key] += 1
+
+    def record_lost_claim(self) -> None:
+        with self._lock:
+            self._lost_claims += 1
+
     def record_sweep_failure(self) -> None:
         with self._lock:
             self._sweep_failures += 1
@@ -415,6 +457,8 @@ class IngressCounters:
             signatures = dict(self._signatures)
             challenges = dict(self._challenges)
             ingress = dict(self._ingress)
+            acceptances = dict(self._acceptances)
+            lost = self._lost_claims
             failures = self._sweep_failures
         return [
             *(
@@ -437,6 +481,11 @@ class IngressCounters:
                 Sample("integrator_ingress_outcomes_total", count, code)
                 for code, count in ingress.items()
             ),
+            *(
+                Sample("integrator_receipt_deliveries_total", count, acceptance)
+                for acceptance, count in acceptances.items()
+            ),
+            Sample("integrator_receipt_lost_claims_total", lost),
             Sample("integrator_worker_sweep_failures_total", failures),
         ]
 

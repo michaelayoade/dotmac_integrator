@@ -327,3 +327,51 @@ def test_no_ingress_status_code_is_written_by_this_assembly() -> None:
             f"assembly.py writes {invented!r} on the ingress path; the status "
             "belongs to `dotmac_integration.refusal_outcome`"
         )
+
+
+# ── 8. Claiming is the module's, and stays the module's ─────────────────────
+
+#: SQL that would mean this assembly had grown its own claim. Each is the
+#: shortest path to reimplementing at-most-once badly: a hand-written state
+#: UPDATE has no lease in its predicate, and a row lock taken here would be
+#: held across the product call — the transaction-around-the-network the
+#: module's three phases exist to prevent.
+CLAIM_SHAPED_SQL = (
+    "FOR UPDATE",
+    "SKIP LOCKED",
+    "state = 'processing'",
+    # `attempt_count` alone is NOT here: it is a legitimate column to READ, and
+    # `operations._repaired` reports it. What must not appear is an assignment
+    # to it, which is the increment only the conditional UPDATE may perform.
+    "attempt_count =",
+    "attempt_count +",
+    "leased_until =",
+)
+
+
+@pytest.mark.parametrize("fragment", CLAIM_SHAPED_SQL)
+def test_the_assembly_does_not_reimplement_the_receipt_claim(fragment: str) -> None:
+    for path in _modules():
+        code = _source_without_docstrings(path)
+        assert fragment not in code, (
+            f"{path.name} contains {fragment!r}. Claiming belongs to "
+            "`dotmac_integration.ReceiptClaims`, where `rowcount == 1` IS the "
+            "claim; a second one here is a second answer to at-most-once"
+        )
+
+
+def test_the_pump_drives_the_modules_claim_and_orchestrator() -> None:
+    """Read positively: the bans above would also pass over a file that
+    delivered nothing at all."""
+    code = _source_without_docstrings(SRC / "delivery.py")
+    assert "integration.ReceiptClaims(" in code
+    assert "integration.deliver_receipt(" in code
+
+
+def test_the_claim_detector_bites() -> None:
+    """Sensitivity proof (ADR-0018)."""
+    plausible = (
+        "db.execute(text(\"UPDATE inbox_receipts SET state = 'processing' \"\n"
+        '    "WHERE id = :id FOR UPDATE"))'
+    )
+    assert any(fragment in plausible for fragment in CLAIM_SHAPED_SQL)

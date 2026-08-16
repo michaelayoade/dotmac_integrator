@@ -129,5 +129,16 @@ This is a **thin assembly**. The reusable behaviour lives in
     that would unblock it, forever. Two routes, two engine façades, no flag.
     This relaxes WHICH BINDING may be addressed, never WHAT THE REQUEST MUST
     PROVE: the connector's `challenge` still runs and still verifies.
-24. **Validate before pushing**: `make check`. CI is the acceptance owner —
+24. **At-most-once belongs to the module, and the selector is a HINT.**
+    `ReceiptClaims` (conditional UPDATE, `rowcount == 1` IS the claim) and
+    `deliver_receipt` (claim → call with NO session held → settle) are
+    `dotmac_integration`'s. `delivery.due_receipt_ids` is an unlocked SELECT and
+    two workers seeing one id is the expected case: the database evaluates the
+    real predicate inside the UPDATE and the loser gets `None`. No `FOR
+    UPDATE`, no `SKIP LOCKED`, no hand-written state UPDATE — a lock taken here
+    would be held across the product call. Enforced by
+    `test_the_assembly_stays_thin.py`, with a sensitivity proof. The product
+    port is INSTALLED at startup (ADR-0009 shape) and the pump fails closed
+    without one; it never marks a receipt done that it did not deliver.
+25. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.
