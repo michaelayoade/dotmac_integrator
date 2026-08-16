@@ -368,6 +368,55 @@ def test_the_pump_drives_the_modules_claim_and_orchestrator() -> None:
     assert "integration.deliver_receipt(" in code
 
 
+def _function_source(path: Path, name: str) -> str:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == name
+        ):
+            return ast.unparse(node)
+    raise AssertionError(f"{path.name} no longer defines {name!r}")
+
+
+#: Everything that would make the shadow pass change durable state. It is a
+#: SOURCE check because the mistake is a one-line convenience — "while we're
+#: here, mark it processed" — and the resulting run would look like a completed
+#: cutover while every observation it touched was seen by nobody.
+SETTLING_CALLS = ("ReceiptClaims", "deliver_receipt", ".settle(", ".commit()")
+
+
+@pytest.mark.parametrize("call", SETTLING_CALLS)
+def test_the_shadow_pass_settles_nothing(call: str) -> None:
+    """The destination's shadow port RECORDS NOTHING, so a receipt settled
+    against it would be marked delivered for an observation that was never
+    recorded. The pass therefore takes no claim, writes no receipt column and
+    reaches no settlement."""
+    source = _function_source(SRC / "delivery.py", "mirror_due_receipts")
+    assert call not in source, (
+        f"`mirror_due_receipts` contains {call!r}. A shadow pass that changed "
+        "durable state is indistinguishable from a cutover that worked"
+    )
+
+
+def test_the_delivery_pump_refuses_a_non_writing_port() -> None:
+    """Read positively: the bans above would also pass over a shadow pass that
+    did nothing at all, and they say nothing about the WRITE pump."""
+    source = _function_source(SRC / "delivery.py", "deliver_due_receipts")
+    assert "product_port_writes()" in source
+    assert "ShadowPortInstalled" in source
+
+
+def test_the_settling_detector_bites() -> None:
+    """Sensitivity proof (ADR-0018). The scan is only evidence once it has been
+    shown to fire on the diff it exists to catch."""
+    plausible = "store = integration.ReceiptClaims(lambda: Session(engine))"
+    assert any(call in plausible for call in SETTLING_CALLS)
+    assert _function_source(SRC / "delivery.py", "deliver_due_receipts").count(
+        "ReceiptClaims"
+    ), "the detector must be able to see a real settling call in this file"
+
+
 def test_the_claim_detector_bites() -> None:
     """Sensitivity proof (ADR-0018)."""
     plausible = (

@@ -408,10 +408,55 @@ id is expected and costs one losing UPDATE — much cheaper than a row lock held
 while the product is contacted, which is what `FOR UPDATE SKIP LOCKED` quietly
 becomes.
 
-**No product client ships in this repository.** `ProductPortClient` is a port
-the deployment installs at startup, held in memory (ADR-0009), and with none
-installed the pump does not run and says so. It does not fall back to marking
-receipts delivered — that would be the inbox lying at a different layer. The
-client belongs with the checked-in contract of the application it speaks to;
-authoring it here would make this assembly the sole author of a wire contract
-two systems must agree on (ADR-0024).
+`ProductPortClient` is a port the deployment installs at startup, held in memory
+(ADR-0009), and with none installed the pump does not run and says so. It does
+not fall back to marking receipts delivered — that would be the inbox lying at a
+different layer.
+
+### The client (`product_port.py`)
+
+The client is **implemented** here and **not authored** here. Authoring a wire
+contract inside the transport is what ADR-0024 forbids: this assembly would
+become the sole author of a shape two systems must agree on. The contract is the
+destination's — `dotmac_sub`'s `app/api/integrator_observations.py` and
+`app/schemas/integrator_observation.py`, reviewed and merged there — and every
+field, length, status and refusal code in this file is transcribed from it. A
+disagreement is a defect here, or a change that happens there first.
+
+Four decisions worth reading before touching it:
+
+- **`provider_event_id` crosses the wire raw.** The destination namespaces it
+  with its own observation-kind prefix. Pre-prefixing here would produce a
+  second identity for one upstream event — a duplicate, not a dedupe — and it
+  would double-record every message in flight during the producer overlap.
+- **The fingerprint covers the destination's own canonical body.** It recomputes
+  a canonical-JSON SHA-256 over its model dump, which carries every declared
+  field including the null ones and an empty attachment list. A fingerprint over
+  the sparse dict a connector supplied would fail *every* delivery, complaining
+  about a mangled body rather than about a missing key.
+- **The destination's binding id is configured, never derived.** Its port is
+  keyed on ITS capability-binding UUID, in ITS database. This deployment's is a
+  different UUID; posting the wrong one 404s at best and writes to somebody
+  else's binding at worst. `PRODUCT_PORT_BINDINGS` carries the pairing, and an
+  unmapped binding is refused before the network with its own code.
+- **Acceptance is mapped honestly.** `ACCEPTED` and `ALREADY_APPLIED` both mean
+  the destination holds the consequence — `replayed` is the evidence the
+  deduplication worked, and collapsing it would hide a double-send.
+  `UNAVAILABLE` means nothing landed and the same envelope may be sent again.
+  A 409 identity collision is `INDETERMINATE`: the observation owner is
+  reporting that two producers disagree about what the provider said, and that
+  needs a human, not a retry and not a dead letter.
+
+### Shadow, and why it cannot settle
+
+The destination exposes a second, strictly narrower port that records nothing
+and answers with a parity verdict, under its own scope so a shadow credential
+cannot become a writer by accident. That narrowness is honoured on this side:
+the client declares a direction, `install_product_port` requires it, a `MIRROR`
+client's `deliver` raises, and the delivery pump refuses to run against one. A
+shadow deployment runs `mirror_due_receipts` instead — it claims nothing,
+settles nothing, and returns verdict counts.
+
+The failure this prevents is the expensive one. A shadow run that settled
+receipts as `processed` would look exactly like a completed cutover, while every
+observation it "delivered" was seen by nobody.

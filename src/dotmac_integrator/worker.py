@@ -22,8 +22,18 @@ whole rotation mechanism.
 
 The dispatch pump is deliberately NOT here. It cannot be written honestly until
 a real connector exists to dispatch to, and a pump written against no connector
-would be shaped by guesses. It arrives with the Meta/WhatsApp ingress-only
-distribution, which is also when shadow-mode behaviour has to be decided.
+would be shaped by guesses. It arrives with the first ingress-only connector
+distribution.
+
+## Which receipt pump runs is decided by the port, not by a second flag
+
+Shadow-mode behaviour is now decided, and it is decided ONCE: the installed
+client declares whether it writes, and this file starts the matching loop. A
+non-writing client gets the shadow pass, which claims nothing and settles
+nothing; a writing one gets the delivery pump. There is deliberately no separate
+`SHADOW_MODE` knob that could disagree with the client's own direction — two
+switches for one decision is how a deployment ends up shadow by configuration
+and writing by client.
 """
 
 from __future__ import annotations
@@ -88,11 +98,18 @@ class Worker:
                 "delivered. Call delivery.install_product_port(...) at startup"
             )
             return
+        writes = delivery.product_port_writes()
         self._delivery_task = asyncio.create_task(
-            self._deliver_forever(), name="receipt-delivery"
+            self._deliver_forever(),
+            name="receipt-delivery" if writes else "receipt-mirror",
         )
         logger.info(
-            "receipt delivery started; polling every %ss in batches of %s",
+            "%s started; polling every %ss in batches of %s",
+            "receipt delivery"
+            if writes
+            else (
+                "SHADOW comparison — NOTHING is delivered and no receipt is " "settled"
+            ),
             self._settings.worker_poll_seconds,
             self._settings.worker_batch_size,
         )
@@ -143,6 +160,18 @@ class Worker:
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
 
     def _deliver_once(self) -> None:
+        if not delivery.product_port_writes():
+            # The SHADOW pass. Separate function, separate log line, and no
+            # branch inside `deliver_due_receipts` — a flag threaded into the
+            # delivery pump is one edit away from a shadow run that settles.
+            compared = delivery.mirror_due_receipts(
+                self._engine, self._settings.worker_batch_size
+            )
+            if compared["compared"] or compared["unreadable"]:
+                # Verdict COUNTS. A per-receipt verdict names the provider's
+                # event identity, which belongs on an operator's screen.
+                logger.info("shadow comparison: %s", sorted(compared.items()))
+            return
         counted = delivery.deliver_due_receipts(
             self._engine, self._settings.worker_batch_size
         )

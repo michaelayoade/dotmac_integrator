@@ -17,6 +17,17 @@ Retired installations are excluded and nothing else is: a delivery claimed
 against an older revision is still in flight, so holding only the CURRENT
 revision's references would strand it.
 
+## The one reference that is NOT in the database
+
+The destination application's credential (`PRODUCT_PORT_API_KEY_REF`) belongs to
+this assembly rather than to any connector, so no `connector_config_revisions`
+row could ever hold it — the paragraph above forbids a second list of CONNECTOR
+material, not a reference that has no connector. It is passed in as
+`extra_references` and dereferenced by the identical mechanism, which is also
+what lets `secret_resolver.redact` cover it: every held value is redacted out of
+outbound strings by construction, and a credential resolved some other way would
+need its own redaction remembered separately.
+
 ## Two failure kinds, deliberately not one
 
 ======================== ===================================================
@@ -57,7 +68,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
@@ -266,14 +277,25 @@ class StoredReferenceSource:
     """
 
     def __init__(
-        self, engine: Engine, dereferencers: Mapping[str, ReferenceDereferencer]
+        self,
+        engine: Engine,
+        dereferencers: Mapping[str, ReferenceDereferencer],
+        *,
+        extra_references: Iterable[str] = (),
     ) -> None:
         self._engine = engine
         self._dereferencers = dict(dereferencers)
+        #: References this ASSEMBLY needs that no connector owns — today, the
+        #: destination application's credential. Held here so it is loaded,
+        #: refreshed and redacted by exactly the same machinery.
+        self._extra = frozenset(
+            reference.strip() for reference in extra_references if reference.strip()
+        )
 
     def load(self) -> Mapping[str, str]:
         global _last_report
         references, schema_absent = self._stored_references()
+        references |= set(self._extra)
         held: dict[str, str] = {}
         unresolved: dict[str, str] = {}
 
@@ -376,7 +398,12 @@ def install_secrets(engine: Engine, settings: Settings) -> SecretLoadReport:
     without the material it was configured to hold looks healthy and refuses
     every enablement, which is a harder failure to read than not starting.
     """
-    source = StoredReferenceSource(engine, build_dereferencers(settings))
+    assembly_owned = (
+        (settings.product_port_api_key_ref,) if settings.product_port_enabled else ()
+    )
+    source = StoredReferenceSource(
+        engine, build_dereferencers(settings), extra_references=assembly_owned
+    )
     names = install_secret_source(source)
     logger.info(
         "held %d secret reference(s) at startup; %d unresolved",
