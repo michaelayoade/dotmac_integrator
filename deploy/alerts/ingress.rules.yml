@@ -161,15 +161,129 @@ groups:
           summary: "A provider verification challenge was refused"
           runbook: docs/RUNBOOK-restore-and-reconciliation.md#challenge-refusals
 
-      - alert: IntegratorUnknownTargetRefusals
-        expr: increase(integrator_ingress_refusals_total{reason="unknown_target"}[15m]) > 10
+      # RENAMED, and the rename is the point. This fired on
+      # `integrator_ingress_refusals_total{reason="unknown_target"}` — a series
+      # the engine never produced, because the label vocabulary was written
+      # before the ingress adapter existed and guessed the names. An alert
+      # whose right-hand side has no data never fires and never says so; it
+      # reads as a quiet system. The vocabulary is now
+      # `dotmac_integration.IngressCode`, taken from the enum.
+      - alert: IntegratorUnknownEndpoint
+        expr: increase(integrator_ingress_outcomes_total{code="endpoint_unknown"}[15m]) > 10
         labels: { severity: warning }
         annotations:
-          summary: "Inbound events arriving for no known binding"
+          summary: "Inbound events arriving for no minted endpoint"
           description: >-
-            Usually a binding disabled or retired while the provider still has
-            the webhook configured. Events are being refused, not queued.
+            A mistyped URL, a retired binding whose webhook is still
+            configured, or someone probing for endpoint keys. Events are being
+            refused, not queued. The endpoint key is NOT in this alert and is
+            not in the access log either — correlate through the audit ledger.
           runbook: docs/RUNBOOK-restore-and-reconciliation.md#unknown-target
+
+      # The ACCIDENTAL-DISABLE case, and it is the expensive one: the endpoint
+      # exists, the provider is delivering, and every event is refused 404 and
+      # lost. The module states the tradeoff plainly — a disabled binding is an
+      # operator's stated intent not to receive — which is exactly why an
+      # UNINTENDED disable has to be loud.
+      - alert: IntegratorEndpointNotEligible
+        expr: increase(integrator_ingress_outcomes_total{code="endpoint_not_usable"}[15m]) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "A live provider is delivering to a disabled binding"
+          description: >-
+            The endpoint is minted and the binding or its installation is not
+            enabled, so events are refused and NOT retried by the provider
+            beyond its own window. If the disable was deliberate, remove the
+            webhook at the provider; if not, re-enable the binding now.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#unknown-target
+
+      # OUR side is broken, and the provider's redelivery window is the only
+      # remaining copy of those events. Every `EndpointNotServiceable` subclass
+      # answers 503 for that reason, so this is a page rather than a warning.
+      - alert: IntegratorIngressUnserviceable
+        expr: >-
+          increase(integrator_ingress_outcomes_total{code=~"endpoint_lookup_failed|connector_unavailable|manifest_pin_unhonoured|mode_not_available|handler_unavailable|secrets_unavailable"}[10m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Inbound events are being refused by OUR misconfiguration"
+          description: >-
+            503s. The provider will redeliver for as long as its window lasts
+            and then stop. Check that the connector distribution is installed
+            and SPI-compatible, that the manifest pin is still honoured, and
+            that the secret material loaded at boot is present.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#unknown-target
+
+      - alert: IntegratorPayloadsRefusedAsTooLarge
+        expr: increase(integrator_ingress_outcomes_total{code="payload_too_large"}[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Provider bodies are exceeding INGRESS_MAX_BODY_BYTES"
+          description: >-
+            413s, refused as the body was read and before any signature check.
+            Either a provider legitimately batches larger than this deployment
+            allows — raise INGRESS_MAX_BODY_BYTES — or something is posting
+            oversized bodies at a public endpoint. The two look identical here
+            on purpose: the cap runs before authentication, so nothing at this
+            point knows which it is.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#unknown-target
+
+  # ── Receipt → product delivery ────────────────────────────────────────────
+  #
+  # Recording a provider event is not delivering it, and the failure mode is
+  # quiet: the provider was told 200 and will not send again, so a stalled
+  # delivery pump is invisible from the provider's side and from the inbox's
+  # depth alone.
+  - name: integrator-delivery
+    rules:
+      - alert: IntegratorDeliveryIndeterminate
+        expr: increase(integrator_receipt_deliveries_total{acceptance="indeterminate"}[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "A delivery cannot be known to have landed, and retrying is unsafe"
+          description: >-
+            The connector could not tell whether the consequence landed AND
+            knows the idempotency key will not protect a retry. This does not
+            resolve itself: a human or a repair command must decide.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+
+      - alert: IntegratorDeliveryRejected
+        expr: increase(integrator_receipt_deliveries_total{acceptance="rejected"}[15m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "The destination application is refusing observations"
+          description: >-
+            Terminal refusals — retrying cannot help. Usually a contract
+            version the destination has not deployed, or a credential whose
+            scope was narrowed.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+
+      - alert: IntegratorDeliveryUnreachable
+        expr: increase(integrator_receipt_deliveries_total{acceptance="unavailable"}[15m]) > 20
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "The destination application is not answering"
+          description: >-
+            Safe to retry and being retried — the idempotency key is stable
+            across attempts. Alerting because the backlog behind it is growing
+            and the provider has already been told 200.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
+
+      # The lease is shorter than the product's real latency. Invisible
+      # otherwise: every affected receipt is delivered by SOMEBODY, so nothing
+      # fails — the work is simply done more than once.
+      - alert: IntegratorLostClaims
+        expr: increase(integrator_receipt_lost_claims_total[30m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Delivery leases are expiring mid-call"
+          description: >-
+            A worker's lease ran out while the destination was being contacted,
+            so another worker took the receipt over and this one's outcome was
+            discarded. Nothing was lost, but the call was made twice.
+          runbook: docs/RUNBOOK-restore-and-reconciliation.md#reconciliation
 
   # ── Payload retention ─────────────────────────────────────────────────────
   #
