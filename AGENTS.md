@@ -193,3 +193,14 @@ This is a **thin assembly**. The reusable behaviour lives in
     (`test_the_destination_credential_never_escapes.py`).
 29. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.
+30. **Poetry is an exact build input, not an ambient tool.**
+    `[tool.poetry].requires-poetry` is the ONE version source; CI's hash-locked
+    bootstrap, the lockfile generator stamp and the production Docker build
+    equal it exactly. `make poetry-lock-check` fails before dependency work if
+    the active Poetry differs, then validates the COMMITTED lock with
+    `poetry check --lock`. A validation lane never runs `poetry lock`, because
+    that proves repaired state rather than the commit. Ordinary dependency
+    edits use `poetry lock` with the pinned tool; `--regenerate` is reserved for
+    an explicit toolchain/dependency-resolution upgrade.
+    (`scripts/check_poetry_toolchain.py`;
+    `tests/architecture/test_poetry_toolchain_contract.py`)

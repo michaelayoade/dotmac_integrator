@@ -29,12 +29,10 @@
 # process can read them.
 
 ARG PYTHON_VERSION=3.12
-ARG POETRY_VERSION=2.2.0
 
 # ── Builder ─────────────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim AS builder
 
-ARG POETRY_VERSION
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \
@@ -48,12 +46,18 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 # immediately with "no such file or directory" naming a path nothing in the
 # image mentions.
 WORKDIR /app
-RUN pip install "poetry==${POETRY_VERSION}"
-
-# Dependencies ONLY, and before the source: the lockfile changes far less often
-# than the code, and a rebuild after a one-line edit should not re-resolve the
-# private index.
 COPY pyproject.toml poetry.lock README.md ./
+COPY scripts/check_poetry_toolchain.py ./scripts/check_poetry_toolchain.py
+COPY .github/bootstrap/poetry-requirements-py312.txt ./poetry-requirements.txt
+# pyproject owns the Poetry version.  The generated bootstrap and committed
+# lock must agree before installation, then PATH must resolve to that exact
+# hash-verified tool before it may install the application dependencies.
+RUN python scripts/check_poetry_toolchain.py --bootstrap poetry-requirements.txt \
+    && python -m pip install --disable-pip-version-check --no-cache-dir \
+         --require-hashes --only-binary=:all: -r poetry-requirements.txt \
+    && python scripts/check_poetry_toolchain.py \
+         --bootstrap poetry-requirements.txt --active \
+    && poetry check --lock
 
 # `--only main` — no pytest, ruff or mypy in a runtime image.
 # `--no-root` — the application is put on PYTHONPATH in the runtime stage

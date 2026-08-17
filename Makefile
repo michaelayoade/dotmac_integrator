@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint format-check type-check test check migrate run outdated \
+.PHONY: help install poetry-lock-check lint format-check type-check test check migrate run outdated \
         image image-audit compose-up compose-down bootstrap-operator
 
 # Every value is an overridable knob with a documented default (AGENTS.md
@@ -14,6 +14,10 @@ help: ## List targets
 install: ## Install pinned dependencies (needs registry credentials)
 	poetry install
 
+poetry-lock-check: ## Exact Poetry pin + committed lock; never regenerates
+	python3 scripts/check_poetry_toolchain.py --active
+	poetry check --lock
+
 lint: ## Ruff lint
 	poetry run ruff check .
 
@@ -26,7 +30,7 @@ type-check: ## mypy strict
 test: ## Architecture + unit tests (no database)
 	poetry run pytest tests -q --ignore=tests/composition
 
-check: lint format-check type-check test ## Everything CI runs except the database job
+check: poetry-lock-check lint format-check type-check test ## Everything CI runs except the database job
 
 migrate: ## Apply every composed lineage AS THE OWNER. Never run on boot.
 	# NOT the bare `alembic` CLI: it resolves version_locations before env.py
