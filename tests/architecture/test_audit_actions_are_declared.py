@@ -21,9 +21,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from dotmac_integrator.operations import (
+from dotmac_integrator.manifest import (
     INTEGRATOR_AUDIT_ACTION_PREFIX,
     INTEGRATOR_AUDIT_ACTIONS,
+)
+from dotmac_integrator.manifest import (
+    module as assembly_module,
 )
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "dotmac_integrator"
@@ -107,3 +110,9 @@ def test_the_scan_bites_on_a_planted_undeclared_action(tmp_path: Path) -> None:
     }
     assert found == {"integrator.something.undeclared"}
     assert found - set(INTEGRATOR_AUDIT_ACTIONS)
+
+
+def test_the_assembly_manifest_owns_its_audit_vocabulary() -> None:
+    assert assembly_module.code == "integrator"
+    assert tuple(assembly_module.dependencies) == ("integration",)
+    assert tuple(assembly_module.audit_actions) == INTEGRATOR_AUDIT_ACTIONS

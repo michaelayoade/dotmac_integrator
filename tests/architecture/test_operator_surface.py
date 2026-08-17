@@ -21,8 +21,10 @@ available to make. Each of them is one plausible diff away:
 from __future__ import annotations
 
 import pytest
+from dotmac_kernel.audit_actions import AuditActionRegistry
 from fastapi import FastAPI
 
+from dotmac_integrator import assembly
 from dotmac_integrator.assembly import create_app
 from dotmac_integrator.operator_auth import OperationReason, Operator
 from dotmac_integrator.surface import (
@@ -44,6 +46,22 @@ METRICS_PATH = "/metrics"
 def test_the_real_surface_is_correct() -> None:
     settings = build_settings()
     assert audit_routes(create_app(settings), metrics_path=settings.metrics_path) == []
+
+
+def test_app_construction_installs_the_composed_audit_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: list[AuditActionRegistry] = []
+    monkeypatch.setattr(assembly, "install_audit_actions", installed.append)
+
+    create_app(build_settings())
+
+    assert len(installed) == 1
+    registry = installed[0]
+    assert registry.actions() >= {
+        "integrator.secrets.refreshed",
+        "integration.delivery.replayed",
+    }
 
 
 def test_every_mounted_route_is_classified() -> None:

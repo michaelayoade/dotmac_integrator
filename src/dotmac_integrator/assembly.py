@@ -52,6 +52,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import dotmac_integration as integration
+from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.modules import ModuleRegistry
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import create_engine
@@ -66,6 +68,7 @@ from dotmac_integrator import (
     secret_loading,
     telemetry,
 )
+from dotmac_integrator.manifest import module as assembly_module
 from dotmac_integrator.operator_auth import OperationReason, Operator
 from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
@@ -107,6 +110,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "refusing to start with unsafe configuration:\n  - "
             + "\n  - ".join(problems)
         )
+
+    # The kernel's audit writer refuses an uninstalled vocabulary. This custom
+    # API-only assembly does not call ``dotmac_kernel.app_factory.create_app``,
+    # so it must perform the same composition step explicitly before any route
+    # can write an event. Both the reusable module and the stateless host own
+    # actions; ModuleRegistry validates the dependency and deterministic order.
+    manifests = ModuleRegistry((integration.module, assembly_module)).startup_order()
+    install_audit_actions(AuditActionRegistry.from_manifests(manifests))
 
     engine = build_engine(settings)
     worker = Worker(engine=engine, settings=settings)
