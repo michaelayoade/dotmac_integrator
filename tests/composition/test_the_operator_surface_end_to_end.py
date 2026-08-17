@@ -241,8 +241,10 @@ def test_an_operator_can_author_the_installed_connector_without_direct_rows(
     """
     token, admin_id = operator
     headers = _headers(token)
-    signing_ref = "env://INTEGRATOR_AUTHORING_SIGNING"
-    handshake_ref = "env://INTEGRATOR_AUTHORING_HANDSHAKE"
+    signing_name = "INTEGRATOR_SECRET_AUTHORING_SIGNING"
+    handshake_name = "INTEGRATOR_SECRET_AUTHORING_HANDSHAKE"
+    signing_ref = f"env://{signing_name}"
+    handshake_ref = f"env://{handshake_name}"
     signing_material = "signing-material-never-persisted"
     handshake_material = "handshake-material-never-persisted"
 
@@ -293,8 +295,8 @@ def test_an_operator_can_author_the_installed_connector_without_direct_rows(
     assert configured.json()["is_new"] is True
     assert configured.json()["validation_status"] == "pending"
 
-    monkeypatch.setenv("INTEGRATOR_AUTHORING_SIGNING", signing_material)
-    monkeypatch.setenv("INTEGRATOR_AUTHORING_HANDSHAKE", handshake_material)
+    monkeypatch.setenv(signing_name, signing_material)
+    monkeypatch.setenv(handshake_name, handshake_material)
     refreshed = client.post(
         "/operations/secrets/refresh",
         headers=headers,
