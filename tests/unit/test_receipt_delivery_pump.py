@@ -7,9 +7,10 @@ testable HERE is that this assembly drives them faithfully — the ordering
 survives, a lost claim does not kill the loop, and an unclaimed receipt is a
 normal outcome rather than an error.
 
-The claim's RACE is not testable here and is not claimed to be: the statement
-uses `make_interval`, so it runs on PostgreSQL and its canaries live with the
-module. What SQLite proves is control flow.
+The claim's RACE is not testable in this SQLite lane: the statement uses
+`make_interval`. This assembly proves it against its migrated PostgreSQL
+composition in ``tests/composition/test_receipt_claim_race.py``. What this file
+proves is control flow.
 """
 
 from __future__ import annotations
