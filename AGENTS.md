@@ -8,9 +8,10 @@ This is a **thin assembly**. The reusable behaviour lives in
    duration, attempt limits, lifecycle transitions, binding selection and
    activation belong to `dotmac_integration`. Enforced by
    `tests/architecture/test_the_assembly_stays_thin.py`.
-2. **No connector is named here.** Connectors are separately released
-   distributions found through the `dotmac_integration.connectors` entry-point
-   group. Installing one is the only way it enters.
+2. **Generic assembly source names no connector.** The deployment manifest
+   exactly pins separately released connector distributions; entry-point
+   discovery is the only runtime registration. Nothing under `src/` imports a
+   connector, enumerates providers or branches on one.
 3. **The Dotmac dependencies are pinned exactly**, and the lock must agree
    (`tests/architecture/test_pins_are_exact.py`). No path or git sources — this
    assembly consumes published wheels, not a second checkout of the Starter.

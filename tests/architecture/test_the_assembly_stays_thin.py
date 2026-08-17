@@ -10,9 +10,10 @@ So the boundary is a test rather than a paragraph in the README.
 
 ## What is checked
 
-1. No connector is named. Connectors arrive through the
-   `dotmac_integration.connectors` entry-point group; an import or a string
-   literal naming one would make this assembly know about a specific provider.
+1. Generic assembly source names no connector. The deployment manifest pins
+   distributions, while runtime registration is only through the
+   `dotmac_integration.connectors` entry-point group; an import or provider
+   branch here would create a second integration mechanism.
 2. No business-decision vocabulary. Retry counts, backoff, lease durations and
    attempt limits belong to `ExecutionPolicy`. A number here is a fork.
 3. Routes hold no session and issue no query — the same adapter split the
@@ -60,7 +61,7 @@ def _source_without_docstrings(path: Path) -> str:
     return ast.unparse(tree)
 
 
-# ── 1. No connector is named ────────────────────────────────────────────────
+# ── 1. No connector is named in generic source ─────────────────────────────
 
 # Providers this assembly must never know about by name. Not an exhaustive list
 # of every provider in the world — it is the set named in the programme's own

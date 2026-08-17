@@ -310,6 +310,48 @@ def test_counters_render_under_their_declared_labels() -> None:
     assert 'integrator_ingress_challenges_total{outcome="refused"} 1' in output
 
 
+def test_verification_evidence_counts_bounded_key_position_classes() -> None:
+    counters = IngressCounters()
+    counters.record_verification(
+        integration.VerificationResult(
+            accepted=True,
+            matched_secret_positions=(0, 2),
+        )
+    )
+    counters.record_verification(integration.VerificationResult(accepted=False))
+
+    output = render(counters.samples())
+
+    assert (
+        'integrator_ingress_signature_verifications_total{outcome="accepted"} 1'
+        in output
+    )
+    assert (
+        'integrator_ingress_signature_verifications_total{outcome="rejected"} 1'
+        in output
+    )
+    assert (
+        'integrator_ingress_verification_key_matches_total{position="first"} 1'
+        in output
+    )
+    assert (
+        'integrator_ingress_verification_key_matches_total{position="later"} 1'
+        in output
+    )
+    assert 'position="0"' not in output
+    assert 'position="2"' not in output
+
+
+def test_evidence_free_legacy_verification_does_not_invent_a_key_match() -> None:
+    counters = IngressCounters()
+    counters.record_verification(integration.VerificationResult(accepted=True))
+
+    output = render(counters.samples())
+
+    assert 'position="first"} 0' in output
+    assert 'position="later"} 0' in output
+
+
 def test_every_declared_refusal_reason_gets_a_series_from_the_first_scrape() -> None:
     """A counter that appears only after its first increment makes
     `increase()` over the window that contains that increment unusable."""

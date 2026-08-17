@@ -5,7 +5,7 @@
 #
 # ## The registry credential never enters a layer
 #
-# The two Dotmac distributions come from the private index, which needs a
+# The Dotmac distributions come from the private index, which needs a
 # credential. `ARG` and `ENV` both survive into image metadata, and an
 # `--index-url` carrying a password survives into the layer that ran it — so
 # the token arrives through a BuildKit secret mount, which is present for one

@@ -5,9 +5,9 @@ The independently deployed **connector control plane**. It composes
 only what a deployment can own.
 
 ```
-dotmac-kernel 0.1.0a67  ──┐
+dotmac-kernel 0.1.0a68  ──┐
                           ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a4┘         (this repo)          (installed, discovered)
+dotmac-integration 0.1.0a5┘         (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -61,12 +61,13 @@ Two roles, and they are not interchangeable:
 
 A connector is a **separately released distribution**, discovered through the
 `dotmac_integration.connectors` entry-point group. It appears in
-`/operations/connectors` by being installed. There is no registration call, and
-no connector is named anywhere in this repository.
+`/operations/connectors` by being installed. There is no registration call.
+The deployment manifest names and exactly pins connector DISTRIBUTIONS; generic
+assembly source imports no connector and carries no provider branch or registry.
 
-The first one will be Meta/WhatsApp, **ingress-only**, shadowed against the
-current owner before anything is retired or the external-connector ratchet is
-lowered.
+The first pin is `dotmac-connector-whatsapp 0.1.0a1`, **ingress-only**. It is
+installed and discoverable here; shadow comparison against Sub remains the
+cutover gate before any incumbent receiver is retired or its ratchet is lowered.
 
 ## Running it
 
@@ -208,15 +209,17 @@ fire and `IntegratorPayloadRetentionNotConfigured` does instead. See the runbook
 
 ## Pins
 
-`dotmac-kernel` and `dotmac-integration` are pinned **exactly**, and a test
-enforces it. A library declares the earliest version it works with; a deployment
-declares the exact one it was tested against. `>=` here would let an install
-months from now compose a combination nobody has ever run.
+Every Dotmac runtime distribution is pinned **exactly**, and the gate discovers
+that set from `pyproject.toml` so a newly added connector cannot evade it by
+being absent from a second list. A library declares the earliest version it
+works with; a deployment declares the exact one it was tested against. `>=`
+here would let an install months from now compose a combination nobody ran.
 
 | Distribution | Pin | Why this one |
 |---|---|---|
-| `dotmac-integration` | `0.1.0a4` | The newest **published** release — `dotmac-integration-v0.1.0a4`, tagged from Starter `306a40e` and verified on the registry. It is the first release that DECLARES the prerequisites it has always depended on. |
-| `dotmac-kernel` | `0.1.0a67` | The newest published kernel. `0.1.0a4` floors at `>=0.1.0a66` (a capability raise: a58…a65 have the ledger TABLES but not the `idempotency_ledger.v1` NAME, so the manifest will not import). a67 also registers `outbox_relay.v1`, which this deployment does not use. |
+| `dotmac-connector-whatsapp` | `0.1.0a1` | First published ingress connector. Declares SPI `>=1.2,<2.0`, exact-byte verification and `messaging.receive.v1`; its package entry point is the only runtime registration. |
+| `dotmac-integration` | `0.1.0a5` | Published SPI 1.2 module. Adds typed verification evidence and the provider-neutral observer used for rotation metrics; its required database effects are unchanged from a4. |
+| `dotmac-kernel` | `0.1.0a68` | Current published kernel. It satisfies the module's `>=0.1.0a66` floor and is the exact release this three-wheel composition is tested against. |
 
 ### What a pin bump actually costs
 
@@ -275,7 +278,8 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`,
   whose entire body is that call.
 
-`dotmac-integration 0.1.0a4` requires two effects, and both are bound:
+`dotmac-integration 0.1.0a5` requires the same two effects introduced in a4,
+and both are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -321,7 +325,7 @@ kernel's vocabulary.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a4`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a5`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing
@@ -438,17 +442,21 @@ destination's — `dotmac_sub`'s `app/api/integrator_observations.py` and
 field, length, status and refusal code in this file is transcribed from it. A
 disagreement is a defect here, or a change that happens there first.
 
-Four decisions worth reading before touching it:
+Five decisions worth reading before touching it:
 
 - **`provider_event_id` crosses the wire raw.** The destination namespaces it
   with its own observation-kind prefix. Pre-prefixing here would produce a
   second identity for one upstream event — a duplicate, not a dedupe — and it
   would double-record every message in flight during the producer overlap.
-- **The fingerprint covers the destination's own canonical body.** It recomputes
-  a canonical-JSON SHA-256 over its model dump, which carries every declared
-  field including the null ones and an empty attachment list. A fingerprint over
-  the sparse dict a connector supplied would fail *every* delivery, complaining
-  about a mangled body rather than about a missing key.
+- **The fingerprint covers exactly what the destination validates.** The client
+  builds one explicit typed body (including nested location attachments), hashes
+  it, and sends that same body. Sub recomputes over its `exclude_unset` model
+  dump, preserving those explicitly supplied fields. The connector's sparse
+  dict is never fingerprinted by accident.
+- **Transport evidence stops at the transport boundary.** The module retains
+  `transport_evidence` on its receipt for repair; the client deliberately omits
+  it from Sub's domain envelope. Unknown fields are still refused, so this does
+  not become a general suppression mechanism.
 - **The destination's binding id is configured, never derived.** Its port is
   keyed on ITS capability-binding UUID, in ITS database. This deployment's is a
   different UUID; posting the wrong one 404s at best and writes to somebody

@@ -50,12 +50,14 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from dotmac_integrator import secret_loading, telemetry
+from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
     missing_references,
     redact,
     resolve_secrets,
 )
+
 
 #: Audit actions this ASSEMBLY writes, under its own prefix.
 #:
@@ -68,14 +70,6 @@ from dotmac_integrator.secret_resolver import (
 #: `tests/architecture/test_audit_actions_are_declared.py` asserts in both
 #: directions: nothing is written that is not declared here, and nothing is
 #: declared here without a writer.
-INTEGRATOR_AUDIT_ACTION_PREFIX = "integrator"
-INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
-    "integrator.installation.enabled",
-    "integrator.installation.enable_refused",
-    "integrator.secrets.refreshed",
-)
-
-
 def _record(
     db: Session,
     actor: OperatorIdentity,
@@ -181,7 +175,7 @@ def installed_connectors() -> dict[str, Any]:
     Entry-point discovery, so the answer is the set of INSTALLED connector
     distributions — not a list this assembly maintains. A connector appears here
     by being installed, which is the only mechanism; there is no registration
-    call and no name hardcoded anywhere in this repository.
+    call and no provider identity hardcoded in generic assembly source.
     """
     registry = integration.discover()
     plugins = getattr(registry, "plugins", ())

@@ -280,15 +280,35 @@ trio = ["trio (>=0.30)"]
 wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
+name = "dotmac-connector-whatsapp"
+version = "0.1.0a1"
+description = "Ingress-only Meta WhatsApp Cloud API connector for Dotmac Integrator"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_whatsapp-0.1.0a1-py3-none-any.whl", hash = "sha256:7f5732a2168df12eb776538c11c2af7f0261267e1a7c7114d8113eaece3cedd9"},
+    {file = "dotmac_connector_whatsapp-0.1.0a1.tar.gz", hash = "sha256:f167d31bdc5bd9fff54c277326914e1f81e66f35e23b3090501a00f9e2347cf8"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a5"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
 name = "dotmac-integration"
-version = "0.1.0a4"
+version = "0.1.0a5"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a4-py3-none-any.whl", hash = "sha256:1e98428bb7796d00a844141fcac89d956dbadc5adb13b1f5fa9123c50256742a"},
-    {file = "dotmac_integration-0.1.0a4.tar.gz", hash = "sha256:a51360491fb236853437277dbb727350a76f35f32bcfabcc7c87d7cc46f07f7f"},
+    {file = "dotmac_integration-0.1.0a5-py3-none-any.whl", hash = "sha256:b9a738265802aab605b052a03f9eaeb907c95251f66e864b5b98dd9a420cbffa"},
+    {file = "dotmac_integration-0.1.0a5.tar.gz", hash = "sha256:22c7366d730df6a028f03a567786f05cd9ffc64219888ee7fe4b24b69cd004e2"},
 ]
 
 [package.dependencies]
@@ -302,14 +322,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-kernel"
-version = "0.1.0a67"
+version = "0.1.0a68"
 description = "DotMac platform kernel — multi-tenant FastAPI foundation (config, RLS db, identity/tenancy models, security, platform auth, middleware, settings, features registry, audit)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_kernel-0.1.0a67-py3-none-any.whl", hash = "sha256:38813d3fc92232e55a5e7bab621dfc7a85830bdf7c6263ead017a8025eabe48c"},
-    {file = "dotmac_kernel-0.1.0a67.tar.gz", hash = "sha256:2127ad86717a7cab1c1f483c6e4b0afd4fa44062bf13c6a1931343b4af3372e4"},
+    {file = "dotmac_kernel-0.1.0a68-py3-none-any.whl", hash = "sha256:b21bf682d603edad18818d747659309413df96ce47a65f67bf1dcdf320b3882a"},
+    {file = "dotmac_kernel-0.1.0a68.tar.gz", hash = "sha256:6fcc883d1ed9c218b2a98736568cfb5fc12c7c7f379da444f1c13aec772613f9"},
 ]
 
 [package.dependencies]
@@ -1945,4 +1965,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "d2beffbdad1652d56fea58ee8df1f0f7ed684574feb20c72f4d97c238c288c4d"
+content-hash = "2252f5d38387fedbaca5221cfea0512c2b143941e06a5d14258a06e6792971a3"

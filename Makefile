@@ -43,7 +43,7 @@ run: ## Development server
 		--host $${HOST:-127.0.0.1} --port $${PORT:-8080} --reload
 
 outdated: ## Show newer releases of the pinned Dotmac distributions
-	poetry show --outdated dotmac-kernel dotmac-integration || true
+	poetry show --outdated | awk '$$1 ~ /^dotmac-/' || true
 
 bootstrap-operator: ## Create/reset the first operator. OWNER credentials, out of band.
 	# The operations surface is guarded, so the first operator cannot be made

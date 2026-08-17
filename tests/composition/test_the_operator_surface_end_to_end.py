@@ -134,7 +134,7 @@ def test_an_authenticated_operator_reaches_the_operations_surface(
     token, _ = operator
     response = client.get("/operations/connectors", headers=_headers(token))
     assert response.status_code == 200, response.text
-    assert response.json()["count"] == 0
+    assert response.json()["count"] >= 1
 
 
 def test_a_revoked_session_stops_working_immediately(
@@ -277,8 +277,9 @@ def test_the_gate_opens_once_the_material_is_held(
 
     With the material present and an explicit refresh performed, the material
     check passes and the request reaches the connector lookup — which fails,
-    because no connector distribution is installed in this runtime. That is the
-    correct next refusal and it proves the gate was crossed rather than absent.
+    because no installed connector declares the deliberately fake key on this
+    fixture. That is the correct next refusal and it proves the gate was crossed
+    rather than absent.
 
     The refresh is explicit on purpose: the variable was set after boot, and
     ADR-0009 makes rotation an operator act rather than a timer.

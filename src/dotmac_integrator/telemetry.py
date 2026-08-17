@@ -73,6 +73,7 @@ __all__ = [
     "REDACTION_MARKER",
     "REFUSAL_REASONS",
     "SIGNATURE_OUTCOMES",
+    "VERIFICATION_KEY_POSITIONS",
     "IngressCounters",
     "MetricFamily",
     "ScrapeGuard",
@@ -149,6 +150,12 @@ PRODUCT_ACCEPTANCES: Final[tuple[str, ...]] = tuple(
 #: deliberately not a third: "error" would collapse "we could not check" into
 #: "it failed", and those need different alerts.
 SIGNATURE_OUTCOMES: Final[tuple[str, ...]] = ("accepted", "rejected")
+
+#: Bounded projection of SPI 1.2's ordered matched positions. The raw integer
+#: cannot become a label (and therefore cannot create unbounded cardinality),
+#: while ``first`` versus ``later`` still answers whether rotation traffic has
+#: drained from older verification material.
+VERIFICATION_KEY_POSITIONS: Final[tuple[str, ...]] = ("first", "later")
 
 #: A provider's verification handshake (Meta's `hub.challenge`, and every
 #: provider's equivalent). `refused` is the interesting one — a challenge we
@@ -362,6 +369,13 @@ FAMILIES: Final[tuple[MetricFamily, ...]] = (
         allowed=SIGNATURE_OUTCOMES,
     ),
     MetricFamily(
+        "integrator_ingress_verification_key_matches_total",
+        "Authenticated checks by ordered verification-key position class.",
+        "counter",
+        label="position",
+        allowed=VERIFICATION_KEY_POSITIONS,
+    ),
+    MetricFamily(
         "integrator_ingress_challenges_total",
         "Provider verification handshakes, by outcome.",
         "counter",
@@ -394,6 +408,9 @@ class IngressCounters:
         self._lock = threading.Lock()
         self._refusals: dict[str, int] = dict.fromkeys(REFUSAL_REASONS, 0)
         self._signatures: dict[str, int] = dict.fromkeys(SIGNATURE_OUTCOMES, 0)
+        self._verification_key_matches: dict[str, int] = dict.fromkeys(
+            VERIFICATION_KEY_POSITIONS, 0
+        )
         self._challenges: dict[str, int] = dict.fromkeys(CHALLENGE_OUTCOMES, 0)
         self._ingress: dict[str, int] = dict.fromkeys(INGRESS_CODES, 0)
         self._acceptances: dict[str, int] = dict.fromkeys(PRODUCT_ACCEPTANCES, 0)
@@ -420,6 +437,15 @@ class IngressCounters:
         key = self._checked(outcome, SIGNATURE_OUTCOMES, "signature outcome")
         with self._lock:
             self._signatures[key] += 1
+
+    def record_verification(self, result: integration.VerificationResult) -> None:
+        """Count SPI evidence without publishing a raw position or identifier."""
+        outcome = "accepted" if result.accepted else "rejected"
+        with self._lock:
+            self._signatures[outcome] += 1
+            for position in result.matched_secret_positions:
+                key = "first" if position == 0 else "later"
+                self._verification_key_matches[key] += 1
 
     def record_challenge(self, outcome: str) -> None:
         key = self._checked(outcome, CHALLENGE_OUTCOMES, "challenge outcome")
@@ -455,6 +481,7 @@ class IngressCounters:
         with self._lock:
             refusals = dict(self._refusals)
             signatures = dict(self._signatures)
+            verification_key_matches = dict(self._verification_key_matches)
             challenges = dict(self._challenges)
             ingress = dict(self._ingress)
             acceptances = dict(self._acceptances)
@@ -472,6 +499,14 @@ class IngressCounters:
                     outcome,
                 )
                 for outcome, count in signatures.items()
+            ),
+            *(
+                Sample(
+                    "integrator_ingress_verification_key_matches_total",
+                    count,
+                    position,
+                )
+                for position, count in verification_key_matches.items()
             ),
             *(
                 Sample("integrator_ingress_challenges_total", count, outcome)
