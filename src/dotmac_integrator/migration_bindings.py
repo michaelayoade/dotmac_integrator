@@ -26,9 +26,9 @@ this file:
    kernel's own verifier for each bound effect against the migrated scratch
    database, and proves each verifier *bites* on this composition. Reading the
    catalog is the only thing that can tell a supplied effect from a stamped one.
-3. **At migration time** — `ig_0007_idempotency_ledger` calls
-   `require_prerequisites` before any DDL, so a wrong answer here fails
-   `alembic upgrade` rather than on the first guarded delivery.
+3. **At migration time** — `ig_0007_idempotency_ledger` and
+   `ig_0008_platform_audit_log` call `require_prerequisites` before any DDL, so
+   a wrong answer here fails `alembic upgrade` rather than on the first request.
 
 Control 3 became real at `dotmac-integration 0.1.0a4`. Under a3 nothing declared
 a requirement, so nothing consulted a binding and the first two controls were the
@@ -43,11 +43,11 @@ revisions, so the check fails against every database whose kernel lineage has
 advanced past `0001`. Kernel 0.1.0a67's `require_prerequisites` docstring records
 the same lesson; do not reintroduce it here.
 
-## Two effects, because two are required — and two were RETIRED
+## Three effects, because three are required — and two were RETIRED
 
-`dotmac-integration 0.1.0a4` declares
-`requires = ("module_database_roles.v1", "idempotency_ledger.v1")`. Both are
-bound below, and nothing else is.
+`dotmac-integration 0.1.0a6` declares the database roles, idempotency ledger and
+append-only platform audit log requirements. All three are bound below, and
+nothing else is.
 
 Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
 Both were truthful — this deployment composes the whole kernel lineage, so kernel
@@ -72,23 +72,20 @@ kernel lineage, so if a future connector module requires one, re-binding it is
 the three lines below and `binding_for` fails closed with an explicit message in
 the meantime. That is the designed behaviour, not a gap.
 
-`platform_audit_events` is a third dependency and has no binding, because the
-kernel registers no prerequisite name for it — `dotmac_integration.operations`
-adapts `dotmac_kernel.audit.write_platform_audit_event` regardless. That is a
-kernel gap of the same class `idempotency_ledger.v1` and `outbox_relay.v1` closed
-in a66/a67, and it is deliberately NOT worked around here: an effect with no name
-cannot be bound, and inventing a local one would make this assembly a second
-authority over the kernel's vocabulary.
+At a6 the former platform-audit gap is closed: kernel a68 names and verifies the
+append-only log as `platform_audit_log.v1`, and `ig_0008` requires it. The
+provider is kernel `0026`, the revision that completes the effect by removing
+UPDATE/DELETE and column-level escape grants from the online platform role.
 
-## The `ig_0001` literal edge — unrepaired through a5
+## The `ig_0001` literal edge — unrepaired through a6
 
 `ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
-at `0.1.0a5` — a physical edge naming a foreign revision, which is exactly what
+at `0.1.0a6` — a physical edge naming a foreign revision, which is exactly what
 the prerequisite vocabulary exists to replace. It cannot be repaired at any
 version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
 the Starter does not own, and `alembic_version` records that a revision ran,
 never which version of it. a4 added `ig_0007` rather than editing the root for
-that reason; a5 correctly leaves both released migrations unchanged.
+that reason; a6 correctly leaves released migrations unchanged.
 
 So the constraint is permanent for this lineage: **an adopter that cannot run
 kernel `0001_initial_tenant_schema` cannot install `dotmac-integration` at all**,
@@ -106,6 +103,7 @@ from typing import Final
 from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
     MODULE_DATABASE_ROLES_V1,
+    PLATFORM_AUDIT_LOG_V1,
     PrerequisiteBinding,
 )
 
@@ -139,6 +137,11 @@ ASSEMBLY_PREREQUISITE_BINDINGS: Final[tuple[PrerequisiteBinding, ...]] = (
     PrerequisiteBinding(
         prerequisite=IDEMPOTENCY_LEDGER_V1.name,
         provider_revision="0018_idempotency_one_owner",
+        provider_owner="kernel",
+    ),
+    PrerequisiteBinding(
+        prerequisite=PLATFORM_AUDIT_LOG_V1.name,
+        provider_revision="0026_platform_audit_log",
         provider_owner="kernel",
     ),
 )
