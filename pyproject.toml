@@ -5,6 +5,9 @@ description = "Thin assembly composing dotmac-integration as an independently de
 authors = ["Dotmac"]
 readme = "README.md"
 packages = [{ include = "dotmac_integrator", from = "src" }]
+# One exact build tool produces the lock, CI environment and runtime image.
+# Every installer derives from this value; see scripts/check_poetry_toolchain.py.
+requires-poetry = "2.4.1"
 
 # NOT published. This is a deployable application, not a distribution: nothing
 # pins it, so a version here is a deployment label rather than a contract. It is

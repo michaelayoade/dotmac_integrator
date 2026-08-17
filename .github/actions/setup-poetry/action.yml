@@ -1,0 +1,64 @@
+name: Install pinned Poetry
+description: Install the repository-owned, hash-locked Poetry toolchain
+
+runs:
+  using: composite
+  steps:
+    - name: Select and validate this interpreter's bootstrap
+      id: lock
+      shell: bash
+      run: |
+        set -euo pipefail
+        py="$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+        req=".github/bootstrap/poetry-requirements-py${py}.txt"
+        if [ ! -f "$req" ]; then
+          echo "::error::no hash-locked Poetry bootstrap for Python ${py}: ${req}"
+          exit 1
+        fi
+        python scripts/check_poetry_toolchain.py --bootstrap "$req"
+        echo "req=${req}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/pip
+        key: poetry-bootstrap-${{ runner.os }}-${{ hashFiles(steps.lock.outputs.req) }}
+
+    - name: Install Poetry into a fresh job-local environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        req="${{ steps.lock.outputs.req }}"
+        venv="${RUNNER_TEMP}/poetry-bootstrap"
+        rm -rf "$venv"
+        python -m venv "$venv"
+
+        for attempt in 1 2 3; do
+          if "$venv/bin/python" -m pip install --disable-pip-version-check \
+               --require-hashes --only-binary=:all: -r "$req"; then
+            echo "${venv}/bin" >> "$GITHUB_PATH"
+            PATH="${venv}/bin:${PATH}" \
+              python scripts/check_poetry_toolchain.py \
+                --bootstrap "$req" --active
+            # Validate the COMMITTED lock before any following step may install
+            # the project.  Never repair it in a validation lane.
+            PATH="${venv}/bin:${PATH}" "$venv/bin/poetry" check --lock
+            "$venv/bin/poetry" config virtualenvs.create true
+            "$venv/bin/poetry" config virtualenvs.in-project true
+            exit 0
+          fi
+          echo "::warning::Poetry bootstrap attempt ${attempt} failed"
+          sleep $((attempt * 5))
+        done
+        echo "::error::Poetry bootstrap failed after three attempts"
+        exit 1
+
+    - name: Assert PATH resolves to the verified Poetry
+      shell: bash
+      run: |
+        set -euo pipefail
+        want="${RUNNER_TEMP}/poetry-bootstrap/bin/poetry"
+        got="$(command -v poetry)"
+        if [ "$got" != "$want" ]; then
+          echo "::error::Poetry resolves to ${got}, not ${want}"
+          exit 1
+        fi

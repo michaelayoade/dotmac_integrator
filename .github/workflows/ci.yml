@@ -26,13 +26,13 @@ jobs:
       # that the hard way: a matrix naming a subset let committed assets and
       # formatting go unenforced on every PR while `make check` passed locally.
       matrix:
-        target: [lint, format-check, type-check, test]
+        target: [poetry-lock-check, lint, format-check, type-check, test]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pipx install poetry
+      - uses: ./.github/actions/setup-poetry
       - run: poetry install
       - run: make ${{ matrix.target }}
 
@@ -61,7 +61,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pipx install poetry
+      - uses: ./.github/actions/setup-poetry
       - run: poetry install
       - run: poetry run pytest tests/composition -q
 

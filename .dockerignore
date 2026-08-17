@@ -8,7 +8,12 @@
 .env.*
 
 .git
-.github
+# The build needs exactly one generated Poetry bootstrap.  Keep other workflow
+# files out of the context and reopen only that generated input.
+.github/*
+!.github/bootstrap/
+.github/bootstrap/*
+!.github/bootstrap/poetry-requirements-py312.txt
 .venv
 venv
 tests
