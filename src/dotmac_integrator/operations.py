@@ -194,6 +194,21 @@ def health_report(engine: Engine) -> dict[str, Any]:
         return _jsonable_mapping(integration.health_report(db))
 
 
+def shadow_report(engine: Engine, comparison_revision: str) -> dict[str, object]:
+    """Aggregate module-owned evidence; never approve a product cutover."""
+
+    if not comparison_revision.strip():
+        raise HTTPException(
+            409,
+            "shadow comparison is not configured; set an immutable "
+            "PRODUCT_PORT_SHADOW_REVISION in mirror mode",
+        )
+    with Session(engine) as db:
+        return integration.shadow_report(
+            db, comparison_revision=comparison_revision
+        ).as_dict()
+
+
 def _lifecycle_conflict(exc: Exception) -> HTTPException:
     """Translate a module refusal without broadening or leaking its text."""
     detail = redact(str(exc)).strip() or "integration lifecycle operation refused"

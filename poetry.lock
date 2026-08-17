@@ -313,14 +313,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a6"
+version = "0.1.0a8"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a6-py3-none-any.whl", hash = "sha256:6b4c5ef960c8dccc6763eaeedd1a01c61bd899a3d8f8e3835ee5100e66526412"},
-    {file = "dotmac_integration-0.1.0a6.tar.gz", hash = "sha256:31f81f722eaea1762cc0d0857c9deffebfb7d84a105f6536e395af76ffac83b5"},
+    {file = "dotmac_integration-0.1.0a8-py3-none-any.whl", hash = "sha256:761ad3479a33a451243cef6193110036ca5e7b9938ce17d7c472e5fa26519c40"},
+    {file = "dotmac_integration-0.1.0a8.tar.gz", hash = "sha256:013410920e0a4e46f054ff611ecc41f69f520103dcd9daa4860d4b7418158d3c"},
 ]
 
 [package.dependencies]
@@ -2158,4 +2158,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "085300f3557b2335520cc030c99aad7e94121956ad9c2e65490fab05f72ceff0"
+content-hash = "3bc33f66144780851105a5bf94b4ace0e80f1d0504367fab781600b759319763"

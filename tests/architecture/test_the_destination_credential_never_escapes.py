@@ -104,6 +104,7 @@ def _request() -> Any:
             attempt=1,
             leased_until=datetime.now(UTC) + timedelta(minutes=5),
             destination=_Destination(),
+            provider_event_id=str(OBSERVATION["provider_event_id"]),
             event_type="messaging.receive.v1",
             observation=dict(OBSERVATION),
             correlation_id="corr-1",

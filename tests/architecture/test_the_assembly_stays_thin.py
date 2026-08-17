@@ -385,10 +385,12 @@ def _function_source(path: Path, name: str) -> str:
     raise AssertionError(f"{path.name} no longer defines {name!r}")
 
 
-#: Everything that would make the shadow pass change durable state. It is a
+#: Everything that would make the shadow pass claim or settle a receipt. It is a
 #: SOURCE check because the mistake is a one-line convenience — "while we're
 #: here, mark it processed" — and the resulting run would look like a completed
-#: cutover while every observation it touched was seen by nobody.
+#: cutover while every observation it touched was seen by nobody. Shadow
+#: evidence is durable too, but its mutation belongs to the module's dedicated
+#: service and is deliberately committed by a separate assembly helper.
 SETTLING_CALLS = ("ReceiptClaims", "deliver_receipt", ".settle(", ".commit()")
 
 
@@ -397,11 +399,20 @@ def test_the_shadow_pass_settles_nothing(call: str) -> None:
     """The destination's shadow port RECORDS NOTHING, so a receipt settled
     against it would be marked delivered for an observation that was never
     recorded. The pass therefore takes no claim, writes no receipt column and
-    reaches no settlement."""
+    reaches no receipt settlement."""
     source = _function_source(SRC / "delivery.py", "mirror_due_receipts")
     assert call not in source, (
         f"`mirror_due_receipts` contains {call!r}. A shadow pass that changed "
         "durable state is indistinguishable from a cutover that worked"
+    )
+
+
+def test_shadow_evidence_is_written_only_through_the_module_service() -> None:
+    helper = _function_source(SRC / "delivery.py", "_record_shadow_observation")
+    assert "integration.record_shadow_observation" in helper
+    assert ".commit()" in helper
+    assert not any(
+        call in helper for call in ("ReceiptClaims", "deliver_receipt", ".settle(")
     )
 
 
