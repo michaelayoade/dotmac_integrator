@@ -39,6 +39,7 @@ from dotmac_kernel.migrations.verify import (
 )
 from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
+    PLATFORM_AUDIT_LOG_V1,
     install_prerequisite_bindings,
 )
 from sqlalchemy import create_engine, text
@@ -83,10 +84,10 @@ def test_each_bound_effect_has_a_verifier(effect: str) -> None:
 
 
 def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
-    """The fixture's `alembic upgrade heads` ran `ig_0007`, so the DEPLOY path
+    """The fixture's `alembic upgrade heads` ran `ig_0008`, so the DEPLOY path
     was exercised — not merely this file's re-check afterwards.
 
-    `ig_0007_idempotency_ledger` creates nothing. Its entire body is
+    `ig_0008_platform_audit_log` creates nothing. Its entire body is
     `require_prerequisites(op.get_bind(), REQUIRES)`, and it resolves its
     `depends_on` from this assembly's bindings at import. So its presence in
     `alembic_version` is evidence of three separate things at once: the bindings
@@ -96,17 +97,17 @@ def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
 
     Asserted on the head of the `ig` branch rather than by scanning history,
     because `alembic_version` holds current heads and nothing else — the same
-    fact that makes an order canary the wrong instrument. `ig_0007` IS the head
-    at a4, so the row is the right question to ask.
+    fact that makes an order canary the wrong instrument. `ig_0008` IS the head
+    at a6, so the row is the right question to ask.
     """
     engine = create_engine(migrated)
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT version_num FROM alembic_version"))
         applied = {row[0] for row in rows}
     engine.dispose()
-    assert "ig_0007_idempotency_ledger" in applied, (
+    assert "ig_0008_platform_audit_log" in applied, (
         f"alembic_version holds {sorted(applied)}. The `ig` head at "
-        "dotmac-integration 0.1.0a4 is ig_0007_idempotency_ledger, whose only "
+        "dotmac-integration 0.1.0a6 is ig_0008_platform_audit_log, whose only "
         "body is require_prerequisites — if it did not run, the deploy-time "
         "verification did not happen and `upgrade heads` applied one branch."
     )
@@ -178,8 +179,32 @@ def test_the_verification_bites_on_this_database(migrated: str) -> None:
     engine.dispose()
 
 
+def test_the_platform_audit_verification_bites_on_this_database(
+    migrated: str,
+) -> None:
+    """The new a6 prerequisite is live, not only present in a tuple."""
+    engine = create_engine(migrated)
+    with engine.connect() as conn:
+        transaction = conn.begin()
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE public.platform_audit_events "
+                    "RENAME TO platform_audit_events_hidden"
+                )
+            )
+            with pytest.raises(PrerequisiteNotSatisfiedError) as refusal:
+                require_prerequisites(conn, (PLATFORM_AUDIT_LOG_V1.name,))
+        finally:
+            transaction.rollback()
+
+        assert "0026_platform_audit_log" in str(refusal.value)
+        require_prerequisites(conn, BOUND_EFFECTS)
+    engine.dispose()
+
+
 def test_the_bound_effect_list_matches_what_the_module_requires() -> None:
-    """Two of the checks above iterate `BOUND_EFFECTS`; an emptied binding tuple
+    """Several checks above iterate `BOUND_EFFECTS`; an emptied binding tuple
     would collect nothing and report success.
 
     Compared against the installed manifest rather than a literal, so this stays
@@ -193,5 +218,5 @@ def test_the_bound_effect_list_matches_what_the_module_requires() -> None:
             *dotmac_integration.module.platform_requires,
         )
     )
-    assert len(BOUND_EFFECTS) == 2
+    assert len(BOUND_EFFECTS) == 3
     assert frozenset(BOUND_EFFECTS) == required

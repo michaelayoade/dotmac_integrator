@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel 0.1.0a68  ──┐
                           ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a5┘         (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a6┘         (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -95,14 +95,15 @@ export POETRY_HTTP_BASIC_FORGEJO_PASSWORD=...   # OpenBao: secret/dotmac/forgejo
 
 ## Surface
 
-Every route belongs to one of three CLASSES, and `create_app` refuses to return
+Every route belongs to one of four CLASSES, and `create_app` refuses to return
 an app that breaks a class rule — it is a boot failure, not a test failure.
 
 | Class | Prefix | Rule |
 |---|---|---|
 | probe | `/health/**` | Unauthenticated, read-only. An orchestrator holds no credential, and a probe that fails closed on an auth outage restarts healthy replicas. |
 | operator | `/operations/**` | `require_operator` on **every** route, reads included. Every mutation additionally carries a required `reason`. |
-| ingress | `/ingress/**` | Provider-authenticated, and must never carry the operator guard. **Nothing is mounted here yet** — the classification exists before the adapter so the adapter cannot inherit the wrong auth. |
+| ingress | `/ingress/**` | Provider-authenticated inside the discovered connector, and must never carry the operator guard. |
+| scrape | configured `METRICS_PATH` | Monitoring credential, read-only; neither an operator token nor a provider signature. |
 
 | Route | Purpose |
 |---|---|
@@ -113,7 +114,12 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | `GET /operations/health-report` | The module's report, unmodified. |
 | `GET /operations/secrets` | Which references resolved and why the others did not. **Names only.** |
 | `POST /operations/secrets/refresh` | Rotation. Explicit, never a TTL. |
+| `POST /operations/installations` | Draft and pin one discovered connector. Provider-neutral. |
+| `POST /operations/installations/{id}/bindings` | Create/update one connector-declared capability binding. |
+| `POST /operations/installations/{id}/config-revisions` | Write or select one immutable, digest-idempotent config revision. Secret references only. |
 | `POST /operations/installations/{id}/enable` | Materialises the revision's references, then the module's live connection check. |
+| `POST /operations/bindings/{id}/ingress-endpoint/mint` | Mint a bearer endpoint and return the key once; the key is never audited. |
+| `POST /operations/bindings/{id}/enable` | Ask the module to prove and enable the binding. |
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | |
 | `POST /operations/receipts/{id}/replay` | |
@@ -218,7 +224,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a1` | First published ingress connector. Declares SPI `>=1.2,<2.0`, exact-byte verification and `messaging.receive.v1`; its package entry point is the only runtime registration. |
-| `dotmac-integration` | `0.1.0a5` | Published SPI 1.2 module. Adds typed verification evidence and the provider-neutral observer used for rotation metrics; its required database effects are unchanged from a4. |
+| `dotmac-integration` | `0.1.0a6` | Published SPI 1.2 module. Owns config-schema validation and bounded connector diagnostics, and requires the append-only platform audit effect through `ig_0008`. |
 | `dotmac-kernel` | `0.1.0a68` | Current published kernel. It satisfies the module's `>=0.1.0a66` floor and is the exact release this three-wheel composition is tested against. |
 
 ### What a pin bump actually costs
@@ -275,16 +281,16 @@ and the answers are **proven, not believed**:
 - against a live PostgreSQL, by running the kernel's own verifier for each bound
   effect — and by proving that verification *bites* on this composition
   (`tests/composition/test_the_bindings_are_proven.py`);
-- at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`,
-  whose entire body is that call.
+- at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
+  and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a5` requires the same two effects introduced in a4,
-and both are bound:
+`dotmac-integration 0.1.0a6` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
 | `module_database_roles.v1` | kernel `0001_initial_tenant_schema` | every `ig` migration GRANTs to `app_admin`/`platform_api`/`app_user` and must never create a role itself |
 | `idempotency_ledger.v1` | kernel `0018_idempotency_one_owner` | `idempotency.run_effect_once` writes `public.platform_idempotency_records` on every guarded delivery |
+| `platform_audit_log.v1` | kernel `0026_platform_audit_log` | module and assembly operations append evidence through the online platform role, which must hold SELECT+INSERT and no mutation grant |
 
 Neither names the lineage root by default: `0018` is bound rather than `0001`
 because a database stopped at `0017` would order correctly, satisfy a
@@ -310,22 +316,18 @@ Retired is not unavailable: both effects are still *supplied* by the composed
 kernel lineage, so re-binding one is three lines — landed beside the module that
 requires it — and `binding_for` fails closed with an explicit message meanwhile.
 
-### `platform_audit_events` is a kernel gap, not worked around here
+### The platform audit dependency is now explicit
 
-`dotmac_integration.operations` adapts
-`dotmac_kernel.audit.write_platform_audit_event`, so this deployment depends on
-that table at request time. It has no binding because the kernel registers no
-prerequisite name for it — the same class of gap `idempotency_ledger.v1` and
-`outbox_relay.v1` closed in kernel a66 and a67. It is deliberately **not**
-worked around in the assembly: an effect with no name cannot be bound, and
-inventing a local one would make this assembly a second authority over the
-kernel's vocabulary.
+Kernel a68 registers and verifies `platform_audit_log.v1`; integration a6's
+`ig_0008` requires it. This assembly binds the effect to kernel `0026`, where
+the platform audit role becomes append-only. The former unnameable dependency
+is therefore a deploy-time verified contract rather than request-time luck.
 
 ### `ig_0001`'s literal edge is permanent — and it is the adoption constraint
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a5`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a6`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing

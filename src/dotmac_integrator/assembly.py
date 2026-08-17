@@ -32,10 +32,10 @@ decides anything.
   refuses to own: the unit of work, the secret resolver, and a GENERIC body cap.
   It authenticates nothing itself — the provider's signature scheme lives in the
   connector that knows it — and it must never carry the operator guard.
-* **No installation authoring.** There is no route that drafts an installation
-  or writes a configuration revision. A draft pins the connector installed at
-  that moment, so the first of those routes belongs with the first connector,
-  not before it.
+* **No provider-specific authoring.** One generic operations surface drafts a
+  discovered connector, writes its immutable config revision, binds a declared
+  capability and activates it. Provider identity and schema arrive from the
+  installed plugin; adding a connector adds no assembly route or branch.
 * **No tenant surface.** Every table here is platform-plane. There is no tenant
   context, no RLS, and no `app_user`.
 * **No migrations on boot.** `alembic upgrade` is a deploy step run as the owner
@@ -69,7 +69,13 @@ from dotmac_integrator import (
     telemetry,
 )
 from dotmac_integrator.manifest import module as assembly_module
-from dotmac_integrator.operator_auth import OperationReason, Operator
+from dotmac_integrator.operator_auth import (
+    BindingRequest,
+    ConfigRevisionRequest,
+    DraftInstallationRequest,
+    OperationReason,
+    Operator,
+)
 from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
@@ -247,6 +253,81 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """Rotation. Explicit, never a TTL (ADR-0009)."""
         return operations.refresh_secret_material(engine, actor, body.reason)
+
+    @app.post("/operations/installations", tags=["operations"])
+    def draft_installation(
+        body: DraftInstallationRequest,
+        actor: Operator,
+    ) -> dict[str, Any]:
+        return operations.create_installation(
+            engine,
+            connector_key=body.connector_key,
+            name=body.name,
+            environment=body.environment,
+            actor=actor,
+            reason=body.reason,
+        )
+
+    @app.post(
+        "/operations/installations/{installation_id}/bindings",
+        tags=["operations"],
+    )
+    def configure_binding(
+        installation_id: str,
+        body: BindingRequest,
+        actor: Operator,
+    ) -> dict[str, Any]:
+        return operations.configure_binding(
+            engine,
+            installation_id,
+            capability_id=body.capability_id,
+            scope=body.scope,
+            policy=body.policy,
+            actor=actor,
+            reason=body.reason,
+        )
+
+    @app.post(
+        "/operations/installations/{installation_id}/config-revisions",
+        tags=["operations"],
+    )
+    def configure_installation(
+        installation_id: str,
+        body: ConfigRevisionRequest,
+        actor: Operator,
+    ) -> dict[str, Any]:
+        return operations.configure_installation(
+            engine,
+            installation_id,
+            config=body.config,
+            secret_refs=body.secret_refs,
+            schema_version=body.schema_version,
+            actor=actor,
+            reason=body.reason,
+        )
+
+    @app.post(
+        "/operations/bindings/{binding_id}/ingress-endpoint/mint",
+        tags=["operations"],
+    )
+    def mint_binding_ingress_endpoint(
+        binding_id: str,
+        body: OperationReason,
+        actor: Operator,
+    ) -> dict[str, Any]:
+        return operations.mint_binding_ingress_endpoint(
+            engine, binding_id, actor=actor, reason=body.reason
+        )
+
+    @app.post("/operations/bindings/{binding_id}/enable", tags=["operations"])
+    def enable_binding(
+        binding_id: str,
+        body: OperationReason,
+        actor: Operator,
+    ) -> dict[str, Any]:
+        return operations.enable_binding(
+            engine, binding_id, actor=actor, reason=body.reason
+        )
 
     @app.post("/operations/installations/{installation_id}/enable", tags=["operations"])
     def enable_installation(

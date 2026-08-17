@@ -223,6 +223,154 @@ def test_the_tenant_role_holds_nothing_on_the_platform_identity_tables(
     assert granted is False
 
 
+# ── Provider-neutral authoring ──────────────────────────────────────────────
+
+
+def test_an_operator_can_author_the_installed_connector_without_direct_rows(
+    client: TestClient,
+    operator: tuple[str, str],
+    migrated: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Draft → bind → configure → validate → mint → activate, through HTTP.
+
+    This is the first real connector flow and deliberately creates no module
+    ORM row in the test.  The connector and capability identities occur only in
+    this acceptance fixture; generic assembly source learns them from package
+    metadata and operator input.
+    """
+    token, admin_id = operator
+    headers = _headers(token)
+    signing_name = "INTEGRATOR_SECRET_AUTHORING_SIGNING"
+    handshake_name = "INTEGRATOR_SECRET_AUTHORING_HANDSHAKE"
+    signing_ref = f"env://{signing_name}"
+    handshake_ref = f"env://{handshake_name}"
+    signing_material = "signing-material-never-persisted"
+    handshake_material = "handshake-material-never-persisted"
+
+    drafted = client.post(
+        "/operations/installations",
+        headers=headers,
+        json={
+            "connector_key": "meta_whatsapp",
+            "name": f"authoring-{uuid4().hex[:8]}",
+            "environment": "test",
+            "reason": "prove the first installed connector authoring flow",
+        },
+    )
+    assert drafted.status_code == 200, drafted.text
+    installation_id = drafted.json()["id"]
+    assert drafted.json()["state"] == "draft"
+
+    bound = client.post(
+        f"/operations/installations/{installation_id}/bindings",
+        headers=headers,
+        json={
+            "capability_id": "messaging.receive.v1",
+            "scope": {"deployment": "acceptance"},
+            "reason": "bind the declared ingress contract",
+        },
+    )
+    assert bound.status_code == 200, bound.text
+    binding_id = bound.json()["id"]
+    assert bound.json()["state"] == "disabled"
+
+    configured = client.post(
+        f"/operations/installations/{installation_id}/config-revisions",
+        headers=headers,
+        json={
+            "config": {
+                "signing_slots": ["signing"],
+                "handshake_slot": "handshake",
+            },
+            "secret_refs": {
+                "signing": signing_ref,
+                "handshake": handshake_ref,
+            },
+            "schema_version": "1",
+            "reason": "pin the ingress verification configuration",
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["is_new"] is True
+    assert configured.json()["validation_status"] == "pending"
+
+    monkeypatch.setenv(signing_name, signing_material)
+    monkeypatch.setenv(handshake_name, handshake_material)
+    refreshed = client.post(
+        "/operations/secrets/refresh",
+        headers=headers,
+        json={"reason": "materialise the two approved references"},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert {signing_ref, handshake_ref} <= set(refreshed.json()["held"])
+
+    enabled = client.post(
+        f"/operations/installations/{installation_id}/enable",
+        headers=headers,
+        json={"reason": "connection validation succeeded"},
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["state"] == "enabled"
+
+    minted = client.post(
+        f"/operations/bindings/{binding_id}/ingress-endpoint/mint",
+        headers=headers,
+        json={"reason": "publish the ingress address"},
+    )
+    assert minted.status_code == 200, minted.text
+    endpoint_key = minted.json()["ingress_endpoint_key"]
+    assert len(endpoint_key) == 48
+
+    activated = client.post(
+        f"/operations/bindings/{binding_id}/enable",
+        headers=headers,
+        json={"reason": "the provider subscription is ready"},
+    )
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["state"] == "enabled"
+
+    engine = create_engine(migrated)
+    with engine.connect() as conn:
+        persisted = conn.execute(
+            text(
+                "SELECT config_json::text, secret_refs::text "
+                "FROM mod_intg.connector_config_revisions "
+                "WHERE installation_id = CAST(:id AS uuid)"
+            ),
+            {"id": installation_id},
+        ).one()
+        evidence = conn.execute(
+            text(
+                "SELECT action, actor_admin_id, details::text "
+                "FROM platform_audit_events "
+                "WHERE entity_id IN (:installation_id, :binding_id)"
+            ),
+            {"installation_id": installation_id, "binding_id": binding_id},
+        ).all()
+    engine.dispose()
+
+    persisted_text = " ".join(str(value) for value in persisted)
+    audit_text = " ".join(str(value) for row in evidence for value in row)
+    assert signing_ref in persisted_text and handshake_ref in persisted_text
+    assert signing_material not in persisted_text + audit_text
+    assert handshake_material not in persisted_text + audit_text
+    assert endpoint_key not in audit_text
+    host_evidence = [row for row in evidence if str(row[0]).startswith("integrator.")]
+    assert all(str(row[1]) == admin_id for row in host_evidence)
+    assert all('"reason"' in str(row[2]) for row in host_evidence)
+    actions = {str(row[0]) for row in evidence}
+    assert {
+        "integrator.installation.drafted",
+        "integrator.binding.configured",
+        "integrator.installation.configured",
+        "integrator.installation.enabled",
+        "integrator.ingress_endpoint.minted",
+        "integrator.binding.enabled",
+        "integration.ingress_endpoint.minted",
+    } <= actions
+
+
 # ── The enablement gate ─────────────────────────────────────────────────────
 
 

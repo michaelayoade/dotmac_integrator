@@ -36,6 +36,7 @@ from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
     MODULE_DATABASE_ROLES_V1,
     OUTBOX_RELAY_V1,
+    PLATFORM_AUDIT_LOG_V1,
     TENANT_SCOPE_CATALOG_V1,
     PrerequisiteBinding,
     autoload_bindings,
@@ -51,13 +52,17 @@ from dotmac_integrator.migration_bindings import (
     unbound_prerequisites,
 )
 
-#: What `dotmac-integration 0.1.0a4` actually declares. Restated here ON PURPOSE,
+#: What `dotmac-integration 0.1.0a6` actually declares. Restated here ON PURPOSE,
 #: unlike everything else in this file, which reads the installed manifest: a pin
 #: bump that silently changes the requirement set must fail with a diff a reviewer
 #: can see, not adapt to it. `test_the_pinned_release_declares_what_we_think_it
 #: _does` is the comparison.
 EXPECTED_REQUIREMENTS = frozenset(
-    {MODULE_DATABASE_ROLES_V1.name, IDEMPOTENCY_LEDGER_V1.name}
+    {
+        MODULE_DATABASE_ROLES_V1.name,
+        IDEMPOTENCY_LEDGER_V1.name,
+        PLATFORM_AUDIT_LOG_V1.name,
+    }
 )
 
 #: Effects this assembly composes a provider for and deliberately does NOT bind,
@@ -220,6 +225,7 @@ def test_the_revision_scan_actually_reads_the_composed_lineages() -> None:
     # revision resolves `depends_on` at import time and would need the bindings
     # installed first, making a static check depend on runtime state.
     assert "ig_0007_idempotency_ledger" in composed
+    assert "ig_0008_platform_audit_log" in composed
 
 
 def test_the_uncomposed_revision_detector_bites() -> None:
@@ -301,6 +307,6 @@ def test_each_binding_names_an_owner(binding: PrerequisiteBinding) -> None:
 
 
 def test_the_binding_set_is_not_empty() -> None:
-    """Two, matching a4's two requirements exactly. A count rather than a
+    """Three, matching a6's three requirements exactly. A count rather than a
     non-empty check, so retiring or adding a binding is a deliberate edit."""
-    assert len(ASSEMBLY_PREREQUISITE_BINDINGS) == 2
+    assert len(ASSEMBLY_PREREQUISITE_BINDINGS) == 3

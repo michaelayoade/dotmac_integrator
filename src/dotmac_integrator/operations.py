@@ -30,11 +30,10 @@ visible in the call site instead of hidden in a signature.
 
 ## The transaction owner exercises its authority
 
-`lifecycle.enable` writes the connector's own failure text into
-`installation.state_reason` and FLUSHES before raising. If a connector echoes
-the credential it just failed to authenticate with, that credential lands in a
-row and in every backup. Nothing in the module can prevent it — but this
-assembly owns the transaction, and it declines to commit one.
+The module contains connector-owned validation detail from a6 onward: only a
+bounded diagnostic code reaches state or an exception. This assembly still
+redacts every external error and owns commit/rollback, because containment is a
+layered contract rather than permission to trust a plugin's future text.
 """
 
 from __future__ import annotations
@@ -47,6 +46,7 @@ import dotmac_integration as integration
 from dotmac_kernel.audit import write_platform_audit_event
 from fastapi import HTTPException
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_integrator import secret_loading, telemetry
@@ -192,6 +192,294 @@ def installed_connectors() -> dict[str, Any]:
 def health_report(engine: Engine) -> dict[str, Any]:
     with Session(engine) as db:
         return _jsonable_mapping(integration.health_report(db))
+
+
+def _lifecycle_conflict(exc: Exception) -> HTTPException:
+    """Translate a module refusal without broadening or leaking its text."""
+    detail = redact(str(exc)).strip() or "integration lifecycle operation refused"
+    return HTTPException(409, detail)
+
+
+def _installation(db: Session, raw: str) -> Any:
+    identifier = _uuid(raw, "installation_id")
+    row = db.get(integration.ConnectorInstallation, identifier)
+    if row is None:
+        raise HTTPException(404, f"no installation {raw}")
+    return row
+
+
+def _binding(db: Session, raw: str) -> Any:
+    identifier = _uuid(raw, "binding_id")
+    row = db.get(integration.CapabilityBinding, identifier)
+    if row is None:
+        raise HTTPException(404, f"no binding {raw}")
+    return row
+
+
+# ── Authoring — provider-neutral adapters over the module lifecycle ─────────
+
+
+def create_installation(
+    engine: Engine,
+    *,
+    connector_key: str,
+    name: str,
+    environment: str,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Draft and pin one connector discovered from installed metadata."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        try:
+            installation = integration.create_draft(
+                db,
+                registry=registry,
+                connector_key=connector_key,
+                name=name,
+                environment=environment,
+                actor=actor.label,
+            )
+            _record(
+                db,
+                actor,
+                action="integrator.installation.drafted",
+                entity_type="connector_installation",
+                entity_id=str(installation.id),
+                details={
+                    "reason": reason,
+                    "connector_key": installation.connector_key,
+                    "connector_version": installation.connector_version,
+                    "environment": installation.environment,
+                },
+            )
+            db.commit()
+        except integration.InvalidManifestError as exc:
+            raise _lifecycle_conflict(exc) from None
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                409,
+                "an installation with this connector key and name already exists",
+            ) from None
+        return {
+            "id": str(installation.id),
+            "connector_key": installation.connector_key,
+            "connector_version": installation.connector_version,
+            "manifest_digest": installation.manifest_digest,
+            "name": installation.name,
+            "environment": installation.environment,
+            "state": installation.state,
+        }
+
+
+def configure_installation(
+    engine: Engine,
+    installation_id: str,
+    *,
+    config: dict[str, object],
+    secret_refs: dict[str, object],
+    schema_version: str,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Mint or select an immutable, digest-idempotent configuration revision."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        installation = _installation(db, installation_id)
+        try:
+            revision, is_new = integration.put_config_revision(
+                db,
+                installation,
+                registry=registry,
+                config=config,
+                secret_refs=secret_refs,
+                schema_version=schema_version,
+                actor=actor.label,
+            )
+        except (
+            integration.InvalidManifestError,
+            integration.LifecycleError,
+            integration.SecretValueError,
+        ) as exc:
+            raise _lifecycle_conflict(exc) from None
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                409,
+                "configuration revision conflicted with a concurrent write; retry",
+            ) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.configured",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={
+                "reason": reason,
+                "config_revision_id": str(revision.id),
+                "revision": revision.revision,
+                "schema_version": revision.schema_version,
+                "is_new": is_new,
+            },
+        )
+        db.commit()
+        return {
+            "installation_id": str(installation.id),
+            "config_revision_id": str(revision.id),
+            "revision": revision.revision,
+            "schema_version": revision.schema_version,
+            "config_digest": revision.config_digest,
+            "validation_status": revision.validation_status,
+            "is_new": is_new,
+            "installation_state": installation.state,
+        }
+
+
+def configure_binding(
+    engine: Engine,
+    installation_id: str,
+    *,
+    capability_id: str,
+    scope: dict[str, object] | None,
+    policy: dict[str, object] | None,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Create or update the one binding for a declared capability."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        installation = _installation(db, installation_id)
+        try:
+            binding = integration.add_binding(
+                db,
+                installation,
+                registry=registry,
+                capability_id=capability_id,
+                scope=scope,
+                policy=policy,
+                actor=actor.label,
+            )
+        except (integration.InvalidManifestError, integration.LifecycleError) as exc:
+            raise _lifecycle_conflict(exc) from None
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                409,
+                "capability binding conflicted with a concurrent write; retry",
+            ) from None
+        _record(
+            db,
+            actor,
+            action="integrator.binding.configured",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={
+                "reason": reason,
+                "installation_id": str(installation.id),
+                "capability_id": binding.capability_id,
+            },
+        )
+        db.commit()
+        return {
+            "id": str(binding.id),
+            "installation_id": str(installation.id),
+            "capability_id": binding.capability_id,
+            "state": binding.state,
+        }
+
+
+def mint_binding_ingress_endpoint(
+    engine: Engine,
+    binding_id: str,
+    *,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Mint one bearer address and return its key exactly once."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        binding = _binding(db, binding_id)
+        try:
+            endpoint_key = integration.mint_ingress_endpoint(
+                db, binding, registry=registry, actor=actor.label
+            )
+        except (integration.InvalidManifestError, integration.LifecycleError) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.ingress_endpoint.minted",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={
+                "reason": reason,
+                "installation_id": str(binding.installation_id),
+                "capability_id": binding.capability_id,
+            },
+        )
+        db.commit()
+        return {
+            "binding_id": str(binding.id),
+            "ingress_endpoint_key": endpoint_key,
+        }
+
+
+def enable_binding(
+    engine: Engine,
+    binding_id: str,
+    *,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Enable one binding after the module proves it is activatable."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        binding = _binding(db, binding_id)
+        installation = db.get(
+            integration.ConnectorInstallation, binding.installation_id
+        )
+        if installation is None:  # pragma: no cover - protected by the FK
+            raise HTTPException(409, "binding installation is missing")
+        try:
+            integration.set_binding_enabled(
+                db,
+                installation,
+                binding,
+                registry=registry,
+                enabled=True,
+                actor=actor.label,
+            )
+        except (
+            integration.ActivationRefused,
+            integration.InvalidManifestError,
+            integration.LifecycleError,
+        ) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.binding.enabled",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={
+                "reason": reason,
+                "installation_id": str(installation.id),
+                "capability_id": binding.capability_id,
+            },
+        )
+        db.commit()
+        return {
+            "id": str(binding.id),
+            "installation_id": str(installation.id),
+            "capability_id": binding.capability_id,
+            "state": binding.state,
+            "enabled_at": (
+                binding.enabled_at.isoformat()
+                if binding.enabled_at is not None
+                else None
+            ),
+        }
 
 
 # ── Secret material ─────────────────────────────────────────────────────────
