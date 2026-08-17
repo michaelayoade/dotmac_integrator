@@ -136,6 +136,9 @@ def _claim(observation: dict[str, object], attempt: int = 1) -> Any:
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
+        provider_event_id=str(
+            observation.get("provider_event_id", "missing-provider-event-id")
+        ),
         event_type="messaging.receive.v1",
         observation=observation,
         correlation_id="corr-1",
@@ -509,6 +512,7 @@ def test_a_binding_naming_another_application_is_not_delivered() -> None:
         attempt=1,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Elsewhere(),
+        provider_event_id=str(MESSAGE_OBSERVATION["provider_event_id"]),
         event_type="messaging.receive.v1",
         observation=dict(MESSAGE_OBSERVATION),
         correlation_id="corr-1",

@@ -86,3 +86,49 @@ def test_an_unimplemented_operator_mechanism_is_fatal_outside_production_too() -
 def test_the_implemented_mechanism_passes_everywhere() -> None:
     assert OPERATOR_AUTH_MECHANISMS == ("platform_admin",)
     assert validate_settings(build_settings()) == []
+
+
+def _configured_product_port(**overrides: object) -> Settings:
+    base: dict[str, object] = {
+        "product_port_enabled": True,
+        "product_port_mode": "mirror",
+        "product_port_application": "destination",
+        "product_port_base_url": "https://destination.example",
+        "product_port_api_key_ref": "env://INTEGRATOR_SECRET_DESTINATION",
+        "product_port_bindings": (
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa="
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        ),
+        "product_port_capabilities": (
+            "messaging.receive.v1 = destination/communications : observations"
+        ),
+        "product_port_shadow_revision": "image-sha256:comparison-v1",
+    }
+    return build_settings(**{**base, **overrides})
+
+
+def test_a_shadow_port_requires_an_explicit_comparison_revision() -> None:
+    problems = validate_settings(
+        _configured_product_port(product_port_shadow_revision="")
+    )
+
+    assert any("PRODUCT_PORT_SHADOW_REVISION" in problem for problem in problems)
+
+
+def test_a_configured_shadow_revision_and_retry_interval_are_accepted() -> None:
+    settings = _configured_product_port(product_port_shadow_retry_seconds=90)
+
+    assert validate_settings(settings) == []
+    assert settings.product_port_shadow_revision == "image-sha256:comparison-v1"
+    assert settings.product_port_shadow_retry_seconds == 90
+
+
+def test_write_mode_does_not_invent_a_shadow_revision_requirement() -> None:
+    assert (
+        validate_settings(
+            _configured_product_port(
+                product_port_mode="write", product_port_shadow_revision=""
+            )
+        )
+        == []
+    )

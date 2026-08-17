@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel 0.1.0a68  ──┐
                           ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a6┘         (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a8┘         (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -224,7 +224,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a1` | First published ingress connector. Declares SPI `>=1.2,<2.0`, exact-byte verification and `messaging.receive.v1`; its package entry point is the only runtime registration. |
-| `dotmac-integration` | `0.1.0a6` | Published SPI 1.2 module. Owns config-schema validation and bounded connector diagnostics, and requires the append-only platform audit effect through `ig_0008`. |
+| `dotmac-integration` | `0.1.0a8` | Published SPI 1.2 module. Adds source-revisioned product-port descriptors and indexed, revisioned shadow evidence through `ig_0010`; the assembly only schedules and commits module service calls. |
 | `dotmac-kernel` | `0.1.0a68` | Current published kernel. It satisfies the module's `>=0.1.0a66` floor and is the exact release this three-wheel composition is tested against. |
 
 ### What a pin bump actually costs
@@ -284,13 +284,13 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a6` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a8` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
 | `module_database_roles.v1` | kernel `0001_initial_tenant_schema` | every `ig` migration GRANTs to `app_admin`/`platform_api`/`app_user` and must never create a role itself |
 | `idempotency_ledger.v1` | kernel `0018_idempotency_one_owner` | `idempotency.run_effect_once` writes `public.platform_idempotency_records` on every guarded delivery |
-| `platform_audit_log.v1` | kernel `0026_platform_audit_log` | module and assembly operations append evidence through the online platform role, which must hold SELECT+INSERT and no mutation grant |
+| `platform_audit_log.v1` | kernel `0026_platform_audit_log` | module and assembly operator actions append audit facts through the online platform role, which must hold SELECT+INSERT and no mutation grant |
 
 Neither names the lineage root by default: `0018` is bound rather than `0001`
 because a database stopped at `0017` would order correctly, satisfy a
@@ -318,7 +318,7 @@ requires it — and `binding_for` fails closed with an explicit message meanwhil
 
 ### The platform audit dependency is now explicit
 
-Kernel a68 registers and verifies `platform_audit_log.v1`; integration a6's
+Kernel a68 registers and verifies `platform_audit_log.v1`; integration a8's
 `ig_0008` requires it. This assembly binds the effect to kernel `0026`, where
 the platform audit role becomes append-only. The former unnameable dependency
 is therefore a deploy-time verified contract rather than request-time luck.
@@ -327,7 +327,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a6`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a8`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing
@@ -480,7 +480,19 @@ cannot become a writer by accident. That narrowness is honoured on this side:
 the client declares a direction, `install_product_port` requires it, a `MIRROR`
 client's `deliver` raises, and the delivery pump refuses to run against one. A
 shadow deployment runs `mirror_due_receipts` instead — it claims nothing,
-settles nothing, and returns verdict counts.
+settles nothing, and returns verdict counts. Each comparison is appended through
+the module's `record_shadow_observation` service to
+`mod_intg.shadow_comparison_evidence`, keyed by the immutable
+`PRODUCT_PORT_SHADOW_REVISION`. Terminal results run once per receipt and
+revision; `no_counterpart`, `unreadable`, and `unrecognized` results are sampled
+again only after `PRODUCT_PORT_SHADOW_RETRY_SECONDS`. Changing the revision
+deliberately re-drives the full population after an image or contract change.
+
+`GET /operations/shadow-report` asks the module to reduce the latest observation
+per receipt into counts, field names and an observation window. It emits no
+receipt or provider identifiers. `sample_has_no_blockers` describes that
+non-empty sample only; it cannot approve a cutover without traffic-cycle,
+replay/collision, credential-scope, migration and rollback evidence.
 
 The failure this prevents is the expensive one. A shadow run that settled
 receipts as `processed` would look exactly like a completed cutover, while every

@@ -165,7 +165,10 @@ class Worker:
             # branch inside `deliver_due_receipts` — a flag threaded into the
             # delivery pump is one edit away from a shadow run that settles.
             compared = delivery.mirror_due_receipts(
-                self._engine, self._settings.worker_batch_size
+                self._engine,
+                self._settings.worker_batch_size,
+                comparison_revision=self._settings.product_port_shadow_revision,
+                retry_after_seconds=self._settings.product_port_shadow_retry_seconds,
             )
             if compared["compared"] or compared["unreadable"]:
                 # Verdict COUNTS. A per-receipt verdict names the provider's

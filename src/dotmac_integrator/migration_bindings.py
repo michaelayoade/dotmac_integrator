@@ -45,7 +45,7 @@ the same lesson; do not reintroduce it here.
 
 ## Three effects, because three are required — and two were RETIRED
 
-`dotmac-integration 0.1.0a6` declares the database roles, idempotency ledger and
+`dotmac-integration 0.1.0a8` declares the database roles, idempotency ledger and
 append-only platform audit log requirements. All three are bound below, and
 nothing else is.
 
@@ -77,15 +77,15 @@ append-only log as `platform_audit_log.v1`, and `ig_0008` requires it. The
 provider is kernel `0026`, the revision that completes the effect by removing
 UPDATE/DELETE and column-level escape grants from the online platform role.
 
-## The `ig_0001` literal edge — unrepaired through a6
+## The `ig_0001` literal edge — unrepaired through a8
 
 `ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
-at `0.1.0a6` — a physical edge naming a foreign revision, which is exactly what
+at `0.1.0a8` — a physical edge naming a foreign revision, which is exactly what
 the prerequisite vocabulary exists to replace. It cannot be repaired at any
 version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
 the Starter does not own, and `alembic_version` records that a revision ran,
 never which version of it. a4 added `ig_0007` rather than editing the root for
-that reason; a6 correctly leaves released migrations unchanged.
+that reason; a8 correctly leaves released migrations unchanged.
 
 So the constraint is permanent for this lineage: **an adopter that cannot run
 kernel `0001_initial_tenant_schema` cannot install `dotmac-integration` at all**,

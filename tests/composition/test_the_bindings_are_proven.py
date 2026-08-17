@@ -84,7 +84,7 @@ def test_each_bound_effect_has_a_verifier(effect: str) -> None:
 
 
 def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
-    """The fixture's `alembic upgrade heads` ran `ig_0008`, so the DEPLOY path
+    """The fixture's `alembic upgrade heads` advanced past `ig_0008`, so the DEPLOY path
     was exercised — not merely this file's re-check afterwards.
 
     `ig_0008_platform_audit_log` creates nothing. Its entire body is
@@ -97,19 +97,21 @@ def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
 
     Asserted on the head of the `ig` branch rather than by scanning history,
     because `alembic_version` holds current heads and nothing else — the same
-    fact that makes an order canary the wrong instrument. `ig_0008` IS the head
-    at a6, so the row is the right question to ask.
+    fact that makes an order canary the wrong instrument. `ig_0010` is the head
+    at a8, so that row is the right question to ask; its ancestry includes the
+    prerequisite-verification revision.
     """
     engine = create_engine(migrated)
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT version_num FROM alembic_version"))
         applied = {row[0] for row in rows}
     engine.dispose()
-    assert "ig_0008_platform_audit_log" in applied, (
+    assert "ig_0010_shadow_evidence" in applied, (
         f"alembic_version holds {sorted(applied)}. The `ig` head at "
-        "dotmac-integration 0.1.0a6 is ig_0008_platform_audit_log, whose only "
-        "body is require_prerequisites — if it did not run, the deploy-time "
-        "verification did not happen and `upgrade heads` applied one branch."
+        "dotmac-integration 0.1.0a8 is ig_0010_shadow_evidence, whose ancestry "
+        "includes ig_0008_platform_audit_log. If the head did not run, the "
+        "deploy-time verification did not complete and `upgrade heads` applied "
+        "one branch."
     )
 
 

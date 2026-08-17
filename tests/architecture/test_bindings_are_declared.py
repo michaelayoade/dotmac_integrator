@@ -52,7 +52,7 @@ from dotmac_integrator.migration_bindings import (
     unbound_prerequisites,
 )
 
-#: What `dotmac-integration 0.1.0a6` actually declares. Restated here ON PURPOSE,
+#: What `dotmac-integration 0.1.0a8` actually declares. Restated here ON PURPOSE,
 #: unlike everything else in this file, which reads the installed manifest: a pin
 #: bump that silently changes the requirement set must fail with a diff a reviewer
 #: can see, not adapt to it. `test_the_pinned_release_declares_what_we_think_it
@@ -226,6 +226,8 @@ def test_the_revision_scan_actually_reads_the_composed_lineages() -> None:
     # installed first, making a static check depend on runtime state.
     assert "ig_0007_idempotency_ledger" in composed
     assert "ig_0008_platform_audit_log" in composed
+    assert "ig_0009_product_port_desc" in composed
+    assert "ig_0010_shadow_evidence" in composed
 
 
 def test_the_uncomposed_revision_detector_bites() -> None:
@@ -307,6 +309,6 @@ def test_each_binding_names_an_owner(binding: PrerequisiteBinding) -> None:
 
 
 def test_the_binding_set_is_not_empty() -> None:
-    """Three, matching a6's three requirements exactly. A count rather than a
+    """Three, matching a8's three requirements exactly. A count rather than a
     non-empty check, so retiring or adding a binding is a deliberate edit."""
     assert len(ASSEMBLY_PREREQUISITE_BINDINGS) == 3

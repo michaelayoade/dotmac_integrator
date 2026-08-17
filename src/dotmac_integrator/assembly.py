@@ -234,6 +234,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         return operations.health_report(engine)
 
+    @app.get("/operations/shadow-report", tags=["operations"])
+    def shadow_report(
+        _actor: Operator,
+    ) -> dict[str, object]:
+        return operations.shadow_report(engine, settings.product_port_shadow_revision)
+
     @app.get("/operations/secrets", tags=["operations"])
     def secrets_held(
         _actor: Operator,

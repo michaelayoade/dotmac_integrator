@@ -234,6 +234,24 @@ class Settings(BaseSettings):
             "receipt lease so a call cannot outlive the claim it was made under."
         ),
     )
+    product_port_shadow_revision: str = Field(
+        default="",
+        max_length=160,
+        description=(
+            "Immutable image/contract revision whose mirror evidence is being "
+            "collected. Required only in mirror mode: changing it deliberately "
+            "re-drives the full receipt population after a deployment change."
+        ),
+    )
+    product_port_shadow_retry_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Minimum wait before re-checking transient shadow verdicts. This "
+            "bounds evidence sampling; it is not delivery retry policy and "
+            "never changes a receipt attempt."
+        ),
+    )
 
     # ── Observability ───────────────────────────────────────────────────────
     # The scrape endpoint is a knob, not a constant: a deployment that exports
@@ -315,6 +333,19 @@ def _product_port_problems(settings: Settings) -> list[str]:
             problems.append(
                 f"PRODUCT_PORT_ENABLED is on and {name} is empty; a port that "
                 "cannot address the destination would fail every receipt"
+            )
+    if settings.product_port_mode == "mirror":
+        revision = settings.product_port_shadow_revision
+        if not revision.strip():
+            problems.append(
+                "PRODUCT_PORT_SHADOW_REVISION is required in mirror mode; "
+                "without an immutable deployment revision, evidence from "
+                "different code cannot be separated or deliberately re-driven"
+            )
+        elif revision != revision.strip():
+            problems.append(
+                "PRODUCT_PORT_SHADOW_REVISION must not have leading or trailing "
+                "whitespace"
             )
     reference = settings.product_port_api_key_ref.strip()
     if reference and not reference.startswith(("env://", "file://")):

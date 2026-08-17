@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from dotmac_integrator import delivery, telemetry
+from dotmac_integrator.product_port import MirrorVerdict
 
 
 class _Scope:
@@ -45,6 +46,7 @@ def _claim(receipt_id: UUID, attempt: int = 1) -> integration.ReceiptClaim:
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
+        provider_event_id=f"provider-{receipt_id}",
         event_type="message.received",
         observation={"messages": []},
         correlation_id=str(receipt_id),
@@ -279,3 +281,115 @@ def test_the_delivery_vocabulary_is_the_MODULES_own() -> None:
 def test_a_receipt_identifier_cannot_become_a_delivery_label() -> None:
     with pytest.raises(telemetry.UndeclaredLabel):
         telemetry.counters.record_product_acceptance(str(uuid4()))
+
+
+# ── Durable shadow evidence ─────────────────────────────────────────────────
+
+
+class _ShadowGateway:
+    writes = False
+
+    def __init__(self, *, failure: bool = False) -> None:
+        self.failure = failure
+
+    def deliver(
+        self, request: integration.ProductRequest
+    ) -> integration.ProductOutcome:  # pragma: no cover - must not be called
+        raise AssertionError("a shadow gateway cannot deliver")
+
+    def mirror(self, request: integration.ProductRequest) -> MirrorVerdict:
+        if self.failure:
+            raise integration.TransportFailure("foreign text is never evidence")
+        return MirrorVerdict(
+            verdict="agrees",
+            agrees=True,
+            blocking_reasons=(),
+            disagreeing_fields=(),
+        )
+
+
+def test_the_shadow_pass_appends_module_owned_evidence_for_each_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_id = uuid4()
+    recorded: list[tuple[UUID, integration.SafeShadowVerdict]] = []
+    commits: list[bool] = []
+
+    def record(
+        engine: object,
+        *,
+        receipt_id: UUID,
+        comparison_revision: str,
+        verdict: integration.SafeShadowVerdict,
+    ) -> None:
+        recorded.append((receipt_id, verdict))
+        commits.append(True)
+
+    delivery.install_product_port(_ShadowGateway(), registry=integration.EMPTY_REGISTRY)
+    monkeypatch.setattr(
+        delivery,
+        "due_shadow_receipt_ids",
+        lambda *args, **kwargs: (receipt_id,),
+    )
+    monkeypatch.setattr(delivery, "_shadow_request", lambda *args: object())
+    monkeypatch.setattr(
+        delivery,
+        "_record_shadow_observation",
+        record,
+    )
+    try:
+        counted = delivery.mirror_due_receipts(
+            _UNUSED_ENGINE,
+            10,
+            comparison_revision="image-sha256:test",
+            retry_after_seconds=300,
+        )
+    finally:
+        _reset_port()
+
+    assert counted == {"compared": 1, "unreadable": 0, "agrees": 1}
+    assert commits == [True]
+    assert recorded == [
+        (
+            receipt_id,
+            integration.SafeShadowVerdict(
+                verdict="agrees", blocking_reasons=(), disagreeing_fields=()
+            ),
+        )
+    ]
+
+
+def test_an_unreadable_comparison_is_evidenced_without_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_id = uuid4()
+    recorded: list[integration.SafeShadowVerdict] = []
+    delivery.install_product_port(
+        _ShadowGateway(failure=True), registry=integration.EMPTY_REGISTRY
+    )
+    monkeypatch.setattr(
+        delivery,
+        "due_shadow_receipt_ids",
+        lambda *args, **kwargs: (receipt_id,),
+    )
+    monkeypatch.setattr(delivery, "_shadow_request", lambda *args: object())
+    monkeypatch.setattr(
+        delivery,
+        "_record_shadow_observation",
+        lambda engine, *, receipt_id, comparison_revision, verdict: recorded.append(
+            verdict
+        ),
+    )
+    try:
+        counted = delivery.mirror_due_receipts(
+            _UNUSED_ENGINE,
+            10,
+            comparison_revision="image-sha256:test",
+            retry_after_seconds=300,
+        )
+    finally:
+        _reset_port()
+
+    assert counted == {"compared": 0, "unreadable": 1}
+    assert recorded == [integration.unreadable_shadow_verdict()]
+    assert "foreign text" not in repr(recorded)
