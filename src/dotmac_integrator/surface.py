@@ -151,15 +151,18 @@ def _takes_a_reason(route: APIRoute) -> bool:
 
     `get_type_hints`, not `inspect.signature`. Every module here starts with
     `from __future__ import annotations`, so a raw signature yields the STRING
-    `"OperationReason"` and an identity comparison against the class silently
-    answers False for every route — a guard that reports every correct route as
-    a violation gets deleted, and one that reports none of them is worse.
+    `"OperationReason"`. Subclasses count too: authoring payloads add fields but
+    inherit the same mandatory reason, and an identity-only check would reject
+    every correctly guarded authoring route.
     """
     try:
         hints = get_type_hints(route.endpoint)
     except (NameError, TypeError):  # pragma: no cover — unresolvable annotation
         return False
-    return any(hint is OperationReason for hint in hints.values())
+    return any(
+        isinstance(hint, type) and issubclass(hint, OperationReason)
+        for hint in hints.values()
+    )
 
 
 def _api_routes(app: FastAPI) -> Iterator[APIRoute]:

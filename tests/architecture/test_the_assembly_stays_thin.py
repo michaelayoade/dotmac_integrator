@@ -176,6 +176,8 @@ def test_routes_hold_no_session_and_issue_no_query() -> None:
 # Functions `dotmac_integration` owns. Defining one HERE would shadow the
 # module's and make this assembly the writer.
 OWNED_BY_THE_MODULE = (
+    "add_binding",
+    "create_draft",
     "resolve_binding",
     "claim_delivery",
     "settle",
@@ -185,6 +187,9 @@ OWNED_BY_THE_MODULE = (
     "retry_delay_seconds",
     "check_activation",
     "require_activatable",
+    "mint_ingress_endpoint",
+    "put_config_revision",
+    "set_binding_enabled",
     "validate_secret_refs",
     "record_delivery_outcome",
 )

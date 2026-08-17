@@ -47,17 +47,20 @@ because a fabricated justification in an audit row reads as deliberate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from dotmac_kernel.platform_auth import authenticate_platform_request
 from fastapi import Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy.orm import Session
 
 from dotmac_integrator.settings import OPERATOR_AUTH_MECHANISMS
 
 __all__ = [
+    "BindingRequest",
+    "ConfigRevisionRequest",
+    "DraftInstallationRequest",
     "OperationReason",
     "Operator",
     "OperatorIdentity",
@@ -65,10 +68,51 @@ __all__ = [
 ]
 
 
+_ReasonText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+]
+_ConnectorKey = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
+]
+_InstallationName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)
+]
+_CapabilityId = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)
+]
+_SchemaVersion = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)
+]
+
+
 class OperationReason(BaseModel):
     """Why an operator is doing this. Recorded, never invented."""
 
-    reason: str = Field(min_length=1, max_length=500)
+    reason: _ReasonText
+
+
+class DraftInstallationRequest(OperationReason):
+    """Provider-neutral inputs for pinning one discovered connector."""
+
+    connector_key: _ConnectorKey
+    name: _InstallationName
+    environment: Literal["production", "sandbox", "test"] = "production"
+
+
+class ConfigRevisionRequest(OperationReason):
+    """One immutable revision: public config plus secret references only."""
+
+    config: dict[str, object]
+    secret_refs: dict[str, object] = Field(default_factory=dict)
+    schema_version: _SchemaVersion = "1"
+
+
+class BindingRequest(OperationReason):
+    """Bind one connector-declared capability without selecting a provider."""
+
+    capability_id: _CapabilityId
+    scope: dict[str, object] | None = None
+    policy: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

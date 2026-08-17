@@ -48,6 +48,32 @@ def test_the_real_surface_is_correct() -> None:
     assert audit_routes(create_app(settings), metrics_path=settings.metrics_path) == []
 
 
+def test_the_provider_neutral_authoring_routes_are_mounted() -> None:
+    """The first connector can be installed without a provider-shaped route.
+
+    The assembly supplies one generic lifecycle surface.  A connector appears
+    here only through entry-point discovery and operator-supplied identifiers;
+    adding the next connector must not add another route.
+    """
+    from fastapi.routing import APIRoute
+
+    app = create_app(build_settings())
+    mounted = {
+        (method, route.path)
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods or set()
+    }
+    expected = {
+        ("POST", "/operations/installations"),
+        ("POST", "/operations/installations/{installation_id}/bindings"),
+        ("POST", "/operations/installations/{installation_id}/config-revisions"),
+        ("POST", "/operations/bindings/{binding_id}/ingress-endpoint/mint"),
+        ("POST", "/operations/bindings/{binding_id}/enable"),
+    }
+    assert expected <= mounted, sorted(expected - mounted)
+
+
 def test_app_construction_installs_the_composed_audit_vocabulary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

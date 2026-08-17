@@ -21,11 +21,50 @@ from typing import Any
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from dotmac_integrator.assembly import create_app
+from dotmac_integrator.operator_auth import (
+    BindingRequest,
+    ConfigRevisionRequest,
+    DraftInstallationRequest,
+    OperationReason,
+)
 from tests.support import build_settings
 
 SAMPLE_UUID = "00000000-0000-4000-8000-000000000000"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: OperationReason(reason="  "),
+        lambda: DraftInstallationRequest(
+            reason="operator request", connector_key="  ", name="named"
+        ),
+        lambda: DraftInstallationRequest(
+            reason="operator request", connector_key="connector", name="  "
+        ),
+        lambda: BindingRequest(reason="operator request", capability_id="  "),
+        lambda: ConfigRevisionRequest(
+            reason="operator request", config={}, schema_version="  "
+        ),
+    ],
+)
+def test_authoring_identity_fields_are_not_whitespace(factory: Any) -> None:
+    with pytest.raises(ValidationError):
+        factory()
+
+
+def test_authoring_inputs_are_normalised_before_the_module_sees_them() -> None:
+    request = DraftInstallationRequest(
+        reason="  a stated reason  ",
+        connector_key="  connector.key  ",
+        name="  Primary  ",
+    )
+    assert request.reason == "a stated reason"
+    assert request.connector_key == "connector.key"
+    assert request.name == "Primary"
 
 
 def _client() -> TestClient:
@@ -41,7 +80,12 @@ def _operations_routes() -> list[tuple[str, str]]:
         if not isinstance(route, APIRoute) or not route.path.startswith("/operations/"):
             continue
         concrete = route.path
-        for parameter in ("installation_id", "delivery_id", "receipt_id"):
+        for parameter in (
+            "installation_id",
+            "binding_id",
+            "delivery_id",
+            "receipt_id",
+        ):
             concrete = concrete.replace(f"{{{parameter}}}", SAMPLE_UUID)
         for method in sorted(route.methods or set()):
             if method in {"HEAD", "OPTIONS"}:
