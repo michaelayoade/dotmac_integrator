@@ -181,7 +181,7 @@ def installed_connectors() -> dict[str, Any]:
     Entry-point discovery, so the answer is the set of INSTALLED connector
     distributions — not a list this assembly maintains. A connector appears here
     by being installed, which is the only mechanism; there is no registration
-    call and no name hardcoded anywhere in this repository.
+    call and no provider identity hardcoded in generic assembly source.
     """
     registry = integration.discover()
     plugins = getattr(registry, "plugins", ())

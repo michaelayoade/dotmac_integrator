@@ -80,15 +80,15 @@ in a66/a67, and it is deliberately NOT worked around here: an effect with no nam
 cannot be bound, and inventing a local one would make this assembly a second
 authority over the kernel's vocabulary.
 
-## The `ig_0001` literal edge — unrepaired through a4
+## The `ig_0001` literal edge — unrepaired through a5
 
 `ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
-at `0.1.0a4` — a physical edge naming a foreign revision, which is exactly what
+at `0.1.0a5` — a physical edge naming a foreign revision, which is exactly what
 the prerequisite vocabulary exists to replace. It cannot be repaired at any
 version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
-the Starter does not own, and `alembic_version` records that a revision ran, never
-which version of it. a4 added `ig_0007` rather than editing the root for that
-reason.
+the Starter does not own, and `alembic_version` records that a revision ran,
+never which version of it. a4 added `ig_0007` rather than editing the root for
+that reason; a5 correctly leaves both released migrations unchanged.
 
 So the constraint is permanent for this lineage: **an adopter that cannot run
 kernel `0001_initial_tenant_schema` cannot install `dotmac-integration` at all**,

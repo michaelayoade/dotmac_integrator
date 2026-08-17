@@ -124,6 +124,7 @@ __all__ = [
     "CONTACT_PROFILE_FIELDS",
     "DELIVERY_RECEIPT_FIELDS",
     "ENVELOPE_FIELDS",
+    "LOCATION_FIELDS",
     "MESSAGE_FIELDS",
     "EnvelopeNotConstructible",
     "HttpAnswer",
@@ -200,6 +201,9 @@ class WireField:
     kind: type
     required: bool = False
     max_length: int | None = None
+    allow_empty: bool = False
+    minimum: int | float | None = None
+    maximum: int | float | None = None
 
 
 #: The message observation, field for field. Mirrors
@@ -207,7 +211,7 @@ class WireField:
 #: handled separately because they are nested models rather than scalars.
 MESSAGE_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("contact_address", str, required=True, max_length=320),
-    WireField("body", str, required=True),
+    WireField("body", str, required=True, max_length=10_000, allow_empty=True),
     WireField("contact_name", str, max_length=255),
     WireField("subject", str, max_length=500),
     WireField("external_message_id", str, required=True, max_length=255),
@@ -236,8 +240,18 @@ ATTACHMENT_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("provider_media_id", str, max_length=255),
     WireField("source_url", str, max_length=2000),
     WireField("caption", str, max_length=2000),
-    WireField("file_size", int),
+    WireField("file_size", int, minimum=0),
     WireField("download_status", str, max_length=40),
+)
+
+#: Mirrors `IntegratorLocation`, nested under one attachment. Coordinates are
+#: numeric facts, not presentation strings, and the destination validates their
+#: geographic bounds before any domain consequence runs.
+LOCATION_FIELDS: Final[tuple[WireField, ...]] = (
+    WireField("latitude", float, required=True, minimum=-90, maximum=90),
+    WireField("longitude", float, required=True, minimum=-180, maximum=180),
+    WireField("name", str, max_length=255),
+    WireField("address", str, max_length=500),
 )
 
 #: Mirrors `IntegratorDeliveryReceiptObservation`. `error_codes` is a list of
@@ -268,6 +282,13 @@ _MESSAGE_KEY: Final = "message"
 _RECEIPT_KEY: Final = "delivery_receipt"
 _OBSERVATION_SLOTS: Final[frozenset[str]] = frozenset({_MESSAGE_KEY, _RECEIPT_KEY})
 
+#: Evidence used to diagnose the connector's translation remains on the
+#: Integrator receipt. It is deliberately absent from the destination's domain
+#: contract: transport provenance is not customer/message state.
+_LOCAL_ONLY_OBSERVATION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"transport_evidence"}
+)
+
 #: The destination's scope field, which carries this deployment's own binding
 #: scope as provenance. Bounded here so an over-long scope is named locally
 #: rather than arriving as a generic validation refusal.
@@ -275,7 +296,9 @@ _SCOPE_KIND_MAX: Final = 60
 _SCOPE_REF_MAX: Final = 160
 
 
-def _checked(field: WireField, value: object, *, where: str) -> str | int | None:
+def _checked(
+    field: WireField, value: object, *, where: str
+) -> str | int | float | None:
     if value is None:
         if field.required:
             raise EnvelopeNotConstructible(
@@ -293,7 +316,7 @@ def _checked(field: WireField, value: object, *, where: str) -> str | int | None
             "delivery would fail on the fingerprint instead of on this field"
         )
     if isinstance(value, str):
-        if field.required and not value:
+        if field.required and not value and not field.allow_empty:
             raise EnvelopeNotConstructible(
                 f"{where}.{field.name} is required and is empty"
             )
@@ -303,9 +326,15 @@ def _checked(field: WireField, value: object, *, where: str) -> str | int | None
                 f"destination accepts at most {field.max_length}"
             )
         return value
-    if isinstance(value, int):
-        if value < 0:
-            raise EnvelopeNotConstructible(f"{where}.{field.name} must not be negative")
+    if isinstance(value, int | float):
+        if field.minimum is not None and value < field.minimum:
+            raise EnvelopeNotConstructible(
+                f"{where}.{field.name} must be at least {field.minimum}"
+            )
+        if field.maximum is not None and value > field.maximum:
+            raise EnvelopeNotConstructible(
+                f"{where}.{field.name} must be at most {field.maximum}"
+            )
         return value
     raise EnvelopeNotConstructible(  # pragma: no cover - no other kind is declared
         f"{where}.{field.name} declares an unsupported wire type "
@@ -318,9 +347,10 @@ def _expand(
 ) -> dict[str, object]:
     """Every declared field, present, in the destination's own shape.
 
-    Sparse is not an option. The destination fingerprints its own model dump,
-    which carries every field including the null ones, so a body that omitted
-    them would disagree on every delivery.
+    This client chooses one explicit representation and fingerprints exactly
+    what it sends. The destination preserves explicitly sent nulls in its
+    ``exclude_unset`` dump, so its canonical body is equivalent; a sparse
+    connector dict is never fingerprinted by accident.
     """
     unknown = sorted(set(source) - {field.name for field in fields})
     if unknown:
@@ -386,14 +416,33 @@ def canonical_body(observation: Mapping[str, object]) -> tuple[str, dict[str, ob
                 "message.attachments must be a list of objects, not "
                 f"{type(attachments).__name__}"
             )
-        body["attachments"] = [
-            _expand(
-                _mapping(item, where="message.attachments[]"),
+        expanded_attachments: list[dict[str, object]] = []
+        for item in attachments:
+            attachment = _mapping(item, where="message.attachments[]")
+            location = attachment.get("location")
+            scalars = {
+                key: value for key, value in attachment.items() if key != "location"
+            }
+            expanded = _expand(
+                scalars,
                 ATTACHMENT_FIELDS,
                 where="message.attachments[]",
             )
-            for item in attachments
-        ]
+            expanded["location"] = (
+                None
+                if location is None
+                else _expand(
+                    _mapping(location, where="message.attachments[].location"),
+                    LOCATION_FIELDS,
+                    where="message.attachments[].location",
+                )
+            )
+            expanded_attachments.append(expanded)
+        body["attachments"] = expanded_attachments
+        if not str(body["body"]).strip() and not expanded_attachments:
+            raise EnvelopeNotConstructible(
+                "message requires text or at least one attachment"
+            )
         return _MESSAGE_KEY, body
 
     source = _mapping(observation[_RECEIPT_KEY], where=_RECEIPT_KEY)
@@ -452,7 +501,9 @@ def build_envelope(request: Any) -> dict[str, object]:
     redirect a delivery: there is no branch here that reads an addressing key
     out of `observation`.
 
-    A payload carrying an addressing key anyway is REFUSED rather than ignored.
+    `transport_evidence` is the one local-only member: it remains on the module's
+    receipt for repair and never becomes product state. A payload carrying an
+    addressing key anyway is REFUSED rather than ignored.
     Ignoring it would be safe in the narrow sense — the trusted value still
     wins — and it would leave a connector quietly sending a field nobody reads,
     which is how a real disagreement about the contract goes unnoticed until it
@@ -463,7 +514,11 @@ def build_envelope(request: Any) -> dict[str, object]:
 
     slot, body = canonical_body(observation)
     identity = _expand(
-        {key: observation[key] for key in observation if key not in _OBSERVATION_SLOTS},
+        {
+            key: observation[key]
+            for key in observation
+            if key not in _OBSERVATION_SLOTS | _LOCAL_ONLY_OBSERVATION_FIELDS
+        },
         ENVELOPE_FIELDS,
         where="observation",
     )

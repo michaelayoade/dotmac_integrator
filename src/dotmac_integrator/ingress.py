@@ -165,24 +165,6 @@ def build_request(
     return integration.IngressRequest(raw_body=raw_body, headers=headers, params=params)
 
 
-#: Outcomes that can only be reached AFTER `verify` returned True and
-#: `normalize` was entered. Recording a signature acceptance for anything else
-#: would be a guess, and one code in particular is genuinely ambiguous:
-#: `connector_raised` is raised for a throw in `verify` OR in `normalize`, and
-#: the engine deliberately does not distinguish them. So it is absent, and the
-#: signature series simply says nothing about those requests rather than saying
-#: something that is right about half of them.
-_POST_VERIFICATION_CODES = frozenset(
-    {
-        "accepted",
-        "connector_contract",
-        "event_identity_collision",
-        "receipt_write_raced",
-        "receipt_write_failed",
-    }
-)
-
-
 def _counted(outcome: Any, *, handshake: bool) -> Any:
     """Record the outcome under the CLOSED vocabularies, and return it.
 
@@ -198,10 +180,6 @@ def _counted(outcome: Any, *, handshake: bool) -> Any:
         telemetry.counters.record_challenge(
             "served" if code == "challenge_answered" else "refused"
         )
-    elif code == "signature_rejected":
-        telemetry.counters.record_signature("rejected")
-    elif code in _POST_VERIFICATION_CODES:
-        telemetry.counters.record_signature("accepted")
     return outcome
 
 
@@ -220,6 +198,7 @@ def receive_delivery(engine: Engine, *, endpoint: Any, request: Any) -> Any:
             request=request,
             registry=integration.discover(),
             resolve_secrets=resolve_secrets,
+            observe_verification=telemetry.counters.record_verification,
         ),
         handshake=False,
     )

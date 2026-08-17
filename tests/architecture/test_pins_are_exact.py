@@ -26,8 +26,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = ROOT / "pyproject.toml"
 LOCKFILE = ROOT / "poetry.lock"
 
-EXACTLY_PINNED = ("dotmac-kernel", "dotmac-integration")
-
 
 def _dependencies() -> dict[str, object]:
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
@@ -36,6 +34,16 @@ def _dependencies() -> dict[str, object]:
     # obscure failure several assertions later.
     assert isinstance(declared, dict), type(declared)
     return declared
+
+
+# Discovered from the deployment manifest. Adding a Dotmac distribution without
+# adding it to a hand-maintained tuple must make the gate stricter, not bypass it.
+EXACTLY_PINNED = tuple(
+    sorted(name for name in _dependencies() if name.startswith("dotmac-"))
+)
+CONNECTOR_PINS = tuple(
+    name for name in EXACTLY_PINNED if name.startswith("dotmac-connector-")
+)
 
 
 @pytest.mark.parametrize("distribution", EXACTLY_PINNED)
@@ -90,7 +98,11 @@ def test_no_dotmac_dependency_is_a_path_or_git_source() -> None:
 def test_the_pinned_set_is_not_empty() -> None:
     """Sensitivity proof: both parametrized tests iterate `EXACTLY_PINNED`, and
     an empty tuple would collect zero cases and report success."""
-    assert len(EXACTLY_PINNED) >= 2
+    assert {"dotmac-kernel", "dotmac-integration"}.issubset(EXACTLY_PINNED)
+    assert CONNECTOR_PINS, (
+        "this deployment runs the external connector control plane but pins no "
+        "connector distribution"
+    )
     declared = _dependencies()
     for distribution in EXACTLY_PINNED:
         assert distribution in declared, f"{distribution} is not a dependency"

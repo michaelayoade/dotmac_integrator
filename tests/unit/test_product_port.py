@@ -21,6 +21,7 @@ production, at the cost of real customer messages:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
@@ -186,11 +187,10 @@ def _destination_fingerprint(body: Mapping[str, object]) -> str:
 def test_the_canonical_body_carries_every_field_the_destination_dumps() -> None:
     """The failure this prevents costs EVERY delivery, not one.
 
-    The destination recomputes the fingerprint over its own model dump, which
-    holds every declared field including the null ones and an empty attachment
-    list. A body assembled from only the keys the connector supplied would
-    disagree on every message, and it would disagree with a refusal about a
-    mangled body rather than about a missing key.
+    The destination recomputes the fingerprint over explicitly supplied fields
+    in its model dump. This client supplies one complete representation,
+    including null scalar fields and an empty attachment list, and fingerprints
+    that exact body rather than the connector's sparse dict.
     """
     slot, body = canonical_body(MESSAGE_OBSERVATION)
 
@@ -252,6 +252,165 @@ def test_the_envelope_is_addressed_only_from_the_resolved_destination() -> None:
     assert envelope["capability_id"] == "messaging.receive.v1"
     assert envelope["contract_version"] == 1
     assert envelope["scope"] == {"kind": "inbox", "ref": "support"}
+
+
+def test_transport_evidence_stays_out_of_the_product_port() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["transport_evidence"] = {
+        "locator": "entry[0].changes[0].value.messages[0]",
+        "identity_source": "provider",
+        "provider_message_type": "text",
+    }
+    request = _request(observation)
+
+    envelope = build_envelope(request)
+
+    assert "transport_evidence" not in envelope
+    assert (
+        request.observation["transport_evidence"] == observation["transport_evidence"]
+    )
+
+
+def test_a_location_only_message_matches_the_destinations_typed_shape() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["body"] = ""
+    observation["message"]["attachments"] = [
+        {
+            "asset_type": "location",
+            "location": {
+                "latitude": 9.0765,
+                "longitude": 7.3986,
+                "name": "Abuja",
+            },
+        }
+    ]
+
+    envelope = build_envelope(_request(observation))
+    message = envelope["message"]
+    assert isinstance(message, dict)
+    attachments = message["attachments"]
+    assert isinstance(attachments, list)
+    attachment = attachments[0]
+    assert isinstance(attachment, dict)
+    location = attachment["location"]
+
+    assert location == {
+        "latitude": 9.0765,
+        "longitude": 7.3986,
+        "name": "Abuja",
+        "address": None,
+    }
+
+
+def test_a_message_with_no_text_and_no_attachment_is_refused_locally() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["body"] = "   "
+
+    with pytest.raises(EnvelopeNotConstructible, match="text or at least one"):
+        build_envelope(_request(observation))
+
+
+def test_the_destination_message_body_limit_is_enforced_before_the_wire() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["body"] = "x" * 10_001
+
+    with pytest.raises(EnvelopeNotConstructible, match="at most 10000"):
+        build_envelope(_request(observation))
+
+
+def test_invalid_coordinates_are_refused_before_the_wire() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["body"] = ""
+    observation["message"]["attachments"] = [
+        {
+            "asset_type": "location",
+            "location": {"latitude": 91.0, "longitude": 7.3986},
+        }
+    ]
+
+    with pytest.raises(EnvelopeNotConstructible, match="latitude"):
+        build_envelope(_request(observation))
+
+
+def test_the_pinned_connector_location_event_constructs_the_sub_envelope() -> None:
+    """Discovery → exact-byte verification → normalization → product port.
+
+    This is deployment composition evidence, so it intentionally drives the
+    installed plugin rather than importing a connector checkout. Generic source
+    stays provider-free; this test proves the exact pinned wheel interoperates
+    with the destination contract this deployment implements.
+    """
+    registry = integration.discover()
+    assert len(registry.plugins) == 1
+    plugin = registry.plugins[0]
+    assert isinstance(plugin, integration.IngressPlugin)
+    capability = plugin.manifest.capabilities[0].capability_id
+    handler = plugin.ingress_handler_for(capability)
+    signing_material = "test-signing-material"
+    document = {
+        "entry": [
+            {
+                "id": "account-1",
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": "number-1"},
+                            "messages": [
+                                {
+                                    "id": "wamid.location-1",
+                                    "from": "2348012345678",
+                                    "timestamp": "1786959000",
+                                    "type": "location",
+                                    "location": {
+                                        "latitude": 9.0765,
+                                        "longitude": 7.3986,
+                                        "name": "Abuja",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    raw = json.dumps(document, separators=(",", ":")).encode()
+    signature = (
+        "sha256=" + hmac.new(signing_material.encode(), raw, hashlib.sha256).hexdigest()
+    )
+    ingress_request = integration.IngressRequest(
+        raw_body=raw,
+        headers={"x-hub-signature-256": signature},
+    )
+    config: dict[str, object] = {
+        "signing_slots": ["active"],
+        "handshake_slot": "verify",
+    }
+
+    verified = handler.verify(
+        ingress_request,
+        config=config,
+        secrets={"active": signing_material},
+    )
+    events, _acknowledgement = handler.normalize(ingress_request, config=config)
+
+    assert isinstance(verified, integration.VerificationResult)
+    assert verified.accepted
+    assert verified.matched_secret_positions == (0,)
+    assert len(events) == 1
+    assert "transport_evidence" in events[0].payload
+
+    envelope = build_envelope(_request(dict(events[0].payload)))
+    message = envelope["message"]
+    assert isinstance(message, dict)
+    attachments = message["attachments"]
+    assert isinstance(attachments, list)
+    attachment = attachments[0]
+    assert isinstance(attachment, dict)
+    location = attachment["location"]
+    assert isinstance(location, dict)
+    assert location["name"] == "Abuja"
+    assert "transport_evidence" not in envelope
 
 
 def test_a_payload_naming_an_addressing_key_is_refused_rather_than_ignored() -> None:

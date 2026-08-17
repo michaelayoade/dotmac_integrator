@@ -27,13 +27,20 @@ import dotmac_kernel
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-PINNED = ("dotmac-kernel", "dotmac-integration")
 
 
 def _pins() -> dict[str, str]:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     declared = data["tool"]["poetry"]["dependencies"]
-    return {name: declared[name] for name in PINNED}
+    return {
+        name: constraint
+        for name, constraint in declared.items()
+        if name.startswith("dotmac-") and isinstance(constraint, str)
+    }
+
+
+PINNED = tuple(sorted(_pins()))
+CONNECTOR_PINS = tuple(name for name in PINNED if name.startswith("dotmac-connector-"))
 
 
 @pytest.mark.parametrize("name", PINNED)
@@ -69,6 +76,34 @@ def test_the_distribution_is_a_wheel_and_not_a_checkout(name: str) -> None:
     assert not any(
         str(f).startswith("__editable__") or str(f).endswith(".pth") for f in files
     ), f"{name} is installed as an editable/path distribution"
+
+
+@pytest.mark.parametrize("name", CONNECTOR_PINS)
+def test_each_connector_pin_contributes_one_discovery_entry_point(name: str) -> None:
+    entry_points = [
+        point
+        for point in distribution(name).entry_points
+        if point.group == dotmac_integration.ENTRY_POINT_GROUP
+    ]
+    assert len(entry_points) == 1, (
+        f"{name} contributes {len(entry_points)} connector entry points; one "
+        "distribution owns exactly one connector key"
+    )
+
+
+def test_discovery_finds_exactly_the_pinned_connector_distributions() -> None:
+    assert CONNECTOR_PINS, "the deployment pins no connector distributions"
+    expected_keys = {
+        point.name
+        for name in CONNECTOR_PINS
+        for point in distribution(name).entry_points
+        if point.group == dotmac_integration.ENTRY_POINT_GROUP
+    }
+    discovered_keys = {
+        plugin.manifest.connector_key
+        for plugin in dotmac_integration.discover().plugins
+    }
+    assert discovered_keys == expected_keys
 
 
 def test_the_integration_module_declares_the_platform_plane_only() -> None:
