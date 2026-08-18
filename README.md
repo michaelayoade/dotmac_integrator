@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel 0.1.0a68  ──┐
                           ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a8┘         (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a9┘         (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -224,7 +224,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a1` | First published ingress connector. Declares SPI `>=1.2,<2.0`, exact-byte verification and `messaging.receive.v1`; its package entry point is the only runtime registration. |
-| `dotmac-integration` | `0.1.0a8` | Published SPI 1.2 module. Adds source-revisioned product-port descriptors and indexed, revisioned shadow evidence through `ig_0010`; the assembly only schedules and commits module service calls. |
+| `dotmac-integration` | `0.1.0a9` | Published SPI 1.2 module. Adds source-revisioned product-port descriptors, indexed shadow evidence, and finite replay-evidence retention through `ig_0011`; the assembly only schedules and commits module service calls. |
 | `dotmac-kernel` | `0.1.0a68` | Current published kernel. It satisfies the module's `>=0.1.0a66` floor and is the exact release this three-wheel composition is tested against. |
 
 ### What a pin bump actually costs
@@ -284,7 +284,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a8` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a9` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -318,7 +318,7 @@ requires it — and `binding_for` fails closed with an explicit message meanwhil
 
 ### The platform audit dependency is now explicit
 
-Kernel a68 registers and verifies `platform_audit_log.v1`; integration a8's
+Kernel a68 registers and verifies `platform_audit_log.v1`; integration a9's
 `ig_0008` requires it. This assembly binds the effect to kernel `0026`, where
 the platform audit role becomes append-only. The former unnameable dependency
 is therefore a deploy-time verified contract rather than request-time luck.
@@ -327,7 +327,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a8`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a9`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing

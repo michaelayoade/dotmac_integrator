@@ -52,7 +52,7 @@ from dotmac_integrator.migration_bindings import (
     unbound_prerequisites,
 )
 
-#: What `dotmac-integration 0.1.0a8` actually declares. Restated here ON PURPOSE,
+#: What `dotmac-integration 0.1.0a9` actually declares. Restated here ON PURPOSE,
 #: unlike everything else in this file, which reads the installed manifest: a pin
 #: bump that silently changes the requirement set must fail with a diff a reviewer
 #: can see, not adapt to it. `test_the_pinned_release_declares_what_we_think_it
@@ -228,6 +228,7 @@ def test_the_revision_scan_actually_reads_the_composed_lineages() -> None:
     assert "ig_0008_platform_audit_log" in composed
     assert "ig_0009_product_port_desc" in composed
     assert "ig_0010_shadow_evidence" in composed
+    assert "ig_0011_replay_retention" in composed
 
 
 def test_the_uncomposed_revision_detector_bites() -> None:
