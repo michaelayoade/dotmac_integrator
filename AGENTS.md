@@ -209,3 +209,13 @@ This is a **thin assembly**. The reusable behaviour lives in
     an explicit toolchain/dependency-resolution upgrade.
     (`scripts/check_poetry_toolchain.py`;
     `tests/architecture/test_poetry_toolchain_contract.py`)
+31. **Cross-repository engineering governance is pinned and required.**
+    `.dotmac/standards-profile.json` declares this repository's authority and
+    typed contract surface at one accepted Governance commit; the `Dotmac
+    engineering standards` CI job executes that exact revision. The schema-9
+    connector source ratchet is transitional inventory evidence. The permanent
+    boundary is package authority: this repository is the sole runtime host in
+    whose Poetry `main` group an independently released `dotmac-connector-*`
+    distribution may resolve. A product repository may resolve none, and the
+    Starter source repository may resolve one only outside `main`.
+    (`tests/architecture/test_engineering_standards_adoption.py`; ADR-0001)
