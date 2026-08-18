@@ -24,7 +24,7 @@ python = ">=3.11,<3.14"
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
 dotmac-kernel = "0.1.0a68"
-dotmac-integration = "0.1.0a8"
+dotmac-integration = "0.1.0a9"
 dotmac-connector-whatsapp = "0.1.0a1"
 
 fastapi = "^0.115"
