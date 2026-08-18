@@ -25,24 +25,25 @@ import hmac
 import json
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import dotmac_integration as integration
 import dotmac_kernel.secret_sources as ks
 import pytest
+from sqlalchemy import create_engine
 
 from dotmac_integrator import product_port
 from dotmac_integrator.product_port import (
     EnvelopeNotConstructible,
     HttpAnswer,
     ObservationPortClient,
+    ProductPortDescriptorError,
+    ProductPortDescriptorReconciler,
     ProductPortMode,
     ShadowClientCannotWrite,
     build_envelope,
     canonical_body,
-    parse_bindings,
-    parse_capabilities,
 )
 
 API_KEY_REF = "env://INTEGRATOR_SECRET_DESTINATION_KEY"
@@ -71,6 +72,22 @@ class _Scope:
     ref = "support"
 
 
+class _ProductPort:
+    schema_version = "dotmac.io/product-port-descriptor/v1"
+    application = "sub"
+    owner_module = "communications.team_inbox_integrator_envelope"
+    capability_id = "messaging.receive.v1"
+    capability_summary = "Inbound provider message and delivery-state observations"
+    contract_version = 1
+    destination_binding_id = REMOTE_BINDING
+    delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
+    mirror_path = f"{delivery_path}/mirror"
+    destination_scope = _Scope()
+    activation_state = "enabled"
+    source_revision = "b" * 64
+    descriptor_digest = "c" * 64
+
+
 class _Destination:
     capability_binding_id = LOCAL_BINDING
     capability_id = "messaging.receive.v1"
@@ -78,6 +95,7 @@ class _Destination:
     scope = _Scope()
     contract_version = 1
     destination_revision_id = uuid4()
+    product_port: object | None = _ProductPort()
 
 
 class _RecordingTransport:
@@ -93,6 +111,12 @@ class _RecordingTransport:
         self.calls.append(
             {"url": url, "body": json.loads(body), "headers": dict(headers)}
         )
+        return self._answers.pop(0) if self._answers else _ok()
+
+    def get(
+        self, url: str, *, headers: Mapping[str, str], timeout: float
+    ) -> HttpAnswer:
+        self.calls.append({"url": url, "headers": dict(headers), "method": "GET"})
         return self._answers.pop(0) if self._answers else _ok()
 
 
@@ -130,15 +154,18 @@ MESSAGE_OBSERVATION: dict[str, object] = {
 }
 
 
-def _claim(observation: dict[str, object], attempt: int = 1) -> Any:
+def _claim(
+    observation: dict[str, object],
+    attempt: int = 1,
+    *,
+    provider_event_id: str = "wamid.HBgNMjM0",
+) -> Any:
     return integration.ReceiptClaim(
         receipt_id=UUID("33333333-3333-4333-8333-333333333333"),
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
-        provider_event_id=str(
-            observation.get("provider_event_id", "missing-provider-event-id")
-        ),
+        provider_event_id=provider_event_id,
         event_type="messaging.receive.v1",
         observation=observation,
         correlation_id="corr-1",
@@ -159,8 +186,6 @@ def _client(
         ObservationPortClient(
             application="sub",
             base_url="https://destination.example",
-            api_path_prefix="/api/v1",
-            remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
             api_key_ref=API_KEY_REF,
             mode=mode,
             timeout_seconds=5.0,
@@ -246,6 +271,25 @@ def test_the_provider_event_id_crosses_the_wire_raw() -> None:
 
     assert envelope["provider_event_id"] == "wamid.HBgNMjM0"
     assert not str(envelope["provider_event_id"]).startswith("message:")
+
+
+def test_provider_identity_comes_from_the_durable_claim_when_payload_omits_it() -> None:
+    observation = dict(MESSAGE_OBSERVATION)
+    observation.pop("provider_event_id")
+
+    envelope = build_envelope(_request(observation))
+
+    assert envelope["provider_event_id"] == "wamid.HBgNMjM0"
+
+
+def test_a_disagreeing_payload_copy_of_provider_identity_is_refused() -> None:
+    observation = dict(MESSAGE_OBSERVATION)
+    request = integration.build_product_request(
+        _claim(observation, provider_event_id="different-durable-identity")
+    )
+
+    with pytest.raises(EnvelopeNotConstructible, match="provider_event_id"):
+        build_envelope(request)
 
 
 def test_the_envelope_is_addressed_only_from_the_resolved_destination() -> None:
@@ -403,7 +447,14 @@ def test_the_pinned_connector_location_event_constructs_the_sub_envelope() -> No
     assert len(events) == 1
     assert "transport_evidence" in events[0].payload
 
-    envelope = build_envelope(_request(dict(events[0].payload)))
+    envelope = build_envelope(
+        integration.build_product_request(
+            _claim(
+                dict(events[0].payload),
+                provider_event_id=events[0].provider_event_id,
+            )
+        )
+    )
     message = envelope["message"]
     assert isinstance(message, dict)
     attachments = message["attachments"]
@@ -488,15 +539,27 @@ def test_an_unmapped_binding_is_retryable_and_never_reaches_the_wire() -> None:
     client = ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={},
         api_key_ref=API_KEY_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=5.0,
         transport=transport,
     )
 
-    outcome = client.deliver(_request())
+    class _Unmapped(_Destination):
+        product_port = None
+
+    claim = integration.ReceiptClaim(
+        receipt_id=uuid4(),
+        attempt=1,
+        leased_until=datetime.now(UTC) + timedelta(minutes=5),
+        destination=_Unmapped(),
+        provider_event_id="wamid.HBgNMjM0",
+        event_type="messaging.receive.v1",
+        observation=dict(MESSAGE_OBSERVATION),
+        correlation_id="corr-1",
+    )
+
+    outcome = client.deliver(integration.build_product_request(claim))
 
     assert outcome.acceptance is integration.ProductAcceptance.UNAVAILABLE
     assert outcome.error_code == "integrator.destination_not_addressable"
@@ -665,7 +728,7 @@ def test_an_unknown_capability_is_terminal_and_a_missing_binding_is_not() -> Non
     and it says so with a typed code — and ALSO for a binding that is missing,
     disabled, quarantined or retired, which it deliberately reports without
     saying which. The second is temporary far more often than not and is what a
-    wrong `PRODUCT_PORT_BINDINGS` entry looks like, so treating it as terminal
+    stale product-port descriptor looks like, so treating it as terminal
     would dead-letter real messages over an hour's quarantine.
     """
     typed, _ = _client(
@@ -732,11 +795,12 @@ def test_an_unreadable_success_is_retryable_rather_than_lost() -> None:
         def post(self, url: str, **_: Any) -> HttpAnswer:
             return HttpAnswer(status=200, body=b"<html>gateway</html>")
 
+        def get(self, url: str, **_: Any) -> HttpAnswer:
+            raise AssertionError("delivery must not read the descriptor")
+
     client = ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
         api_key_ref=API_KEY_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=5.0,
@@ -795,6 +859,40 @@ def test_the_shadow_pass_posts_the_same_envelope_to_the_mirror_route() -> None:
     assert verdict.agrees is True
 
 
+def test_configured_disabled_is_mirror_eligible_but_never_write_eligible() -> None:
+    class _DisabledPort(_ProductPort):
+        activation_state = "configured_disabled"
+
+    class _DisabledDestination(_Destination):
+        product_port = _DisabledPort()
+
+    claim = _claim(dict(MESSAGE_OBSERVATION))
+    claim = integration.ReceiptClaim(
+        receipt_id=claim.receipt_id,
+        attempt=claim.attempt,
+        leased_until=claim.leased_until,
+        destination=_DisabledDestination(),
+        provider_event_id=claim.provider_event_id,
+        event_type=claim.event_type,
+        observation=claim.observation,
+        correlation_id=claim.correlation_id,
+    )
+    request = integration.build_product_request(claim)
+    writer, sent = _client(_ok())
+    shadow, mirrored = _client(
+        _answer(200, {"verdict": "agrees", "agrees": True}),
+        mode=ProductPortMode.MIRROR,
+    )
+
+    write_outcome = writer.deliver(request)
+    mirror_verdict = shadow.mirror(request)
+
+    assert write_outcome.acceptance is integration.ProductAcceptance.UNAVAILABLE
+    assert sent.calls == []
+    assert mirror_verdict.agrees is True
+    assert mirrored.calls[0]["url"].endswith("/mirror")
+
+
 def test_a_verdict_keeps_field_names_and_drops_the_provider_identity() -> None:
     """`identity` names the provider's event and account scope. A verdict object
     holding one would eventually be logged by somebody."""
@@ -838,26 +936,123 @@ def test_the_verdict_redaction_bites() -> None:
 # ── Composition ─────────────────────────────────────────────────────────────
 
 
-def test_bindings_parse_and_an_ambiguous_pair_is_refused() -> None:
-    assert parse_bindings(f"{LOCAL_BINDING}={REMOTE_BINDING}") == {
-        LOCAL_BINDING: REMOTE_BINDING
+def _descriptor_document(**changes: object) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schema_version": "dotmac.io/product-port-descriptor/v1",
+        "application": "sub",
+        "owner_module": "communications.team_inbox_integrator_envelope",
+        "capability_id": "messaging.receive.v1",
+        "capability_summary": (
+            "Inbound provider message and delivery-state observations"
+        ),
+        "contract_version": 1,
+        "destination_binding_id": str(REMOTE_BINDING),
+        "delivery_path": f"/api/v1/integration/observations/{REMOTE_BINDING}",
+        "mirror_path": f"/api/v1/integration/observations/{REMOTE_BINDING}/mirror",
+        "destination_scope": {"kind": "inbox", "ref": "support"},
+        "activation_state": "configured_disabled",
+        "source_revision": "b" * 64,
     }
-    with pytest.raises(ValueError):
-        parse_bindings(f"{LOCAL_BINDING}={REMOTE_BINDING},{LOCAL_BINDING}={uuid4()}")
-    with pytest.raises(ValueError):
-        parse_bindings("not-a-pair")
+    document.update(changes)
+    document["descriptor_digest"] = hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return document
 
 
-def test_capabilities_parse_into_the_modules_own_registry() -> None:
-    registry = parse_capabilities(
-        "messaging.receive.v1 = sub/communications : Inbound message observations"
+def test_the_named_reconciler_reads_before_opening_the_local_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    document = _descriptor_document()
+    transport = _RecordingTransport(_answer(200, document))
+
+    def _reconcile(*args: Any, **kwargs: Any) -> None:
+        events.append("local-reconcile")
+
+    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    original_get = transport.get
+
+    def _get(*args: Any, **kwargs: Any) -> HttpAnswer:
+        events.append("authenticated-product-read")
+        return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(transport, "get", _get)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
     )
-    contract = registry.get("messaging.receive.v1")
 
-    assert contract.owner.application == "sub"
-    assert contract.contract_version == 1
-    with pytest.raises(ValueError):
-        parse_capabilities("messaging.receive.v1")
+    client, registry = reconciler.reconcile()
+
+    assert events == ["authenticated-product-read", "local-reconcile"]
+    assert client.application == "sub"
+    assert registry.get("messaging.receive.v1").owner.application == "sub"
+    assert transport.calls[0]["headers"]["X-Api-Key"] == API_KEY
+
+
+def test_descriptor_drift_is_refused_before_local_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _descriptor_document()
+    reconciled = False
+
+    def _reconcile(*args: Any, **kwargs: Any) -> None:
+        nonlocal reconciled
+        reconciled = True
+
+    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest="c" * 64,
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="operator-approved pin"):
+        reconciler.reconcile()
+
+    assert reconciled is False
+
+
+def test_a_descriptor_cannot_lie_behind_an_approved_digest_field() -> None:
+    document = _descriptor_document()
+    approved_digest = str(document["descriptor_digest"])
+    document["application"] = "erp"
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=approved_digest,
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="does not cover"):
+        reconciler.reconcile()
+
+
+def test_the_standard_transport_refuses_redirects() -> None:
+    transport = product_port.UrllibTransport()
+    redirect_handler = next(
+        handler
+        for handler in cast(Any, transport._opener).handlers
+        if isinstance(handler, product_port._RefuseRedirects)
+    )
+
+    assert cast(Any, redirect_handler).redirect_request() is None
 
 
 def test_a_base_url_without_a_scheme_is_refused_at_construction() -> None:
@@ -865,8 +1060,6 @@ def test_a_base_url_without_a_scheme_is_refused_at_construction() -> None:
         ObservationPortClient(
             application="sub",
             base_url="destination.example",
-            api_path_prefix="/api/v1",
-            remote_bindings={},
             api_key_ref=API_KEY_REF,
             mode=ProductPortMode.WRITE,
             timeout_seconds=5.0,

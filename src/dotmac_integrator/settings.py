@@ -12,6 +12,7 @@ threads to run. It may not say what a connector is allowed to do.
 from __future__ import annotations
 
 from functools import lru_cache
+from uuid import UUID
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -174,24 +175,25 @@ class Settings(BaseSettings):
             "into write records facts nobody agreed to record."
         ),
     )
-    product_port_application: str = Field(
+    product_port_local_binding_id: str = Field(
         default="",
         description=(
-            "The destination application this client serves. Checked against "
-            "the application the module resolved from the capability's declared "
-            "owner; a mismatch is refused rather than delivered."
+            "This deployment's capability-binding UUID. The authenticated "
+            "product descriptor is reconciled onto this exact local binding."
         ),
     )
-    product_port_base_url: str = Field(
+    product_port_descriptor_url: str = Field(
         default="",
-        description="Scheme and host of the destination, e.g. https://sub.example.com",
-    )
-    product_port_api_path_prefix: str = Field(
-        default="/api/v1",
         description=(
-            "Path the destination mounts its API under. A knob because the "
-            "router's own prefix and the mounted prefix differ, and the mounted "
-            "one is what a client must use."
+            "Authenticated product-owned ProductPortDescriptorV1 URL. Its "
+            "origin is used for the descriptor-owned delivery paths."
+        ),
+    )
+    product_port_descriptor_expected_digest: str = Field(
+        default="",
+        description=(
+            "Operator-approved SHA-256 of the product descriptor. Drift fails "
+            "boot until reviewed and the pin is deliberately advanced."
         ),
     )
     product_port_api_key_ref: str = Field(
@@ -201,28 +203,6 @@ class Settings(BaseSettings):
             "`env://INTEGRATOR_SECRET_...` or `file:///run/secrets/...`. A "
             "REFERENCE, never a value: it is dereferenced once at startup and "
             "held (ADR-0009), and this file is committed."
-        ),
-    )
-    product_port_bindings: str = Field(
-        default="",
-        description=(
-            "`<local-binding-uuid>=<destination-binding-uuid>` pairs, comma "
-            "separated. The destination's port is keyed on ITS OWN capability "
-            "binding UUID, which lives in ITS database and is NOT derivable "
-            "from this deployment's. Supplying it is an operator act; how the "
-            "value gets here is an open decision recorded in the destination's "
-            "cutover document."
-        ),
-    )
-    product_port_capabilities: str = Field(
-        default="",
-        description=(
-            "`<capability.id.vN> = <application>/<module> : <summary>` entries, "
-            "`;` separated. The capability vocabulary this deployment routes "
-            "by. A STOPGAP: a capability is declared by its owning business "
-            "module, and how that declaration reaches this assembly is an open "
-            "decision — the Integrator may never mint one, so it is transcribed "
-            "here rather than defaulted."
         ),
     )
     product_port_timeout_seconds: float = Field(
@@ -322,11 +302,12 @@ def _product_port_problems(settings: Settings) -> list[str]:
 
     problems: list[str] = []
     required = {
-        "PRODUCT_PORT_APPLICATION": settings.product_port_application,
-        "PRODUCT_PORT_BASE_URL": settings.product_port_base_url,
+        "PRODUCT_PORT_LOCAL_BINDING_ID": settings.product_port_local_binding_id,
+        "PRODUCT_PORT_DESCRIPTOR_URL": settings.product_port_descriptor_url,
+        "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST": (
+            settings.product_port_descriptor_expected_digest
+        ),
         "PRODUCT_PORT_API_KEY_REF": settings.product_port_api_key_ref,
-        "PRODUCT_PORT_BINDINGS": settings.product_port_bindings,
-        "PRODUCT_PORT_CAPABILITIES": settings.product_port_capabilities,
     }
     for name, value in required.items():
         if not value.strip():
@@ -354,6 +335,18 @@ def _product_port_problems(settings: Settings) -> list[str]:
             "reference. It is dereferenced once at startup and held; a literal "
             "credential here would sit in a committed file and in the process "
             "environment of everything that reads this configuration"
+        )
+    try:
+        UUID(settings.product_port_local_binding_id)
+    except ValueError:
+        problems.append("PRODUCT_PORT_LOCAL_BINDING_ID must be one UUID")
+    digest = settings.product_port_descriptor_expected_digest.strip()
+    if digest and (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        problems.append(
+            "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST must be 64 lowercase hex"
         )
     return problems
 
@@ -410,14 +403,15 @@ def validate_settings(settings: Settings) -> list[str]:
             "SECRET_FILE_ROOT is under /tmp, which is world-writable on most "
             "hosts; mount secret material somewhere only this process can read"
         )
-    if settings.product_port_enabled and settings.product_port_base_url.startswith(
-        "http://"
+    if (
+        settings.product_port_enabled
+        and settings.product_port_descriptor_url.startswith("http://")
     ):
         # The envelope carries a customer's message body and the request carries
         # the machine credential. Over plaintext both are readable by every hop,
         # and the credential is replayable afterwards.
         problems.append(
-            "PRODUCT_PORT_BASE_URL is http://; the observation envelope carries "
+            "PRODUCT_PORT_DESCRIPTOR_URL is http://; the observation envelope carries "
             "message content and the request carries the destination "
             "credential, neither of which may cross a production network in "
             "the clear"

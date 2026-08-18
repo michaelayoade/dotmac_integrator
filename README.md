@@ -446,10 +446,10 @@ disagreement is a defect here, or a change that happens there first.
 
 Five decisions worth reading before touching it:
 
-- **`provider_event_id` crosses the wire raw.** The destination namespaces it
-  with its own observation-kind prefix. Pre-prefixing here would produce a
-  second identity for one upstream event — a duplicate, not a dedupe — and it
-  would double-record every message in flight during the producer overlap.
+- **`provider_event_id` comes from the durable receipt and crosses raw.** The
+  destination namespaces it with its own observation-kind prefix. A connector's
+  transitional payload copy is accepted only when it agrees; it never selects
+  the identity sent to the product.
 - **The fingerprint covers exactly what the destination validates.** The client
   builds one explicit typed body (including nested location attachments), hashes
   it, and sends that same body. Sub recomputes over its `exclude_unset` model
@@ -459,11 +459,11 @@ Five decisions worth reading before touching it:
   `transport_evidence` on its receipt for repair; the client deliberately omits
   it from Sub's domain envelope. Unknown fields are still refused, so this does
   not become a general suppression mechanism.
-- **The destination's binding id is configured, never derived.** Its port is
-  keyed on ITS capability-binding UUID, in ITS database. This deployment's is a
-  different UUID; posting the wrong one 404s at best and writes to somebody
-  else's binding at worst. `PRODUCT_PORT_BINDINGS` carries the pairing, and an
-  unmapped binding is refused before the network with its own code.
+- **The product publishes one authenticated descriptor.** It owns the remote
+  binding id, capability declaration, port paths, contract version and opaque
+  stream scope. `ProductPortDescriptorReconciler` checks an operator-approved
+  digest and idempotently appends the module's immutable projection. There is
+  no parallel binding map or capability declaration in this assembly.
 - **Acceptance is mapped honestly.** `ACCEPTED` and `ALREADY_APPLIED` both mean
   the destination holds the consequence — `replayed` is the evidence the
   deduplication worked, and collapsing it would hide a double-send.

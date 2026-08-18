@@ -141,7 +141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # than failing every delivery later with a 401 that reads as the
             # destination's problem.
             client, registry = product_port.build_from_settings(
-                settings, held_references=report.held
+                settings, engine=engine, held_references=report.held
             )
             delivery.install_product_port(client, registry=registry)
         await worker.start()
