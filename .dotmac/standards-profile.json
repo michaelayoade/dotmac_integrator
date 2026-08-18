@@ -1,0 +1,68 @@
+{
+  "schema_version": 9,
+  "profile_id": "dotmac-integrator-engineering-standards",
+  "repository": {
+    "canonical_url": "https://github.com/michaelayoade/dotmac_integrator",
+    "default_branch": "main"
+  },
+  "governance_model": {
+    "kind": "pinned",
+    "canonical_url": "https://github.com/michaelayoade/dotmac_governance",
+    "revision": "a19259b10568d29dc0a9617347498fea7f1e7a97",
+    "source": "docs/adr/0006-cross-repository-engineering-conformance.md",
+    "status": "accepted"
+  },
+  "enforcement_mode": "required",
+  "authorities": [
+    {
+      "authority_id": "held-secret-materialization",
+      "subject": "Startup and explicit-refresh materialization of connector secret references into the process working set.",
+      "protected_resources": ["held-connector-secret-working-set"],
+      "owner_component": "secret-loading",
+      "owner_implementation": "src/dotmac_integrator/secret_loading.py",
+      "decision_interface": "dotmac_integrator.secret_loading.install_secrets",
+      "canonical_writer_paths": ["src/dotmac_integrator/secret_loading.py"],
+      "adapter_paths": [
+        "src/dotmac_integrator/assembly.py",
+        "src/dotmac_integrator/operations.py"
+      ],
+      "drift_test_paths": [
+        "tests/architecture/test_secrets_are_held.py",
+        "tests/unit/test_secret_loading.py"
+      ]
+    }
+  ],
+  "typed_contract_surfaces": [
+    {
+      "surface_id": "secret-materialization-contract",
+      "paths": ["src/dotmac_integrator/secret_loading.py"],
+      "require_public_annotations": true,
+      "forbid_any": true,
+      "require_immutable_records": true
+    }
+  ],
+  "module_declared_vocabularies": [],
+  "testing_kit_boundary": {
+    "test_roots": ["tests"],
+    "kit_source_roots": [],
+    "conformance_probes": []
+  },
+  "external_connector_surface": {
+    "baselines": {
+      "outbound_transport": 0,
+      "webhook_surface": 0,
+      "provider_credential": 0,
+      "connector_task": 0,
+      "sync_checkpoint": 0,
+      "delivery_retry": 0
+    },
+    "conserved_exclusions": [
+      {
+        "category": "webhook_surface",
+        "fingerprint": "405c90cad566a926eeb5f7c74ada7705acb3a24736065fd4a56c692ad38c0e77",
+        "path": "tests/architecture/test_operator_surface.py",
+        "symbol": "_planted"
+      }
+    ]
+  }
+}
