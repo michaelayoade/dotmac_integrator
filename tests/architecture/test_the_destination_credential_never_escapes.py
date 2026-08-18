@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.request
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -37,11 +36,13 @@ from uuid import UUID
 import dotmac_integration as integration
 import dotmac_kernel.secret_sources as ks
 import pytest
+from sqlalchemy import create_engine
 
 from dotmac_integrator import telemetry
 from dotmac_integrator.product_port import (
     HttpAnswer,
     ObservationPortClient,
+    ProductPortDescriptorReconciler,
     ProductPortMode,
     UrllibTransport,
 )
@@ -74,6 +75,12 @@ class _Scope:
     ref = "support"
 
 
+class _ProductPort:
+    delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
+    mirror_path = f"{delivery_path}/mirror"
+    activation_state = "enabled"
+
+
 class _Destination:
     capability_binding_id = LOCAL_BINDING
     capability_id = "messaging.receive.v1"
@@ -81,6 +88,7 @@ class _Destination:
     scope = _Scope()
     contract_version = 1
     destination_revision_id = UUID("44444444-4444-4444-8444-444444444444")
+    product_port = _ProductPort()
 
 
 OBSERVATION: dict[str, object] = {
@@ -116,8 +124,6 @@ def _client(transport: Any) -> ObservationPortClient:
     return ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
         api_key_ref=CREDENTIAL_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=1.0,
@@ -220,10 +226,37 @@ def test_no_frame_on_the_failing_path_still_holds_the_credential(
     def _refuse_to_connect(*_: object, **__: object) -> None:
         raise OSError("connection reset by peer")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _refuse_to_connect)
+    transport = UrllibTransport()
+    monkeypatch.setattr(transport._opener, "open", _refuse_to_connect)
 
     with pytest.raises(integration.TransportFailure) as failure:
-        _client(UrllibTransport()).deliver(_request())
+        _client(transport).deliver(_request())
+
+    assert CREDENTIAL not in _locals_along(failure.value)
+    assert CREDENTIAL not in str(failure.value)
+
+
+def test_descriptor_fetch_failure_keeps_the_credential_out_of_every_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _refuse_to_connect(*_: object, **__: object) -> None:
+        raise OSError("connection reset by peer")
+
+    transport = UrllibTransport()
+    monkeypatch.setattr(transport._opener, "open", _refuse_to_connect)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest="a" * 64,
+        api_key_ref=CREDENTIAL_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=1.0,
+        transport=transport,
+    )
+
+    with pytest.raises(integration.TransportFailure) as failure:
+        reconciler.reconcile()
 
     assert CREDENTIAL not in _locals_along(failure.value)
     assert CREDENTIAL not in str(failure.value)
