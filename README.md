@@ -5,9 +5,9 @@ The independently deployed **connector control plane**. It composes
 only what a deployment can own.
 
 ```
-dotmac-kernel 0.1.0a68  ──┐
-                          ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a9┘         (this repo)          (pinned, discovered)
+dotmac-kernel  0.1.0a68  ──┐
+                           ├──►  dotmac_integrator  ──►  connector distributions
+dotmac-integration 0.1.0a10┘        (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -65,9 +65,54 @@ A connector is a **separately released distribution**, discovered through the
 The deployment manifest names and exactly pins connector DISTRIBUTIONS; generic
 assembly source imports no connector and carries no provider branch or registry.
 
-The first pin is `dotmac-connector-whatsapp 0.1.0a1`, **ingress-only**. It is
-installed and discoverable here; shadow comparison against Sub remains the
+One is pinned today: `dotmac-connector-whatsapp 0.1.0a2`, **ingress-only**,
+connector key `meta_whatsapp`, capability `messaging.receive.v1`. It declares
+SPI `>=1.3,<2.0` and an EMPTY egress — which under 1.3 is an explicit deny-all
+rather than an unset field.
+
+It is installed and discoverable here; shadow comparison against Sub remains the
 cutover gate before any incumbent receiver is retired or its ratchet is lowered.
+
+**Composed is not the same as delivering, and one connector is not the same as
+two.** The remaining connector work is sequenced into slices for reasons that
+are structural rather than administrative — `docs/UPGRADE-READINESS.md` carries
+the evidence:
+
+* **A second connector on the SAME capability needs a fix here first.** The
+  product-port descriptor is reconciled onto ONE local capability binding
+  (`PRODUCT_PORT_LOCAL_BINDING_ID`, one UUID). A second connector gets its own
+  binding that no reconcile call reaches, so its receipts would be recorded and
+  then fail to resolve a destination — fail-closed, and useless. That is a
+  COMPOSITION limit this repository owns, and it is fixed against the module's
+  own binding registry before any second connector is pinned.
+* **Settlement connectors wait on a product port.** The capability
+  `payments.settlement.observation.v1` has no declaring application: Sub's
+  port types `capability_id: Literal["messaging.receive.v1"]`. Installing a
+  connector is not binding one — the module refuses a destination binding
+  naming an undeclared capability, so a settlement receipt could never be
+  mis-delivered — but a connector that can never be bound is not readiness.
+  Which application owns a settlement observation is a product decision this
+  assembly may never make.
+
+### Runtime boundaries (SPI 1.3)
+
+`dotmac-integration 0.1.0a10` moved two declarations into the connector
+manifest: the NAMED secret bindings a connector needs, and the EXACT provider
+hosts it may reach. The module projects the installed manifest set into one
+immutable policy (`derive_runtime_policy`) and stops there — it knows nothing
+about a network policy or a secret store.
+
+`src/dotmac_integrator/runtime_policy.py` is this deployment's half. It restates
+nothing: there is no host, no secret name and no provider identity in it, and
+`test_the_assembly_stays_thin.py` fails the build on a host-shaped literal.
+`create_app` refuses to start when an installed connector's manifest predates
+1.3, beside the surface audit and for the same reason — an omitted boundary is
+the absence of evidence wearing the same shape as deny-all, and the published
+policy digest would cover a connector nobody declared a boundary for.
+
+Deliberately NOT a metric. A policy digest or a connector key as a label would
+break the closed label vocabulary (hard rule 18) for a value that changes only
+when a release is installed, which a scrape is the wrong instrument for.
 
 ## Running it
 
@@ -223,9 +268,9 @@ here would let an install months from now compose a combination nobody ran.
 
 | Distribution | Pin | Why this one |
 |---|---|---|
-| `dotmac-connector-whatsapp` | `0.1.0a1` | First published ingress connector. Declares SPI `>=1.2,<2.0`, exact-byte verification and `messaging.receive.v1`; its package entry point is the only runtime registration. |
-| `dotmac-integration` | `0.1.0a9` | Published SPI 1.2 module. Adds source-revisioned product-port descriptors, indexed shadow evidence, and finite replay-evidence retention through `ig_0011`; the assembly only schedules and commits module service calls. |
-| `dotmac-kernel` | `0.1.0a68` | Current published kernel. It satisfies the module's `>=0.1.0a66` floor and is the exact release this three-wheel composition is tested against. |
+| `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
+| `dotmac-integration` | `0.1.0a10` | Published SPI **1.3** module. Adds manifest-owned runtime boundaries and `derive_runtime_policy`; the lineage head is unchanged at `ig_0011` and `requires` is byte-identical to a9, which is why the bindings below are a re-derived no-op rather than an unexamined one. |
+| `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
 
 ### What a pin bump actually costs
 
@@ -284,7 +329,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a9` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a10` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -327,7 +372,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a9`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a10`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing

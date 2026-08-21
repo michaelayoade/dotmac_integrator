@@ -49,7 +49,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import secret_loading, telemetry
+from dotmac_integrator import runtime_policy, secret_loading, telemetry
 from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
@@ -187,6 +187,22 @@ def installed_connectors() -> dict[str, Any]:
             [getattr(p, "manifest", p) for p in plugins],
         ),
     }
+
+
+def connector_runtime_policy() -> dict[str, Any]:
+    """The runtime boundaries the installed connectors declared, projected.
+
+    A read, and a pure one: no session, no query, no held material. It sits here
+    rather than in the route for the same reason `installed_connectors` does —
+    `assembly.py` is this repository's `router.py`, and a handler that assembles
+    its own answer is a handler somebody will later add a decision to.
+
+    What an operator gets is the exact set a deployment may allow out, the named
+    secret bindings it must satisfy, a digest identifying the manifest set the
+    whole answer was projected from, and the capability coverage on both sides.
+    See `runtime_policy.py` for why coverage is reported and never refused.
+    """
+    return runtime_policy.policy_report(runtime_policy.projected_policy())
 
 
 def health_report(engine: Engine) -> dict[str, Any]:

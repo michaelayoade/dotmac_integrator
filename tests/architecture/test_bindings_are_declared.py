@@ -52,7 +52,7 @@ from dotmac_integrator.migration_bindings import (
     unbound_prerequisites,
 )
 
-#: What `dotmac-integration 0.1.0a9` actually declares. Restated here ON PURPOSE,
+#: What `dotmac-integration 0.1.0a10` actually declares. Restated here ON PURPOSE,
 #: unlike everything else in this file, which reads the installed manifest: a pin
 #: bump that silently changes the requirement set must fail with a diff a reviewer
 #: can see, not adapt to it. `test_the_pinned_release_declares_what_we_think_it
