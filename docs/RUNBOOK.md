@@ -125,6 +125,96 @@ for a token to expire.
 
 ---
 
+## Connector releases and runtime boundaries
+
+A connector enters this deployment ONE way: it is exactly pinned in
+`pyproject.toml`, resolved into the image, and found through the
+`dotmac_integration.connectors` entry-point group. There is no registration
+call, no admin screen that installs one, and no way to add one to a running
+process.
+
+After a deployment that moves a connector pin, check the projection before
+enabling anything:
+
+```bash
+curl -sH "Authorization: Bearer $OPERATOR_TOKEN" \
+     https://$HOST/operations/runtime-policy | jq
+```
+
+What to read, in the order it matters:
+
+1. **`policy_digest`** — the identity of the manifest set now running. It
+   changes when, and only when, an installed connector's reviewable contract
+   changes: its key, version, SPI range, capability set, secret-binding names
+   and requiredness, or its egress hosts. A digest that did NOT change across a
+   deploy you expected to change one means the image did not pick up the pin.
+2. **`egress_hosts` / `egress_denies_all`** — the exact set this deployment's
+   connectors declared they may reach. Every connector pinned today declares
+   an EMPTY egress, which under SPI 1.3 is an explicit deny-all rather than an
+   unset field, so `egress_denies_all` is `true` and the union is `[]`. If a
+   future connector release declares a host, this is where it appears — and it
+   appears here BEFORE anything needs to reach it, which is the point.
+3. **`secret_bindings`** — the logical names each connector needs, and which
+   are required. Names, never references and never values. Cross-check against
+   `GET /operations/secrets`, which says which references actually resolved.
+4. **`capabilities.implemented_without_declaration`** — installed connectors
+   whose capability no product has declared. These cannot be bound: the module
+   refuses a destination binding naming an undeclared capability, so the
+   connector sits installed and inert. That is a **product** decision to make
+   or decline, not a configuration one; do not try to route around it.
+   `capabilities.declared_without_implementation` is the mirror image — a
+   contract that resolves while nothing ever arrives.
+
+**A boot that refuses with `RuntimeBoundaryMissing` naming a connector key** is
+telling you an installed connector's manifest predates SPI 1.3 and declares
+neither its secret bindings nor its egress. The remedy is a connector release
+that declares them; there is deliberately no knob that starts anyway, because a
+policy digest covering an undeclared boundary is worse than a failed boot.
+
+Wiring the declared egress union into an actual network policy or firewall is a
+deployment step this repository does not take for you — it publishes the exact
+set and refuses to be the second list.
+
+**Breaking for AUTHORING, not for running installations: SPI 1.3 retires
+operator-chosen secret slot aliases.** Under 1.2 an operator invented the slot
+names and keyed `secret_refs` by them:
+
+```jsonc
+// RETIRED — a config revision written this way is now refused 409
+"config":      { "signing_slots": ["signing"], "handshake_slot": "handshake" },
+"secret_refs": { "signing": "env://...", "handshake": "env://..." }
+```
+
+Under 1.3 the logical names are part of the installed package's contract, so
+`config` is EMPTY and `secret_refs` is keyed by the names the connector's own
+manifest declares — read them off
+`GET /operations/runtime-policy` under `secret_bindings`, never from memory:
+
+```jsonc
+"config":      {},
+"secret_refs": { "<declared name>": "env://...", "<declared name>": "env://..." }
+```
+
+Existing revisions are NOT invalidated: a connector keeps its old manifest in
+`historical_manifests`, so a persisted revision pinned to the old digest still
+validates and the installation keeps running. Only a NEW revision is written
+against the current manifest. The refusal is explicit — a 409 naming the
+capability and `config_additionalProperties` — rather than a silent acceptance
+that fails later at verification.
+
+**Known limit: one reconciled local binding per boot.**
+`PRODUCT_PORT_LOCAL_BINDING_ID` is one UUID, and the product-port descriptor is
+reconciled onto that one local capability binding at startup. A SECOND connector
+implementing the SAME capability gets its own capability binding, which no
+reconcile call reaches — its receipts are recorded by ingress and then fail to
+resolve a destination. Nothing is lost and nothing is mis-delivered; the
+receipts simply accumulate. The symptom is a rising undelivered count for one
+binding on `/operations/health-report` while another binding on the same
+capability is healthy. Until the setting takes a set, run the second connector
+in `mirror` mode or do not enable it. See `docs/UPGRADE-READINESS.md`, slice 2.
+
+---
+
 ## Secret material
 
 **A secret is held, never dereferenced** (ADR-0009). Material is loaded into

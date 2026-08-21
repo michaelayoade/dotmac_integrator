@@ -238,9 +238,29 @@ def test_an_operator_can_author_the_installed_connector_without_direct_rows(
     ORM row in the test.  The connector and capability identities occur only in
     this acceptance fixture; generic assembly source learns them from package
     metadata and operator input.
+
+    ## The SPI 1.3 authoring shape, which is NOT the 1.2 one
+
+    Under 1.2 an operator invented slot ALIASES — `signing_slots: ["signing"]`,
+    `handshake_slot: "handshake"` — and keyed `secret_refs` by those aliases.
+    1.3 makes the logical secret names part of the installed package contract,
+    so the aliases are gone: `config` is EMPTY and `secret_refs` is keyed by the
+    names the connector's own manifest DECLARES. The connector still ships its
+    1.2 schema in `historical_manifests`, so a persisted a1 revision keeps
+    validating; a NEW revision is written against the current manifest and the
+    old shape is refused as `config_additionalProperties`.
+
+    That refusal is how this test found the change, which is the argument for
+    driving the whole flow over HTTP rather than asserting the pin moved.
     """
     token, admin_id = operator
     headers = _headers(token)
+    # The DECLARED binding names, from the connector's own manifest. Written out
+    # rather than imported: this assembly may not import a connector, and an
+    # acceptance fixture that read the name from the package under test would
+    # agree with it by construction and prove nothing about the contract.
+    signing_slot = "webhook_signing_secret"
+    handshake_slot = "webhook_verify_token"
     signing_name = "INTEGRATOR_SECRET_AUTHORING_SIGNING"
     handshake_name = "INTEGRATOR_SECRET_AUTHORING_HANDSHAKE"
     signing_ref = f"env://{signing_name}"
@@ -279,13 +299,14 @@ def test_an_operator_can_author_the_installed_connector_without_direct_rows(
         f"/operations/installations/{installation_id}/config-revisions",
         headers=headers,
         json={
-            "config": {
-                "signing_slots": ["signing"],
-                "handshake_slot": "handshake",
-            },
+            # EMPTY under SPI 1.3 — the connector's current schema is
+            # `additionalProperties: false` with no properties, because the
+            # logical names below are the package's contract rather than an
+            # operator's choice.
+            "config": {},
             "secret_refs": {
-                "signing": signing_ref,
-                "handshake": handshake_ref,
+                signing_slot: signing_ref,
+                handshake_slot: handshake_ref,
             },
             "schema_version": "1",
             "reason": "pin the ingress verification configuration",
@@ -369,6 +390,70 @@ def test_an_operator_can_author_the_installed_connector_without_direct_rows(
         "integrator.binding.enabled",
         "integration.ingress_endpoint.minted",
     } <= actions
+
+
+def test_the_pre_1_3_configuration_shape_is_refused(
+    client: TestClient, operator: tuple[str, str]
+) -> None:
+    """Sensitivity proof for the change above (ADR-0018).
+
+    The test before this one was rewritten to the SPI 1.3 authoring shape. A
+    rewrite that only asserts the NEW shape works would pass just as happily if
+    the module had quietly kept accepting the old one — and then nobody would
+    know that an operator following the previous runbook writes a revision the
+    connector cannot use.
+
+    So the retired shape is driven deliberately and must be REFUSED, by the
+    module's own capability-schema validation, with the conflict naming the
+    capability. This is also the migration note in executable form: operator
+    slot aliases are gone, and `secret_refs` is keyed by the connector's
+    declared binding names.
+    """
+    token, _admin_id = operator
+    headers = _headers(token)
+
+    drafted = client.post(
+        "/operations/installations",
+        headers=headers,
+        json={
+            "connector_key": "meta_whatsapp",
+            "name": f"legacy-shape-{uuid4().hex[:8]}",
+            "environment": "test",
+            "reason": "prove the retired configuration shape is refused",
+        },
+    )
+    assert drafted.status_code == 200, drafted.text
+    installation_id = drafted.json()["id"]
+
+    bound = client.post(
+        f"/operations/installations/{installation_id}/bindings",
+        headers=headers,
+        json={
+            "capability_id": "messaging.receive.v1",
+            "scope": {"deployment": "acceptance"},
+            "reason": "bind the declared ingress contract",
+        },
+    )
+    assert bound.status_code == 200, bound.text
+
+    refused = client.post(
+        f"/operations/installations/{installation_id}/config-revisions",
+        headers=headers,
+        json={
+            "config": {
+                "signing_slots": ["signing"],
+                "handshake_slot": "handshake",
+            },
+            "secret_refs": {
+                "signing": "env://INTEGRATOR_SECRET_AUTHORING_SIGNING",
+                "handshake": "env://INTEGRATOR_SECRET_AUTHORING_HANDSHAKE",
+            },
+            "schema_version": "1",
+            "reason": "the shape a pre-1.3 runbook would produce",
+        },
+    )
+    assert refused.status_code == 409, refused.text
+    assert "messaging.receive.v1" in refused.json()["detail"]
 
 
 # ── The enablement gate ─────────────────────────────────────────────────────

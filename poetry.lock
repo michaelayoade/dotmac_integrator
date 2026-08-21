@@ -293,18 +293,18 @@ wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
 name = "dotmac-connector-whatsapp"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Ingress-only Meta WhatsApp Cloud API connector for Dotmac Integrator"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_connector_whatsapp-0.1.0a1-py3-none-any.whl", hash = "sha256:7f5732a2168df12eb776538c11c2af7f0261267e1a7c7114d8113eaece3cedd9"},
-    {file = "dotmac_connector_whatsapp-0.1.0a1.tar.gz", hash = "sha256:f167d31bdc5bd9fff54c277326914e1f81e66f35e23b3090501a00f9e2347cf8"},
+    {file = "dotmac_connector_whatsapp-0.1.0a2-py3-none-any.whl", hash = "sha256:2381c65b5ce41ac1fc315c062d3ebcc5d4622f59e62bae626a35eb972ae0b9a0"},
+    {file = "dotmac_connector_whatsapp-0.1.0a2.tar.gz", hash = "sha256:dee854fa29767dec9cfd1771ee553aa4f7b070e48de017f1f619a1659ce16f9f"},
 ]
 
 [package.dependencies]
-dotmac-integration = ">=0.1.0a5"
+dotmac-integration = ">=0.1.0a10"
 
 [package.source]
 type = "legacy"
@@ -313,14 +313,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a9"
+version = "0.1.0a10"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a9-py3-none-any.whl", hash = "sha256:b2c1fc9375ee3f11d369b40db78641ccfa0a30938fbe12239602a8b17d23b11e"},
-    {file = "dotmac_integration-0.1.0a9.tar.gz", hash = "sha256:c1f64bfa27fe95d3c247cf7eea35759fb519f02a43a5a04a6d25690271e5993a"},
+    {file = "dotmac_integration-0.1.0a10-py3-none-any.whl", hash = "sha256:35e0c14fec2e7ebe5cf77bf06141cde4a372dcb85025150c6998bbcc70fc72f3"},
+    {file = "dotmac_integration-0.1.0a10.tar.gz", hash = "sha256:95a332d2d2bbd92fb9a5635ba1f28dc2a4395a5f804ee2e660558f63daee8dd9"},
 ]
 
 [package.dependencies]
@@ -2158,4 +2158,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "a5008ab910c2f00c381d58a695e71ce8e7af7af2e76cda77835660d9f150b61c"
+content-hash = "35d8be1286c03c9c26eec923598c382d1f2c0fc1b7a7eae766aceffec500f639"

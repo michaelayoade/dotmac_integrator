@@ -11,7 +11,10 @@ This is a **thin assembly**. The reusable behaviour lives in
 2. **Generic assembly source names no connector.** The deployment manifest
    exactly pins separately released connector distributions; entry-point
    discovery is the only runtime registration. Nothing under `src/` imports a
-   connector, enumerates providers or branches on one.
+   connector, enumerates providers or branches on one. Installing a connector is
+   not binding one: a capability nothing declares is refused at the binding, so
+   a distribution may be composed before a product has decided anything about
+   it.
 3. **The Dotmac dependencies are pinned exactly**, and the lock must agree
    (`tests/architecture/test_pins_are_exact.py`). No path or git sources — this
    assembly consumes published wheels, not a second checkout of the Starter.
@@ -219,3 +222,29 @@ This is a **thin assembly**. The reusable behaviour lives in
     distribution may resolve. A product repository may resolve none, and the
     Starter source repository may resolve one only outside `main`.
     (`tests/architecture/test_engineering_standards_adoption.py`; ADR-0001)
+32. **A connector's runtime boundary is PROJECTED, never restated, and
+    omission refuses the boot.** SPI 1.3 puts named secret bindings and exact
+    provider egress hosts in the connector manifest;
+    `dotmac_integration.derive_runtime_policy` projects the installed set and
+    `src/dotmac_integrator/runtime_policy.py` renders that projection. No host,
+    no secret name and no provider identity is written into generic source — a
+    second allowlist here could be widened without installing a reviewed
+    connector release, which is precisely what `EgressDeclaration` refuses by
+    accepting no installation-provided hosts. An EMPTY egress is an explicit
+    deny-all and is reported as one; an OMITTED one is refused at `create_app`,
+    beside the surface audit, because a published policy digest would otherwise
+    cover a connector whose boundary nobody declared. Every pinned distribution
+    declares `>=1.3,<2.0`, so the refusal is unreachable through the pins and
+    carries a planted-legacy sensitivity proof (ADR-0018).
+    (`tests/unit/test_runtime_policy.py`;
+    `test_the_assembly_stays_thin.py` § 9)
+33. **Capability coverage is REPORTED and never decided here.** The module's
+    `require_implements_only_declared` and `require_no_orphans` are run for
+    their VERDICT on `GET /operations/runtime-policy`, not raised. An installed
+    connector implementing a capability no product declared is a product
+    decision to make or decline — this assembly may never mint a capability
+    declaration (rule 27) — and hiding the gap would leave an operator reading a
+    green screen for an integration that can never be bound. The per-receipt
+    path stays fail-closed regardless: an unreconciled destination is a
+    pre-network `UNAVAILABLE`, never a receipt marked done.
+    (`docs/UPGRADE-READINESS.md`)

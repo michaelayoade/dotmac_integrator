@@ -12,7 +12,13 @@ decides anything.
    unclassified route (`surface.py`). Enforced here rather than only in a test,
    because a test proves the routes the test knows about and this proves the
    ones that are actually mounted.
-3. At lifespan startup, `install_secrets` — load every referenced secret into
+3. `require_declared_runtime_boundaries` — refuse to start when an installed
+   connector's manifest predates SPI 1.3 and therefore declares no secret
+   bindings and no egress (`runtime_policy.py`). The module reads such a
+   manifest and refuses to PROJECT it; this deployment escalates that to a
+   failed boot, because the policy digest it publishes would otherwise cover a
+   connector whose boundary nobody declared.
+4. At lifespan startup, `install_secrets` — load every referenced secret into
    memory before serving. ADR-0009: held, never fetched. A failure here is a
    failed boot, deliberately, because a process serving with no material looks
    healthy and refuses every enablement.
@@ -65,6 +71,7 @@ from dotmac_integrator import (
     ingress,
     operations,
     product_port,
+    runtime_policy,
     secret_loading,
     telemetry,
 )
@@ -124,6 +131,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # actions; ModuleRegistry validates the dependency and deterministic order.
     manifests = ModuleRegistry((integration.module, assembly_module)).startup_order()
     install_audit_actions(AuditActionRegistry.from_manifests(manifests))
+
+    # BEFORE the engine, the worker and any route. Discovery is already the
+    # only way a connector enters; this is the second half of that contract —
+    # what an entered connector had to DECLARE. `RuntimeBoundaryMissing` names
+    # the offending connector key and the remedy, so it is deliberately not
+    # translated into a local exception type here.
+    runtime_policy.require_declared_runtime_boundaries()
 
     engine = build_engine(settings)
     worker = Worker(engine=engine, settings=settings)
@@ -227,6 +241,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _actor: Operator,
     ) -> dict[str, Any]:
         return operations.installed_connectors()
+
+    @app.get("/operations/runtime-policy", tags=["operations"])
+    def connector_runtime_policy(
+        _actor: Operator,
+    ) -> dict[str, Any]:
+        """Declared egress, named secret bindings and capability coverage.
+
+        Guarded like every other read on this prefix. It is the map of what this
+        fleet's connectors may reach and which of their capabilities no product
+        has declared — an operations answer, not a status page.
+        """
+        return operations.connector_runtime_policy()
 
     @app.get("/operations/health-report", tags=["operations"])
     def health_report(

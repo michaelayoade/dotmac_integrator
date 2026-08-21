@@ -20,6 +20,10 @@ So the boundary is a test rather than a paragraph in the README.
    Starter enforces between `router.py` and `service.py`.
 4. The module's decision functions are not reimplemented.
 5. No DDL. Migrations are a deploy step run as the owner role.
+9. The SPI 1.3 runtime boundaries are PROJECTED, never restated. A provider
+   hostname or a connector's secret-binding name written into generic source
+   would be a second declaration beside the manifest's, and the manifest is the
+   reviewed one.
 """
 
 from __future__ import annotations
@@ -192,6 +196,11 @@ OWNED_BY_THE_MODULE = (
     "set_binding_enabled",
     "validate_secret_refs",
     "record_delivery_outcome",
+    # SPI 1.3. The projection of the installed manifest set is the module's, and
+    # an assembly-side one would be a second answer to "what did these
+    # connectors declare" — computed from the same manifests, drifting the
+    # moment the module's rules change.
+    "derive_runtime_policy",
 )
 
 
@@ -441,3 +450,70 @@ def test_the_claim_detector_bites() -> None:
         '    "WHERE id = :id FOR UPDATE"))'
     )
     assert any(fragment in plausible for fragment in CLAIM_SHAPED_SQL)
+
+
+# ── 9. The runtime boundaries are projected, never restated ────────────────
+
+#: A connector declares its exact provider hosts in its own manifest, and
+#: `dotmac_integration.derive_runtime_policy` projects the union. A DNS literal
+#: in this repository would be a second egress list — one an operator could
+#: widen without installing a reviewed connector release, which is the exact
+#: move `EgressDeclaration` refuses by taking no installation-provided hosts.
+#:
+#: Anchored on a dotted lower-case name inside a string literal. Deliberately
+#: not a general "looks like a hostname" scan: `pyproject.toml`, a media type
+#: and a dotted import path all read that way, and a detector that fires on
+#: ordinary code gets weakened by whoever hits it next.
+_EGRESS_SHAPED_LITERAL = re.compile(
+    r"\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)*\."
+    r"(?:com|net|org|io|co|dev|app|cloud|ng)\b"
+)
+
+
+def _string_literals(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    literals: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literals.append(node.value)
+    return literals
+
+
+def test_no_egress_host_is_written_into_the_projection() -> None:
+    """`runtime_policy.py` reads hosts; it never names one."""
+    for literal in _string_literals(SRC / "runtime_policy.py"):
+        assert not _EGRESS_SHAPED_LITERAL.search(literal), (
+            f"runtime_policy.py contains the host-shaped literal {literal!r}. "
+            "The egress union is projected from the installed manifests through "
+            "`derive_runtime_policy`; a host named here would be a second "
+            "allowlist this repository has to keep in sync with the connector "
+            "releases it does not own."
+        )
+
+
+def test_the_projection_is_the_modules_and_the_verdicts_are_reported() -> None:
+    """Read positively.
+
+    The bans above would pass over a file that projected nothing at all. This
+    asserts the three module-owned calls are actually made — the projection
+    itself, and both capability refusals whose VERDICT this deployment reports
+    instead of raising, because declaring a capability is a product decision and
+    this assembly may never mint one.
+    """
+    code = _source_without_docstrings(SRC / "runtime_policy.py")
+    for call in (
+        "integration.derive_runtime_policy",
+        "integration.require_implements_only_declared",
+        "integration.require_no_orphans",
+    ):
+        assert call in code, f"runtime_policy.py never calls {call}"
+
+
+def test_the_egress_literal_detector_bites() -> None:
+    """Sensitivity proof (ADR-0018). The scan is evidence only once it has been
+    shown to fire on the diff it exists to catch — here, somebody hardcoding the
+    provider host a connector already declares."""
+    plausible = 'ALLOWED_EGRESS = ("graph.facebook.com",)'
+    assert _EGRESS_SHAPED_LITERAL.search(plausible)
+    assert not _EGRESS_SHAPED_LITERAL.search("dotmac_integration.runtime_policy")
+    assert not _EGRESS_SHAPED_LITERAL.search("text/plain; charset=utf-8")
