@@ -175,6 +175,33 @@ Wiring the declared egress union into an actual network policy or firewall is a
 deployment step this repository does not take for you — it publishes the exact
 set and refuses to be the second list.
 
+**Breaking for AUTHORING, not for running installations: SPI 1.3 retires
+operator-chosen secret slot aliases.** Under 1.2 an operator invented the slot
+names and keyed `secret_refs` by them:
+
+```jsonc
+// RETIRED — a config revision written this way is now refused 409
+"config":      { "signing_slots": ["signing"], "handshake_slot": "handshake" },
+"secret_refs": { "signing": "env://...", "handshake": "env://..." }
+```
+
+Under 1.3 the logical names are part of the installed package's contract, so
+`config` is EMPTY and `secret_refs` is keyed by the names the connector's own
+manifest declares — read them off
+`GET /operations/runtime-policy` under `secret_bindings`, never from memory:
+
+```jsonc
+"config":      {},
+"secret_refs": { "<declared name>": "env://...", "<declared name>": "env://..." }
+```
+
+Existing revisions are NOT invalidated: a connector keeps its old manifest in
+`historical_manifests`, so a persisted revision pinned to the old digest still
+validates and the installation keeps running. Only a NEW revision is written
+against the current manifest. The refusal is explicit — a 409 naming the
+capability and `config_additionalProperties` — rather than a silent acceptance
+that fails later at verification.
+
 **Known limit: one reconciled local binding per boot.**
 `PRODUCT_PORT_LOCAL_BINDING_ID` is one UUID, and the product-port descriptor is
 reconciled onto that one local capability binding at startup. A SECOND connector

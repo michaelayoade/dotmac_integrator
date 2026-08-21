@@ -87,7 +87,39 @@ Deliberately NOT a metric: a policy digest or a connector key as a label would
 break the closed label vocabulary (rule 18) for a value that changes only when a
 release is installed, which a scrape is the wrong instrument for.
 
-## 1.3 Migration bindings — re-derived, and unchanged
+## 1.3 WhatsApp a2 is not configuration-compatible, and that is the point
+
+Found by CI's composition job on the first push of this branch, which is the
+argument for driving the operator flow over HTTP against a real database rather
+than asserting that a pin moved.
+
+a2 does not merely re-declare boundaries. Because SPI 1.3 makes the logical
+secret names part of the installed package's contract, the connector's current
+`config_schema` is `additionalProperties: false` with NO properties — the
+operator-chosen slot aliases of the 1.2 shape are gone, and `secret_refs` is
+keyed by the DECLARED binding names instead.
+
+| | SPI 1.2 (a1) | SPI 1.3 (a2) |
+|---|---|---|
+| `config` | `{"signing_slots": [...], "handshake_slot": "..."}` | `{}` |
+| `secret_refs` keys | operator-invented aliases | the manifest's declared names |
+
+**Running installations are unaffected.** The connector keeps its a1 manifest in
+`historical_manifests`, so a persisted revision pinned to the a1 digest still
+validates and its installation keeps working — which is exactly what that field
+is for. Only a NEW config revision is written against the current manifest, and
+the old shape is refused with a 409 naming the capability rather than accepted
+and failing later at verification.
+
+Two tests carry this: the end-to-end authoring flow was rewritten to the 1.3
+shape, and `test_the_pre_1_3_configuration_shape_is_refused` drives the retired
+shape deliberately. The second is not decoration — a rewrite that only asserted
+the new shape would pass just as happily if the module had quietly kept
+accepting the old one, and nobody would learn that an operator following the
+previous runbook writes a revision the connector cannot use. `docs/RUNBOOK.md`
+carries the operator-facing note.
+
+## 1.4 Migration bindings — re-derived, and unchanged
 
 Rule 10 requires re-derivation at every pin bump, because a release that changes
 `requires` changes what this assembly must assert about it. Re-derived for a10;
@@ -106,14 +138,14 @@ nothing moved, and the evidence is specific rather than a shrug:
 A no-op re-derivation is RECORDED rather than skipped, because a reader at the
 next bump otherwise cannot tell a checked no-op from an unexamined one.
 
-## 1.4 Product ports — the a10 diff touches none of it
+## 1.5 Product ports — the a10 diff touches none of it
 
 `ProductPortDescriptorV1`, `reconcile_product_port_descriptor`, the shadow port
 and the mirror verdict are identical between a9 and a10. `product_port.py` needs
 no change, and the wire contract it transcribes from the destination's own
 merged port (rule 25) is unmoved.
 
-## 1.5 The lock: generated in one lane, validated in another
+## 1.6 The lock: generated in one lane, validated in another
 
 The lock cannot be refreshed on the workstation — it needs the pinned Poetry
 `2.4.1` and the forgejo read credential, and rule 30 forbids a validation lane
@@ -264,7 +296,7 @@ Stated so the next reader does not mistake absence for oversight:
 
 CI is the acceptance owner. What must go green, and what each gate asserts:
 
-- [ ] `poetry check --lock` clean against the committed lock (§ 1.5).
+- [ ] `poetry check --lock` clean against the committed lock (§ 1.6).
 - [ ] `test_pins_are_exact.py` — every `dotmac-*` dependency is an exact version
       and the lock agrees. Parametrisation is derived from `pyproject.toml`, so
       a future pin is covered without a second list.
@@ -281,3 +313,6 @@ CI is the acceptance owner. What must go green, and what each gate asserts:
 - [ ] `test_operator_surface.py` — `/operations/runtime-policy` is classified
       OPERATOR and carries `require_operator`. `create_app` refuses an
       incorrectly classified surface, so this failing is a boot failure.
+- [ ] `test_the_operator_surface_end_to_end.py` (composition, PostgreSQL) — the
+      authoring flow in a2's SPI 1.3 shape, and the retired 1.2 shape refused.
+      This is the gate that caught § 1.3, and it runs only in the database job.
