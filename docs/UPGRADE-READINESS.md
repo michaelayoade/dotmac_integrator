@@ -20,7 +20,7 @@ different owners.**
 |---|---|---|---|
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
 | **2** | Reconcile every local binding for the capability, then pin Meta Social | this repository | the fix lands and is proved BEFORE the second connector is pinned |
-| **3** | Settlement connectors (Paystack, Flutterwave) | the destination product, and the Starter's release lane | a compatible product port exists, and Flutterwave has a verified tag |
+| **3** | Settlement connectors (Paystack, Flutterwave) | the destination product | a compatible acceptance port declares `payments.settlement.observation.v1` |
 
 Collapsing them means a red CI run cannot tell you which of the three broke, and
 — worse — slice 2's fix would land on the same commit as the connector that
@@ -233,46 +233,82 @@ while another binding on the same capability is healthy.
 
 ---
 
-# Slice 3 — settlement connectors wait on a product port and a tag
+# Slice 3 — settlement connectors are PUBLISHED and blocked on adoption
 
-**Status: blocked on two other repositories. Nothing to do here.**
+**Status: publication is complete. Adoption is blocked on the destination
+product, and on nothing in this repository.**
 
-## 3.1 No application declares the capability
+## 3.1 Both connectors are released and verified
 
-`dotmac-connector-paystack` and `dotmac-connector-flutterwave` implement
-`payments.settlement.observation.v1`. The destination this deployment is
-configured against declares one capability and it is not that one — Sub's
-`app/schemas/integrator_observation.py` types it as
-`capability_id: Literal["messaging.receive.v1"]`.
+An earlier revision of this file said Flutterwave was unreleased. That was true
+when it was written and is now wrong — corrected here rather than left to be
+discovered by whoever tried to pin it.
 
-Installing is not binding: `dotmac_integration.destination_binding` calls
-`require_declared_for_binding`, which refuses a binding naming an undeclared
-capability, so a settlement receipt could never be mis-delivered. But a
-connector that can never be bound is not readiness, so it is not pinned.
+| Distribution | Version | Tag → commit | Evidence |
+|---|---|---|---|
+| `dotmac-connector-paystack` | `0.1.0a1` | `dotmac-connector-paystack-v0.1.0a1` | released through the protected lane |
+| `dotmac-connector-flutterwave` | `0.1.0a1` | `dotmac-connector-flutterwave-v0.1.0a1` → `401f0006` | annotated tag records "verified on the Forgejo registry; installed and SPI conformance proved on the published bytes" |
 
-**Which application owns a settlement observation is a product decision** — Sub
-billing or ERP — and this assembly may never mint a capability declaration
-(rule 27). The unblocking work is in the owning product's repository: declare
-the capability and publish it in that application's port descriptor. When a
-compatible port exists, `/operations/runtime-policy`'s
-`capabilities.implemented_without_declaration` closes on its own.
+Flutterwave's publication-baseline row is **gone** from Starter `origin/main`,
+which is the other half of the release contract: a ledger that only grows stops
+describing anything, so the row is removed in the same change as the release.
+Both halves check out — the tag exists and the row does not.
 
-## 3.2 Flutterwave is not released
+At the tag, `dotmac-connector-flutterwave 0.1.0a1` declares connector key
+`flutterwave`, capability `payments.settlement.observation.v1`, SPI
+`>=1.3,<2.0`, an empty (deny-all) egress and `dotmac-integration >=0.1.0a10`.
 
-`dotmac-connector-flutterwave 0.1.0a1` is **merged and release-allowlisted in
-the Starter, and not released.** It is a live row in
-`docs/inventories/declared-publication-baseline.json`:
+**Nothing about publication blocks this repository any more.** What blocks it is
+below, and it is not ours.
 
-> ALLOWLISTED FOR RELEASE, NOT YET RELEASED, AND NOT ADOPTED. […] Remove this
-> row only after the protected-main release installs the exact artifact back
-> from the registry, verifies conformance and writes
-> `dotmac-connector-flutterwave-v0.1.0a1`.
+## 3.2 The ownership question is CLOSED: Sub, via the billing acceptance port
 
-There is no such tag. Pinning it would make `poetry lock` the step that
-discovers the version does not exist, on whichever machine ran it next. Paystack
-`0.1.0a1` IS tagged; it waits on § 3.1 alone.
+Ruled 2026-08-21. The first declaring application is **Sub**, targeting the
+**`dotmac-billing` acceptance port** — **not ERP**. The layering, which is the
+part worth carrying forward:
 
----
+| Layer | Owns |
+|---|---|
+| **Integrator** | PSP transport and the observations it records. Nothing else. |
+| **Billing** | Allocation and financial consequences — the money decisions. |
+| **ERP** | Downstream accounting facts, and the GL. |
+
+This is consistent with the checked-in extraction dossier, which already
+specifies Paystack ingress against Sub first, with Flutterwave following in a
+later adoption slice — so the two connectors are not adopted as a pair, and
+Paystack going first is a sequencing decision that has already been made
+elsewhere.
+
+It also settles a question this file previously left open ("Sub billing or
+ERP"). ADR-0020 § A3 already split payments in two — billing owns the money
+decisions, the transport is transport — and this ruling applies that split to
+the settlement observation rather than inventing a new boundary.
+
+## 3.3 What is actually blocking, and why it is not pinnable yet
+
+`payments.settlement.observation.v1` still has **no declaring application**.
+Sub's current port types `capability_id: Literal["messaging.receive.v1"]`, and
+the `dotmac-billing` acceptance port that will declare the settlement capability
+does not exist on Starter `origin/main` yet.
+
+Until it does:
+
+* `dotmac_integration.destination_binding` calls `require_declared_for_binding`,
+  which refuses a binding naming an undeclared capability. **Installing is not
+  binding**, so a settlement receipt could never be mis-delivered — the failure
+  mode is inert, not dangerous.
+* A connector that can never be bound is still not readiness, so neither
+  settlement connector is pinned here. Pinning one would compose a distribution
+  whose only observable behaviour is appearing in
+  `/operations/runtime-policy`'s `capabilities.implemented_without_declaration`.
+
+**The unblocking work is entirely in the owning product's repository**: declare
+the capability and publish it in the billing acceptance port's descriptor. When
+that lands, this deployment's coverage report closes on its own and the pin is
+a one-line change plus a re-lock — Paystack first, per the dossier.
+
+The Integrator may never mint a capability declaration (rule 27), so there is no
+version of this that starts here.
 
 # What no slice does
 

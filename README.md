@@ -85,14 +85,15 @@ the evidence:
   then fail to resolve a destination — fail-closed, and useless. That is a
   COMPOSITION limit this repository owns, and it is fixed against the module's
   own binding registry before any second connector is pinned.
-* **Settlement connectors wait on a product port.** The capability
-  `payments.settlement.observation.v1` has no declaring application: Sub's
-  port types `capability_id: Literal["messaging.receive.v1"]`. Installing a
-  connector is not binding one — the module refuses a destination binding
-  naming an undeclared capability, so a settlement receipt could never be
-  mis-delivered — but a connector that can never be bound is not readiness.
-  Which application owns a settlement observation is a product decision this
-  assembly may never make.
+* **Settlement connectors are published and wait on an acceptance port.**
+  Paystack and Flutterwave are both released and verified. Ownership is settled:
+  Sub declares first, targeting the `dotmac-billing` acceptance port — the
+  Integrator owns PSP transport and observations, billing owns allocation and
+  financial consequences, ERP owns the GL. What is missing is the port itself:
+  `payments.settlement.observation.v1` has no declaring application yet, so the
+  module refuses a destination binding naming it. Installing is not binding, so
+  nothing could be mis-delivered — but a connector that can never be bound is
+  not readiness, and this assembly may never mint the declaration.
 
 ### Runtime boundaries (SPI 1.3)
 
