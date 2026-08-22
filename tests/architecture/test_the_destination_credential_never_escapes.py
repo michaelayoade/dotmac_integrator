@@ -246,7 +246,6 @@ def test_descriptor_fetch_failure_keeps_the_credential_out_of_every_frame(
     monkeypatch.setattr(transport._opener, "open", _refuse_to_connect)
     reconciler = ProductPortDescriptorReconciler(
         engine=create_engine("sqlite+pysqlite:///:memory:"),
-        local_binding_id=LOCAL_BINDING,
         descriptor_url="https://destination.example/descriptor",
         expected_digest="a" * 64,
         api_key_ref=CREDENTIAL_REF,

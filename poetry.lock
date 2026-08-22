@@ -123,7 +123,7 @@ version = "2026.7.22"
 description = "Python package for providing Mozilla's CA Bundle."
 optional = false
 python-versions = ">=3.7"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "certifi-2026.7.22-py3-none-any.whl", hash = "sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"},
     {file = "certifi-2026.7.22.tar.gz", hash = "sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55"},
@@ -292,6 +292,130 @@ trio = ["trio (>=0.30)"]
 wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
 
 [[package]]
+name = "dotmac-connector-flutterwave"
+version = "0.1.0a2"
+description = "Flutterwave API v4 settlement ingress and reconciliation connector"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_flutterwave-0.1.0a2-py3-none-any.whl", hash = "sha256:8fd10abebebd4a2998f035d67f7b2c53ddedfa0e85d0eaab9d80e0e6f471d2ff"},
+    {file = "dotmac_connector_flutterwave-0.1.0a2.tar.gz", hash = "sha256:ebf0acf4e651a360675666864031a9f4e359de6c970407b7a6f33613727a55d5"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a11"
+httpx = ">=0.27,<1.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
+name = "dotmac-connector-linkedin"
+version = "0.1.0a1"
+description = "Dotmac Integrator connector for LinkedIn webhook observations"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_linkedin-0.1.0a1-py3-none-any.whl", hash = "sha256:e3bad3385be46616e2f232de4b0546bc67b4e8a5f00b45f5a6a7f042de7c4577"},
+    {file = "dotmac_connector_linkedin-0.1.0a1.tar.gz", hash = "sha256:973d03340811658041ebf5a9cbdd0926dd7c8ed27003f511f7bbea1a9fb7bc87"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a11"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
+name = "dotmac-connector-meta-social"
+version = "0.1.0a1"
+description = "Ingress-only Facebook and Instagram connector for Dotmac Integrator"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_meta_social-0.1.0a1-py3-none-any.whl", hash = "sha256:79658ce48db5766bdb7328a902e49b1d315cf3f09bc972a994e6203401052758"},
+    {file = "dotmac_connector_meta_social-0.1.0a1.tar.gz", hash = "sha256:585f1a36e80323ed31743465da989f0ec21472a89112f8c497b537cbe356e3da"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a10"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
+name = "dotmac-connector-mono"
+version = "0.1.0a1"
+description = "Dotmac Integrator connector for Mono Financial Data v2"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_mono-0.1.0a1-py3-none-any.whl", hash = "sha256:6107674d873624f59577a774e43b4eed4087c1392be02b7d411a8a5f8903f2b8"},
+    {file = "dotmac_connector_mono-0.1.0a1.tar.gz", hash = "sha256:1d4d2cd32a173781b53619bd352156492ddef9fb2c67268ecfc49311c2aa84cb"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a11"
+httpx = ">=0.27,<1.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
+name = "dotmac-connector-paystack"
+version = "0.1.0a2"
+description = "Paystack settlement ingress and reconciliation connector"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_paystack-0.1.0a2-py3-none-any.whl", hash = "sha256:422972f784c26526d7c55b010bfb28afbdf4979b601c56203d96feeed87a0ed9"},
+    {file = "dotmac_connector_paystack-0.1.0a2.tar.gz", hash = "sha256:65d96d4849c007cb9b6108b95f02a53407cc99111d624b389cc9ef9e60d8040e"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a11"
+httpx = ">=0.27,<1.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
+name = "dotmac-connector-remita"
+version = "0.1.0a1"
+description = "Dotmac Integrator connector for Remita RRR status observations"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_remita-0.1.0a1-py3-none-any.whl", hash = "sha256:a3c1be4e4df68ed9504c4a6907fe34afc2b8ac34e11ad2cdb8ab9f9fc7b0ffd3"},
+    {file = "dotmac_connector_remita-0.1.0a1.tar.gz", hash = "sha256:d3f3becfb3a5723ba0ae2f01e75809d034e82853b0f5013c066a3c416b738ffd"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a11"
+httpx = ">=0.27,<1.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
 name = "dotmac-connector-whatsapp"
 version = "0.1.0a2"
 description = "Ingress-only Meta WhatsApp Cloud API connector for Dotmac Integrator"
@@ -313,14 +437,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a10"
+version = "0.1.0a12"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a10-py3-none-any.whl", hash = "sha256:35e0c14fec2e7ebe5cf77bf06141cde4a372dcb85025150c6998bbcc70fc72f3"},
-    {file = "dotmac_integration-0.1.0a10.tar.gz", hash = "sha256:95a332d2d2bbd92fb9a5635ba1f28dc2a4395a5f804ee2e660558f63daee8dd9"},
+    {file = "dotmac_integration-0.1.0a12-py3-none-any.whl", hash = "sha256:5bbdf905cde441af0f51b68fac124bbe4eca9e31e8b37aefea4cd36cba8b7f83"},
+    {file = "dotmac_integration-0.1.0a12.tar.gz", hash = "sha256:76c4de3b0669c7307920450bcd37e54ac10d47a19cf8a92e37c65d7a5dc825d7"},
 ]
 
 [package.dependencies]
@@ -512,7 +636,7 @@ version = "1.0.9"
 description = "A minimal low-level HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "httpcore-1.0.9-py3-none-any.whl", hash = "sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"},
     {file = "httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8"},
@@ -594,7 +718,7 @@ version = "0.28.1"
 description = "The next generation HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"},
     {file = "httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc"},
@@ -2158,4 +2282,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "35d8be1286c03c9c26eec923598c382d1f2c0fc1b7a7eae766aceffec500f639"
+content-hash = "948f12f185ac184cc2ffd377ca84ec14bad677856103b60b42cf75c273414a17"

@@ -65,26 +65,23 @@ A connector is a **separately released distribution**, discovered through the
 The deployment manifest names and exactly pins connector DISTRIBUTIONS; generic
 assembly source imports no connector and carries no provider branch or registry.
 
-One is pinned today: `dotmac-connector-whatsapp 0.1.0a2`, **ingress-only**,
-connector key `meta_whatsapp`, capability `messaging.receive.v1`. It declares
-SPI `>=1.3,<2.0` and an EMPTY egress — which under 1.3 is an explicit deny-all
-rather than an unset field.
+The complete published cohort is pinned today: WhatsApp, Meta Social, LinkedIn,
+Mono, Remita, Paystack and Flutterwave. Installation makes each distribution
+discoverable; it does not activate it or declare a product capability. Those
+decisions remain in the durable installation/binding registry and in
+product-owned descriptors.
 
 It is installed and discoverable here; shadow comparison against Sub remains the
 cutover gate before any incumbent receiver is retired or its ratchet is lowered.
 
-**Composed is not the same as delivering, and one connector is not the same as
-two.** The remaining connector work is sequenced into slices for reasons that
-are structural rather than administrative — `docs/UPGRADE-READINESS.md` carries
-the evidence:
+**Composed is not the same as delivering.** `docs/UPGRADE-READINESS.md` carries
+the release and adoption evidence:
 
-* **A second connector on the SAME capability needs a fix here first.** The
-  product-port descriptor is reconciled onto ONE local capability binding
-  (`PRODUCT_PORT_LOCAL_BINDING_ID`, one UUID). A second connector gets its own
-  binding that no reconcile call reaches, so its receipts would be recorded and
-  then fail to resolve a destination — fail-closed, and useless. That is a
-  COMPOSITION limit this repository owns, and it is fixed against the module's
-  own binding registry before any second connector is pinned.
+* **Overlapping connectors share a product declaration without a parallel
+  binding list.** Integration a12 enumerates every durable binding for the
+  descriptor's capability and reconciles the set atomically. The assembly no
+  longer accepts a local binding UUID, so adding an installation cannot create
+  an omitted, undeliverable sibling behind stale environment configuration.
 * **Settlement connectors are published and wait on an acceptance port.**
   Paystack and Flutterwave are both released and verified. Ownership is settled:
   Sub declares first, targeting the `dotmac-billing` acceptance port — the

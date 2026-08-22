@@ -92,7 +92,6 @@ def _configured_product_port(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "product_port_enabled": True,
         "product_port_mode": "mirror",
-        "product_port_local_binding_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "product_port_descriptor_url": "https://destination.example/descriptor",
         "product_port_descriptor_expected_digest": "a" * 64,
         "product_port_api_key_ref": "env://INTEGRATOR_SECRET_DESTINATION",
@@ -128,15 +127,20 @@ def test_write_mode_does_not_invent_a_shadow_revision_requirement() -> None:
     )
 
 
-def test_descriptor_binding_and_digest_are_validated_before_boot() -> None:
+def test_descriptor_digest_is_validated_before_boot() -> None:
     problems = validate_settings(
         _configured_product_port(
-            product_port_local_binding_id="not-a-uuid",
             product_port_descriptor_expected_digest="A" * 64,
         )
     )
 
-    assert any("PRODUCT_PORT_LOCAL_BINDING_ID" in problem for problem in problems)
     assert any(
         "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST" in problem for problem in problems
     )
+
+
+def test_the_assembly_does_not_accept_a_parallel_binding_id_list() -> None:
+    fields = Settings.model_fields
+
+    assert "product_port_local_binding_id" not in fields
+    assert "product_port_local_binding_ids" not in fields

@@ -12,7 +12,6 @@ threads to run. It may not say what a connector is allowed to do.
 from __future__ import annotations
 
 from functools import lru_cache
-from uuid import UUID
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -175,13 +174,6 @@ class Settings(BaseSettings):
             "into write records facts nobody agreed to record."
         ),
     )
-    product_port_local_binding_id: str = Field(
-        default="",
-        description=(
-            "This deployment's capability-binding UUID. The authenticated "
-            "product descriptor is reconciled onto this exact local binding."
-        ),
-    )
     product_port_descriptor_url: str = Field(
         default="",
         description=(
@@ -302,7 +294,6 @@ def _product_port_problems(settings: Settings) -> list[str]:
 
     problems: list[str] = []
     required = {
-        "PRODUCT_PORT_LOCAL_BINDING_ID": settings.product_port_local_binding_id,
         "PRODUCT_PORT_DESCRIPTOR_URL": settings.product_port_descriptor_url,
         "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST": (
             settings.product_port_descriptor_expected_digest
@@ -336,10 +327,6 @@ def _product_port_problems(settings: Settings) -> list[str]:
             "credential here would sit in a committed file and in the process "
             "environment of everything that reads this configuration"
         )
-    try:
-        UUID(settings.product_port_local_binding_id)
-    except ValueError:
-        problems.append("PRODUCT_PORT_LOCAL_BINDING_ID must be one UUID")
     digest = settings.product_port_descriptor_expected_digest.strip()
     if digest and (
         len(digest) != 64
