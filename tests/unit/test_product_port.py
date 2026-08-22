@@ -388,8 +388,7 @@ def test_the_pinned_connector_location_event_constructs_the_sub_envelope() -> No
     with the destination contract this deployment implements.
     """
     registry = integration.discover()
-    assert len(registry.plugins) == 1
-    plugin = registry.plugins[0]
+    plugin = registry.plugin("meta_whatsapp")
     assert isinstance(plugin, integration.IngressPlugin)
     capability = plugin.manifest.capabilities[0].capability_id
     handler = plugin.ingress_handler_for(capability)
@@ -970,7 +969,11 @@ def test_the_named_reconciler_reads_before_opening_the_local_transaction(
     def _reconcile(*args: Any, **kwargs: Any) -> None:
         events.append("local-reconcile")
 
-    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    monkeypatch.setattr(
+        integration,
+        "reconcile_product_port_descriptor_for_capability",
+        _reconcile,
+    )
     original_get = transport.get
 
     def _get(*args: Any, **kwargs: Any) -> HttpAnswer:
@@ -980,7 +983,6 @@ def test_the_named_reconciler_reads_before_opening_the_local_transaction(
     monkeypatch.setattr(transport, "get", _get)
     reconciler = ProductPortDescriptorReconciler(
         engine=create_engine("sqlite+pysqlite:///:memory:"),
-        local_binding_id=LOCAL_BINDING,
         descriptor_url="https://destination.example/descriptor",
         expected_digest=str(document["descriptor_digest"]),
         api_key_ref=API_KEY_REF,
@@ -1007,10 +1009,13 @@ def test_descriptor_drift_is_refused_before_local_reconciliation(
         nonlocal reconciled
         reconciled = True
 
-    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    monkeypatch.setattr(
+        integration,
+        "reconcile_product_port_descriptor_for_capability",
+        _reconcile,
+    )
     reconciler = ProductPortDescriptorReconciler(
         engine=create_engine("sqlite+pysqlite:///:memory:"),
-        local_binding_id=LOCAL_BINDING,
         descriptor_url="https://destination.example/descriptor",
         expected_digest="c" * 64,
         api_key_ref=API_KEY_REF,
@@ -1031,7 +1036,6 @@ def test_a_descriptor_cannot_lie_behind_an_approved_digest_field() -> None:
     document["application"] = "erp"
     reconciler = ProductPortDescriptorReconciler(
         engine=create_engine("sqlite+pysqlite:///:memory:"),
-        local_binding_id=LOCAL_BINDING,
         descriptor_url="https://destination.example/descriptor",
         expected_digest=approved_digest,
         api_key_ref=API_KEY_REF,

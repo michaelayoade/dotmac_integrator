@@ -202,16 +202,12 @@ against the current manifest. The refusal is explicit — a 409 naming the
 capability and `config_additionalProperties` — rather than a silent acceptance
 that fails later at verification.
 
-**Known limit: one reconciled local binding per boot.**
-`PRODUCT_PORT_LOCAL_BINDING_ID` is one UUID, and the product-port descriptor is
-reconciled onto that one local capability binding at startup. A SECOND connector
-implementing the SAME capability gets its own capability binding, which no
-reconcile call reaches — its receipts are recorded by ingress and then fail to
-resolve a destination. Nothing is lost and nothing is mis-delivered; the
-receipts simply accumulate. The symptom is a rising undelivered count for one
-binding on `/operations/health-report` while another binding on the same
-capability is healthy. Until the setting takes a set, run the second connector
-in `mirror` mode or do not enable it. See `docs/UPGRADE-READINESS.md`, slice 2.
+**Capability-wide reconciliation.** The authenticated product descriptor is
+reconciled onto every durable binding for its capability by
+`dotmac-integration`; there is no assembly-maintained binding-id setting or
+list. A connector installation added after startup is not silently covered:
+refresh the descriptor reconciliation by restarting this deployment before
+enabling the new binding. See `docs/UPGRADE-READINESS.md`, slice 2.
 
 ---
 

@@ -1119,7 +1119,6 @@ class ProductPortDescriptorReconciler:
         self,
         *,
         engine: Engine,
-        local_binding_id: UUID,
         descriptor_url: str,
         expected_digest: str,
         api_key_ref: str,
@@ -1145,7 +1144,6 @@ class ProductPortDescriptorReconciler:
                 "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST must be 64 lowercase hex"
             )
         self._engine = engine
-        self._local_binding_id = local_binding_id
         self._descriptor_url = descriptor_url
         self._expected_digest = expected_digest
         self._api_key_ref = api_key_ref
@@ -1265,9 +1263,8 @@ class ProductPortDescriptorReconciler:
             ]
         )
         with Session(self._engine) as db:
-            integration.reconcile_product_port_descriptor(
+            integration.reconcile_product_port_descriptor_for_capability(
                 db,
-                capability_binding_id=self._local_binding_id,
                 descriptor=descriptor,
                 registry=registry,
                 reconciled_by="assembly:product-port-descriptor-reconciler",
@@ -1310,7 +1307,6 @@ def build_from_settings(
         )
     reconciler = ProductPortDescriptorReconciler(
         engine=engine,
-        local_binding_id=UUID(settings.product_port_local_binding_id),
         descriptor_url=settings.product_port_descriptor_url.strip(),
         expected_digest=settings.product_port_descriptor_expected_digest.strip(),
         api_key_ref=reference,

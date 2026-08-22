@@ -24,7 +24,7 @@ python = ">=3.11,<3.14"
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
 dotmac-kernel = "0.1.0a68"
-dotmac-integration = "0.1.0a10"
+dotmac-integration = "0.1.0a12"
 
 # ── Connectors ──────────────────────────────────────────────────────────────
 # Separately released distributions, each contributing exactly ONE connector key
@@ -33,17 +33,20 @@ dotmac-integration = "0.1.0a10"
 # rule 2), and `tests/architecture/test_pins_are_exact.py` derives its
 # parametrisation from this block rather than from a second hand-kept list.
 #
-# ONE pin here, deliberately. a2 re-releases the same connector at SPI
-# `>=1.3,<2.0` with its runtime boundaries declared — an EMPTY egress, which
-# under 1.3 is explicit deny-all rather than "unset". Its a1 manifest stays in
-# `historical_manifests`, so an installation pinned to the a1 digest survives
-# this bump.
-#
-# A SECOND connector is deliberately not added in the same change as the module
-# bump. The first one on a capability and the second one are different problems:
-# the second needs a destination for its own capability binding, and this
-# assembly reconciles exactly one. See docs/UPGRADE-READINESS.md, slice 2.
+# This is the complete published cohort. Installing the distributions makes
+# them discoverable; it does not activate or bind any of them. Product-owned
+# descriptors still declare the usable capability vocabulary, and the module
+# refuses undeclared or unreconciled bindings. Integration a12 is load-bearing:
+# one authenticated descriptor is projected onto every durable binding for its
+# capability, so overlapping connectors cannot be silently omitted by an
+# assembly-maintained binding-id list.
 dotmac-connector-whatsapp = "0.1.0a2"
+dotmac-connector-meta-social = "0.1.0a1"
+dotmac-connector-linkedin = "0.1.0a1"
+dotmac-connector-mono = "0.1.0a1"
+dotmac-connector-remita = "0.1.0a1"
+dotmac-connector-paystack = "0.1.0a2"
+dotmac-connector-flutterwave = "0.1.0a2"
 
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.32" }

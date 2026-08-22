@@ -19,8 +19,8 @@ different owners.**
 | | Slice | Owner of the blocker | Gate |
 |---|---|---|---|
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
-| **2** | Reconcile every local binding for the capability, then pin Meta Social | this repository | the fix lands and is proved BEFORE the second connector is pinned |
-| **3** | Settlement connectors (Paystack, Flutterwave) | the destination product | a compatible acceptance port declares `payments.settlement.observation.v1` |
+| **2** | Reconcile every local binding for the capability, then pin the published cohort | module + this repository | a12 is registry-verified before the exact assembly pins resolve |
+| **3** | Activate settlement connectors (Paystack, Flutterwave) | the destination product | a compatible acceptance port declares `payments.settlement.observation.v1` |
 
 Collapsing them means a red CI run cannot tell you which of the three broke, and
 — worse — slice 2's fix would land on the same commit as the connector that
@@ -164,23 +164,23 @@ So it is two lanes on Observer, and the separation is the point:
 
 ---
 
-# Slice 2 — one reconciled binding becomes every binding, THEN Meta Social
+# Slice 2 — one reconciled binding becomes every binding, then the cohort
 
-**Status: not started. It is a separate change and must land before any second
-connector is pinned.**
+**Status: implemented.** Integration a12 owns capability-wide binding
+enumeration and atomic descriptor reconciliation; this assembly consumes that
+operation and pins the complete published connector cohort.
 
 ## 2.1 The limit, found by doing slice 1's validation
 
-`PRODUCT_PORT_LOCAL_BINDING_ID` is one UUID.
-`ProductPortDescriptorReconciler.reconcile` calls the module's
-`reconcile_product_port_descriptor` once, for that binding, and that function is
-per capability binding: it looks the binding up, checks the descriptor's
-capability against the binding's, and writes the destination revision onto that
-binding alone.
+Before a12, `PRODUCT_PORT_LOCAL_BINDING_ID` was one UUID and
+`ProductPortDescriptorReconciler.reconcile` called the module's single-binding
+`reconcile_product_port_descriptor` once. That function looked the binding up,
+checked the descriptor's capability against it, and wrote the destination
+revision onto that binding alone.
 
 A capability binding is per installation × capability, and an installation is
-per connector key. So a SECOND connector implementing the SAME capability gets
-its own capability binding that no reconcile call reaches.
+per connector key. A second connector implementing the same capability therefore
+received its own capability binding that no reconcile call reached.
 
 Concretely for `dotmac-connector-meta-social`, which implements
 `messaging.receive.v1` alongside WhatsApp: its ingress would record receipts
@@ -188,7 +188,7 @@ durably, then delivery would fail to resolve a destination. A typed refusal,
 counted and retried; nothing mis-delivered, no receipt marked done for an
 observation nobody received. Fail-closed, and useless.
 
-**This is why Meta Social is not in slice 1.** Pinning it there would ship a
+**This is why Meta Social was not in slice 1.** Pinning it there would have shipped a
 connector that cannot deliver, and would do so in the same commit as the fix's
 absence — leaving nothing that ever demonstrates the broken state.
 
@@ -208,28 +208,29 @@ should ask the module which local bindings carry the descriptor's capability and
 project onto each of them, inside one session and one commit, so partial
 reconciliation is unreachable.
 
-The module today exposes selection (exactly one binding, per dispatch) but no
-enumerator (every binding for a capability). Slice 2 therefore starts in
-`dotmac-integration`: add the enumerator beside `resolve_binding`, where the
-usability predicate already lives, rather than hand-rolling a
-`select(CapabilityBinding)` in the assembly — an assembly that wrote that query
-would own a second opinion about which bindings are eligible.
+Integration a12 now exposes `capability_bindings_for` and
+`reconcile_product_port_descriptor_for_capability`. The latter reads the
+complete durable set and projects one authenticated product descriptor across
+it in the caller-owned transaction. It includes configured and disabled
+bindings intentionally: destination projection precedes activation, so an
+enabled-only query would recreate the circular activation failure this slice
+exists to remove.
 
 Sequence:
 
-1. `dotmac-integration` a11: a module-owned enumerator for "the bindings serving
-   this capability", sharing `_usable` with `resolve_binding`.
-2. Integrator: reconcile across the enumerated set; retire
-   `PRODUCT_PORT_LOCAL_BINDING_ID` as the routing input. Prove a second binding
-   on one capability reconciles, and that a binding whose capability differs
-   from the descriptor's is still refused (the module already compares them).
-3. Only then pin `dotmac-connector-meta-social 0.1.0a1` — tag
-   `dotmac-connector-meta-social-v0.1.0a1` exists and is verified.
+1. `dotmac-integration` a12 added the module-owned enumeration and atomic
+   capability-wide reconciler, with a two-binding canary and an unrelated-
+   capability negative control.
+2. Integrator retired `PRODUCT_PORT_LOCAL_BINDING_ID` and delegates once to the
+   capability-wide operation after the authenticated descriptor read.
+3. The assembly pins WhatsApp, Meta Social, LinkedIn, Mono, Remita, Paystack and
+   Flutterwave exactly. Discovery remains the only registration mechanism;
+   installing them does not activate or bind them.
 
-Interim, if Meta Social traffic is needed before slice 2 lands: run it in
-`mirror` mode, which settles nothing, or do not enable it. The symptom to watch
-is a rising undelivered count for one binding on `/operations/health-report`
-while another binding on the same capability is healthy.
+Capability coverage remains reported rather than decided. A connector whose
+capability no product declares is visible on `/operations/runtime-policy` and
+cannot be bound; product adoption supplies the missing descriptor in its own
+cutover slice.
 
 ---
 
@@ -246,8 +247,8 @@ discovered by whoever tried to pin it.
 
 | Distribution | Version | Tag → commit | Evidence |
 |---|---|---|---|
-| `dotmac-connector-paystack` | `0.1.0a1` | `dotmac-connector-paystack-v0.1.0a1` | released through the protected lane |
-| `dotmac-connector-flutterwave` | `0.1.0a1` | `dotmac-connector-flutterwave-v0.1.0a1` → `401f0006` | annotated tag records "verified on the Forgejo registry; installed and SPI conformance proved on the published bytes" |
+| `dotmac-connector-paystack` | `0.1.0a2` | `dotmac-connector-paystack-v0.1.0a2` | released through the protected lane |
+| `dotmac-connector-flutterwave` | `0.1.0a2` | `dotmac-connector-flutterwave-v0.1.0a2` | v4-only release, verified through the protected lane |
 
 Flutterwave's publication-baseline row is **gone** from Starter `origin/main`,
 which is the other half of the release contract: a ledger that only grows stops
