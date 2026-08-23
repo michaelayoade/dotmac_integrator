@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     product_port_descriptor_url: str = Field(
         default="",
         description=(
-            "Authenticated product-owned ProductPortDescriptorV1 URL. Its "
+            "Authenticated product-owned versioned descriptor URL. Its "
             "origin is used for the descriptor-owned delivery paths."
         ),
     )

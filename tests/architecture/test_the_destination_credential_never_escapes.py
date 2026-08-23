@@ -76,6 +76,7 @@ class _Scope:
 
 
 class _ProductPort:
+    schema_version = "dotmac.io/product-port-descriptor/v1"
     delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
     mirror_path = f"{delivery_path}/mirror"
     activation_state = "enabled"
@@ -112,6 +113,10 @@ def _request() -> Any:
             attempt=1,
             leased_until=datetime.now(UTC) + timedelta(minutes=5),
             destination=_Destination(),
+            source=integration.ProductObservationSource(
+                installation_id=UUID("55555555-5555-4555-8555-555555555555"),
+                connector_key="synthetic_connector",
+            ),
             provider_event_id=str(OBSERVATION["provider_event_id"]),
             event_type="messaging.receive.v1",
             observation=dict(OBSERVATION),

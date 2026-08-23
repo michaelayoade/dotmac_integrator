@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel  0.1.0a68  ──┐
                            ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a10┘        (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a13┘        (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -82,15 +82,15 @@ the release and adoption evidence:
   descriptor's capability and reconciles the set atomically. The assembly no
   longer accepts a local binding UUID, so adding an installation cannot create
   an omitted, undeliverable sibling behind stale environment configuration.
-* **Settlement connectors are published and wait on an acceptance port.**
-  Paystack and Flutterwave are both released and verified. Ownership is settled:
-  Sub declares first, targeting the `dotmac-billing` acceptance port — the
-  Integrator owns PSP transport and observations, billing owns allocation and
-  financial consequences, ERP owns the GL. What is missing is the port itself:
-  `payments.settlement.observation.v1` has no declaring application yet, so the
-  module refuses a destination binding naming it. Installing is not binding, so
-  nothing could be mis-delivered — but a connector that can never be bound is
-  not readiness, and this assembly may never mint the declaration.
+* **Settlement now has a product-owned port and a generic wire.** Paystack and
+  Flutterwave are both released and verified. Sub declares
+  `payments.settlement.observation.v1` through its billing acceptance port;
+  integration a13 projects engine-owned source provenance into ProductObservation
+  v1, and this assembly selects that protocol only from descriptor v2. The
+  remaining work is operational adoption: reconcile the authenticated descriptor,
+  run Paystack shadow first, cut it over on zero unexplained drift, then repeat
+  for Flutterwave v4. ERP remains the GL owner and receives only product-owned
+  accounting consequences, never provider transport.
 
 ### Runtime boundaries (SPI 1.3)
 
@@ -267,7 +267,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
-| `dotmac-integration` | `0.1.0a10` | Published SPI **1.3** module. Adds manifest-owned runtime boundaries and `derive_runtime_policy`; the lineage head is unchanged at `ig_0011` and `requires` is byte-identical to a9, which is why the bindings below are a re-derived no-op rather than an unexamined one. |
+| `dotmac-integration` | `0.1.0a13` | Published SPI **1.3** module. Adds ProductObservation v1 projection, engine-owned source resolution and descriptor v2 compatibility; the lineage head remains `ig_0011` and `requires` is unchanged, which is why the bindings below are a re-derived no-op rather than an unexamined one. |
 | `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
 
 ### What a pin bump actually costs
@@ -327,7 +327,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a10` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a13` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -370,7 +370,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a10`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a13`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing
@@ -479,13 +479,14 @@ different layer.
 
 ### The client (`product_port.py`)
 
-The client is **implemented** here and **not authored** here. Authoring a wire
-contract inside the transport is what ADR-0024 forbids: this assembly would
-become the sole author of a shape two systems must agree on. The contract is the
-destination's — `dotmac_sub`'s `app/api/integrator_observations.py` and
-`app/schemas/integrator_observation.py`, reviewed and merged there — and every
-field, length, status and refusal code in this file is transcribed from it. A
-disagreement is a defect here, or a change that happens there first.
+The client is **implemented** here and **not authored** here. Descriptor v1
+keeps the legacy messaging contract transcribed from Sub. Descriptor v2 uses
+`dotmac_integration.product_observation_document`: the engine owns the generic
+envelope and durable source provenance, while the destination product owns and
+validates the typed `observation`. Selection is by descriptor protocol version
+only; no product, provider, connector or capability branch exists here. A
+disagreement is a defect here, or a contract change that happens in the owning
+product first.
 
 Five decisions worth reading before touching it:
 

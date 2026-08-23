@@ -1,6 +1,6 @@
 # Upgrade readiness — the connector programme, in three slices
 
-**Date:** 2026-08-21 · **Scope:** composition only. No connector is activated,
+**Date:** 2026-08-23 · **Scope:** composition only. No connector is activated,
 no external traffic is taken, no product cutover happens, and nothing here
 changes a product domain decision.
 
@@ -20,7 +20,7 @@ different owners.**
 |---|---|---|---|
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
 | **2** | Reconcile every local binding for the capability, then pin the published cohort | module + this repository | a12 is registry-verified before the exact assembly pins resolve |
-| **3** | Activate settlement connectors (Paystack, Flutterwave) | the destination product | a compatible acceptance port declares `payments.settlement.observation.v1` |
+| **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v2 descriptor and ProductObservation v1 agree before shadow begins |
 
 Collapsing them means a red CI run cannot tell you which of the three broke, and
 — worse — slice 2's fix would land on the same commit as the connector that
@@ -234,10 +234,10 @@ cutover slice.
 
 ---
 
-# Slice 3 — settlement connectors are PUBLISHED and blocked on adoption
+# Slice 3 — settlement product wire composed; operational adoption follows
 
-**Status: publication is complete. Adoption is blocked on the destination
-product, and on nothing in this repository.**
+**Status: the Sub-owned port and generic Integrator wire are implemented. This
+slice changes no installation, binding, callback or external traffic.**
 
 ## 3.1 Both connectors are released and verified
 
@@ -255,7 +255,7 @@ which is the other half of the release contract: a ledger that only grows stops
 describing anything, so the row is removed in the same change as the release.
 Both halves check out — the tag exists and the row does not.
 
-At the tag, `dotmac-connector-flutterwave 0.1.0a1` declares connector key
+At the tag, `dotmac-connector-flutterwave 0.1.0a2` declares connector key
 `flutterwave`, capability `payments.settlement.observation.v1`, SPI
 `>=1.3,<2.0`, an empty (deny-all) egress and `dotmac-integration >=0.1.0a10`.
 
@@ -285,31 +285,29 @@ ERP"). ADR-0020 § A3 already split payments in two — billing owns the money
 decisions, the transport is transport — and this ruling applies that split to
 the settlement observation rather than inventing a new boundary.
 
-## 3.3 What is actually blocking, and why it is not pinnable yet
+## 3.3 The product contract now exists, and the assembly does not restate it
 
-`payments.settlement.observation.v1` still has **no declaring application**.
-Sub's current port types `capability_id: Literal["messaging.receive.v1"]`, and
-the `dotmac-billing` acceptance port that will declare the settlement capability
-does not exist on Starter `origin/main` yet.
+Sub now declares `payments.settlement.observation.v1` through a billing-owned
+descriptor v2 and accepts the generic `dotmac.io/product-observation/v1`
+envelope. Integration a13 derives `source` from its durable installation and
+binding, carries that provenance in the request fingerprint and owns the generic
+document builder. The assembly selects v1 or v2 only from the authenticated
+descriptor schema version; it contains no settlement, product or provider
+branch.
 
-Until it does:
+Read-only shadow uses the same module-owned source resolver as the leased write
+path. This matters because otherwise the thin assembly would need its own join
+from binding to installation and would become a second persistence interpreter
+just to avoid claiming a receipt.
 
-* `dotmac_integration.destination_binding` calls `require_declared_for_binding`,
-  which refuses a binding naming an undeclared capability. **Installing is not
-  binding**, so a settlement receipt could never be mis-delivered — the failure
-  mode is inert, not dangerous.
-* A connector that can never be bound is still not readiness, so neither
-  settlement connector is pinned here. Pinning one would compose a distribution
-  whose only observable behaviour is appearing in
-  `/operations/runtime-policy`'s `capabilities.implemented_without_declaration`.
+## 3.4 The remaining gate is operational, not architectural
 
-**The unblocking work is entirely in the owning product's repository**: declare
-the capability and publish it in the billing acceptance port's descriptor. When
-that lands, this deployment's coverage report closes on its own and the pin is
-a one-line change plus a re-lock — Paystack first, per the dossier.
-
-The Integrator may never mint a capability declaration (rule 27), so there is no
-version of this that starts here.
+The published connectors are already pinned. What remains is to create the
+Paystack installation and binding, authenticate and reconcile Sub's descriptor,
+mint ingress as required, and run the mirror path until every sampled event has
+zero unexplained drift. Only then may the product callback/client/credential and
+retry path be retired and its ratchet lowered. Flutterwave v4 repeats the same
+sequence after Paystack; the two are not activated as a pair.
 
 # What no slice does
 
