@@ -16,6 +16,15 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: The owner DSN's default. Named because `validate_settings` has to tell "still
+#: the default, because this process deliberately has none" apart from "set, and
+#: set to localhost" — the api and worker are given no MIGRATION_DATABASE_URL at
+#: all, and refusing to start them over a value they were never meant to hold
+#: would force the owner credential into the two processes that must not have it.
+_DEFAULT_MIGRATION_DATABASE_URL = (
+    "postgresql+psycopg://app_admin@localhost:5432/integrator"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -43,7 +52,7 @@ class Settings(BaseSettings):
     )
     # Migrations run as the owner, never as the online role, and never on boot.
     migration_database_url: str = Field(
-        default="postgresql+psycopg://app_admin@localhost:5432/integrator",
+        default=_DEFAULT_MIGRATION_DATABASE_URL,
         description="Owner DSN used only by `alembic upgrade`, never at runtime.",
     )
     db_pool_size: int = Field(default=5, ge=1)
@@ -365,7 +374,16 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append("DEPLOYMENT_ID is still the local default")
     if "localhost" in settings.database_url:
         problems.append("DATABASE_URL still points at localhost")
-    if "@localhost" in settings.migration_database_url:
+    # NOT checked when it is still the default. The api and worker services
+    # deliberately have no MIGRATION_DATABASE_URL in their environment at all —
+    # the online role cannot create a table, and handing those processes the
+    # owner DSN to satisfy a check would give away exactly the separation the
+    # check exists to protect. Only a deployment that SET this value, and set it
+    # wrongly, is refused; `migrate` is the one service that sets it.
+    if (
+        settings.migration_database_url != _DEFAULT_MIGRATION_DATABASE_URL
+        and "@localhost" in settings.migration_database_url
+    ):
         problems.append("MIGRATION_DATABASE_URL still points at localhost")
     if settings.host == "127.0.0.1":
         problems.append(

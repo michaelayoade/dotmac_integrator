@@ -144,3 +144,61 @@ def test_the_assembly_does_not_accept_a_parallel_binding_id_list() -> None:
 
     assert "product_port_local_binding_id" not in fields
     assert "product_port_local_binding_ids" not in fields
+
+
+def test_production_start_does_not_require_the_owner_dsn() -> None:
+    """The api and worker are given no MIGRATION_DATABASE_URL at all.
+
+    `docker-compose.yml` says so in as many words — "There is no
+    MIGRATION_DATABASE_URL in this service's environment at all" — because the
+    online role cannot create a table and the owner credential must not sit in
+    the two long-running processes.
+
+    Refusing to start them over that unset value would force exactly the
+    credential the compose withholds into exactly the processes it withholds it
+    from. This is the state a real production deployment is in, and it was found
+    by the first one: the shipped compose and the shipped validation contradicted
+    each other, and the api crash-looped.
+    """
+
+    settings = Settings(
+        environment="production",
+        deployment_id="integrator-prod",
+        database_url="postgresql+psycopg://platform_api:pw@db:5432/integrator",
+        host="0.0.0.0",  # noqa: S104 — a container binds its interface
+        platform_root_domain="integrator.dotmac.io",
+        jwt_secret="x" * 32,
+        metrics_enabled=False,
+    )
+
+    problems = validate_settings(settings)
+
+    assert not any("MIGRATION_DATABASE_URL" in problem for problem in problems), (
+        problems
+    )
+
+
+def test_a_migration_dsn_that_was_SET_to_localhost_is_still_refused() -> None:
+    """Sensitivity: the check must still bite where it was meant to.
+
+    Scoping it to "was set" would be worthless if it also stopped catching the
+    deployment that set it and left the example's localhost in place — which is
+    the mistake the check exists for.
+    """
+
+    settings = Settings(
+        environment="production",
+        deployment_id="integrator-prod",
+        database_url="postgresql+psycopg://platform_api:pw@db:5432/integrator",
+        migration_database_url=(
+            "postgresql+psycopg://app_admin:pw@localhost:5432/integrator"
+        ),
+        host="0.0.0.0",  # noqa: S104 — a container binds its interface
+        platform_root_domain="integrator.dotmac.io",
+        jwt_secret="x" * 32,
+        metrics_enabled=False,
+    )
+
+    problems = validate_settings(settings)
+
+    assert any("MIGRATION_DATABASE_URL" in problem for problem in problems)
