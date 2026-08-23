@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-integrator"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Thin assembly composing dotmac-integration as an independently deployed connector control plane"
 authors = ["Dotmac"]
 readme = "README.md"
