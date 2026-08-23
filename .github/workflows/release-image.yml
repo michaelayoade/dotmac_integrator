@@ -148,7 +148,7 @@ jobs:
           gunzip -c image.tar.gz | docker load
           docker image inspect "${REGISTRY}/${REPOSITORY}:${{ inputs.version }}" >/dev/null
 
-      # REGISTRY_PUBLISH_TOKEN is a protected `registry-release` environment
+      # FORGEJO_PUBLISH_TOKEN is a protected `registry-release` environment
       # secret whose CANONICAL source is OpenBao
       # (secret/dotmac/forgejo/ci-publisher-token) — rotate there, re-sync here.
       # It is scoped to write on the `dotmac` org only.
@@ -157,7 +157,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ci-publisher
-          password: ${{ secrets.REGISTRY_PUBLISH_TOKEN }}
+          password: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
 
       # Pushes the LOADED image — the one `build` audited — not a rebuild.
       - name: Push the same bytes
@@ -187,7 +187,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ci-publisher
-          password: ${{ secrets.REGISTRY_PUBLISH_TOKEN }}
+          password: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
 
       # BY DIGEST, not by tag. Pulling the tag would re-prove nothing: a tag can
       # be moved, and the whole point of this job is to establish that the

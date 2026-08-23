@@ -150,7 +150,7 @@ def test_every_credentialed_job_is_environment_gated(job: str) -> None:
 def test_the_build_job_holds_no_publish_credential() -> None:
     """`build` runs on every dispatch, before anyone has approved anything."""
 
-    assert "REGISTRY_PUBLISH_TOKEN" not in _run_text("build")
+    assert "FORGEJO_PUBLISH_TOKEN" not in _run_text("build")
     assert _lane()["jobs"]["build"].get("environment") is None
 
 
