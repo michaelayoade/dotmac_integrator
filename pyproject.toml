@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-integrator"
-version = "0.1.0a0"
+version = "0.1.0a1"
 description = "Thin assembly composing dotmac-integration as an independently deployed connector control plane"
 authors = ["Dotmac"]
 readme = "README.md"
@@ -63,6 +63,11 @@ mypy = "^1.13"
 # per route. A TEST dependency only: nothing under `src/` may import it, and
 # `test_secrets_are_held.py` fails the build if the resolution path does.
 httpx = "^0.28"
+# Stubs only. `test_release_lane.py` reads the release workflow as YAML to
+# assert its job structure — the guarantees the lane has that YAML cannot
+# state. mypy checks tests here, so the stubs are a dev dependency rather than
+# an ignore comment that would also hide a real yaml misuse.
+types-PyYAML = "^6.0"
 
 # The private index. `priority = "supplemental"` rather than "primary": the two
 # Dotmac distributions resolve here, everything else from PyPI. A primary source
