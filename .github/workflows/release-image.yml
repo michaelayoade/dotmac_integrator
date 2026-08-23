@@ -1,0 +1,231 @@
+name: Release image
+
+# Publish ONE runtime image to the PRIVATE registry at registry.dotmac.io.
+#
+# The same security sequence as `dotmac_starter_mt`'s `release-kernel.yml` and
+# `release-module.yml`: build once on the exact current protected-main SHA ->
+# audit the artefact -> AWAIT environment approval -> re-assert the approved SHA
+# is still main's tip -> publish THOSE SAME BYTES -> pull the published image
+# back and audit it again -> tag only then.
+#
+# WHY A SEPARATE LANE FROM `ci.yml`
+#
+# `ci.yml` already builds this image and runs `scripts/audit_image.sh` against
+# it, with `push: false`. That is an audit gate, not a publisher, and the two
+# must not be merged: a job that publishes on every push to main removes the
+# approval, and a job that only publishes on approval cannot also be the gate
+# every pull request has to clear. So the audit stays where it is and this lane
+# repeats it — once before publishing, once against what was published.
+#
+# WHAT "THE SAME BYTES" MEANS FOR AN IMAGE
+#
+# The wheel lanes upload `dist/` and re-upload the downloaded files, so the
+# published bytes are provably the inspected ones. `docker build` in a second
+# job would REBUILD, and a rebuild is a different artefact even from an
+# identical tree — different timestamps, a base image that may have moved, a
+# resolver that may see a new patch release. So `build` saves the image to a
+# tarball artefact and `publish` loads and pushes THAT. Nothing is rebuilt after
+# approval.
+#
+# WHY THE AUDIT RUNS TWICE
+#
+# The second run is not ceremony. It is executed against an image PULLED FROM
+# THE REGISTRY BY DIGEST, which is the first moment anything proves the registry
+# holds what was approved rather than what someone else pushed to the same tag
+# while the approval sat pending.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version to publish (MUST equal pyproject version, e.g. 0.1.0a1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: registry.dotmac.io
+  REPOSITORY: dotmac/integrator
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A stale or side-branch dispatch cannot publish. Called again in
+      # `publish` after the approval wait — see the script's own header for why
+      # that is not redundant.
+      - name: Assert run is on the current protected main SHA
+        run: bash scripts/assert_current_main.sh "${GITHUB_SHA}"
+
+      # The dispatched version must equal the package metadata — no inference.
+      # A lane that derives the tag from the tree can publish a version nobody
+      # typed; a lane that trusts the input can publish one the package does not
+      # claim.
+      - name: Assert version input matches package metadata
+        run: |
+          set -euo pipefail
+          declared="$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null \
+            || python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")"
+          if [ "${declared}" != "${{ inputs.version }}" ]; then
+            echo "::error::dispatched version ${{ inputs.version }} != pyproject version ${declared}"
+            exit 1
+          fi
+          echo "version ${declared} matches package metadata"
+
+      - name: Refuse a version that is already published
+        run: |
+          set -euo pipefail
+          tag="dotmac-integrator-v${{ inputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::${tag} already exists. A published version is immutable; cut a new one."
+            exit 1
+          fi
+          echo "no ${tag} yet"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.REPOSITORY }}:${{ inputs.version }}
+          # The credential is a BuildKit secret, mounted for one RUN. `ARG` and
+          # `ENV` both survive into image metadata; this does not.
+          secrets: |
+            forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
+
+      # Same script `ci.yml` runs: not root, no migration on boot, the pins are
+      # what is installed, no registry credential in any layer, and the
+      # application imports.
+      - name: Audit the built image
+        run: ./scripts/audit_image.sh "${REGISTRY}/${REPOSITORY}:${{ inputs.version }}"
+
+      - name: Save the exact bytes
+        run: |
+          set -euo pipefail
+          docker save "${REGISTRY}/${REPOSITORY}:${{ inputs.version }}" | gzip > image.tar.gz
+          ls -lh image.tar.gz
+
+      - name: Upload the built image
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrator-image
+          path: image.tar.gz
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Protected: main-only + required review. The approval is a decision about
+    # a SHA, which is why `build`'s freshness assertion is repeated below.
+    environment: registry-release
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Re-assert the approved SHA is still the current protected main
+        run: bash scripts/assert_current_main.sh "${GITHUB_SHA}"
+
+      - name: Download the exact built bytes
+        uses: actions/download-artifact@v4
+        with:
+          name: integrator-image
+
+      - name: Load them
+        run: |
+          set -euo pipefail
+          gunzip -c image.tar.gz | docker load
+          docker image inspect "${REGISTRY}/${REPOSITORY}:${{ inputs.version }}" >/dev/null
+
+      # REGISTRY_PUBLISH_TOKEN is a protected `registry-release` environment
+      # secret whose CANONICAL source is OpenBao
+      # (secret/dotmac/forgejo/ci-publisher-token) — rotate there, re-sync here.
+      # It is scoped to write on the `dotmac` org only.
+      - name: Log in to the private registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ci-publisher
+          password: ${{ secrets.REGISTRY_PUBLISH_TOKEN }}
+
+      # Pushes the LOADED image — the one `build` audited — not a rebuild.
+      - name: Push the same bytes
+        id: push
+        run: |
+          set -euo pipefail
+          ref="${REGISTRY}/${REPOSITORY}:${{ inputs.version }}"
+          docker push "${ref}"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "${ref}" | cut -d@ -f2)"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "published ${ref}@${digest}"
+
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    # Reuse the scoped credential; still gated.
+    environment: registry-release
+    permissions:
+      contents: write   # the tag, and only after verification
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to the private registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ci-publisher
+          password: ${{ secrets.REGISTRY_PUBLISH_TOKEN }}
+
+      # BY DIGEST, not by tag. Pulling the tag would re-prove nothing: a tag can
+      # be moved, and the whole point of this job is to establish that the
+      # registry holds the approved artefact.
+      - name: Pull the published image by digest
+        run: |
+          set -euo pipefail
+          docker pull "${REGISTRY}/${REPOSITORY}@${{ needs.publish.outputs.digest }}"
+          docker tag "${REGISTRY}/${REPOSITORY}@${{ needs.publish.outputs.digest }}" \
+                     integrator:published
+
+      - name: Audit what the registry actually holds
+        run: ./scripts/audit_image.sh integrator:published
+
+      - name: Tag the verified release
+        run: |
+          set -euo pipefail
+          tag="dotmac-integrator-v${{ inputs.version }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "dotmac-integrator ${{ inputs.version }}
+          image:  ${REGISTRY}/${REPOSITORY}:${{ inputs.version }}
+          digest: ${{ needs.publish.outputs.digest }}
+          commit: ${GITHUB_SHA}
+          run:    ${GITHUB_RUN_ID}"
+          git push origin "${tag}"
+          echo "tagged ${tag} -> ${GITHUB_SHA}"
+
+      - name: Summarise the oracle coordinates
+        run: |
+          {
+            echo "### dotmac-integrator ${{ inputs.version }} published"
+            echo
+            echo "| oracle | value |"
+            echo "|---|---|"
+            echo "| \`release_run\` | \`${GITHUB_RUN_ID}\` |"
+            echo "| \`peeled_tag\` | \`dotmac-integrator-v${{ inputs.version }}\` -> \`${GITHUB_SHA}\` |"
+            echo "| image digest | \`${{ needs.publish.outputs.digest }}\` |"
+            echo
+            echo "Deploy by DIGEST, not by tag."
+          } >> "${GITHUB_STEP_SUMMARY}"
