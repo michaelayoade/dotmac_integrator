@@ -125,6 +125,102 @@ for a token to expire.
 
 ---
 
+## Bringing up the product port
+
+The port is **off** on a fresh deployment and the default mode is `mirror`.
+Both defaults are deliberate: a deployment misconfigured into the write port
+records facts nobody agreed to record, and there is no un-recording it.
+
+Bring it up in three moves, not one. Each has a different failure and a
+different owner.
+
+### 1. Deploy with the port off
+
+`PRODUCT_PORT_ENABLED=false` is the shipped default, and `validate_settings`
+returns no product-port problems while it is off — the other knobs may be
+blank. Deploy, confirm `/health/ready`, and stop. The Integrator is running
+and talking to nobody.
+
+### 2. Approve an exact descriptor digest
+
+This is the human gate, and it is the reason the port cannot be brought up in
+one step.
+
+Read the destination's authenticated descriptor — for `dotmac_sub` that is
+`GET /api/v1/integration/observations/{binding}/descriptor`, which answers
+with
+`activation_state: "configured_disabled"` before delivery is enabled, because
+importing the descriptor is a *prerequisite* for activation rather than a
+consequence of it.
+
+Read what it declares, then pin its `descriptor_digest` into
+`PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST`. From then on the reconciler refuses
+any descriptor whose digest differs from the pin — a product that changes
+where its port lives stops delivery instead of silently re-routing it.
+
+Boot refuses, with the knob named, if:
+
+- **The digest is not 64 lowercase hex.** It is not a SHA-256.
+- **`PRODUCT_PORT_API_KEY_REF` is not `env://` or `file://`.** A literal
+  credential would sit in a committed file, and in the process environment of
+  everything that reads this configuration.
+- **URL, digest or key-ref is blank while enabled.** A port that cannot address
+  the destination would fail every receipt and report it as a product problem.
+
+### 3. Enable in mirror
+
+```
+PRODUCT_PORT_ENABLED=true
+PRODUCT_PORT_MODE=mirror
+PRODUCT_PORT_SHADOW_REVISION=<immutable image or contract revision>
+```
+
+`PRODUCT_PORT_SHADOW_REVISION` is required in mirror mode and refused with
+surrounding whitespace. It is what separates evidence produced by one build
+from evidence produced by another; without it a re-drive cannot be told from a
+regression.
+
+Mirror posts to the destination's **shadow** port, which records nothing — no
+receipt, no observation, no conversation — so the provider callback can keep
+going to the product's existing webhook while both producers are compared.
+
+### Reading the evidence
+
+```bash
+curl -s https://$PLATFORM_ROOT_DOMAIN/operations/shadow-report \
+  -H "authorization: Bearer $OPERATOR_TOKEN" | jq
+```
+
+The route takes an `Operator`, so it needs a token from "Getting a token"
+above, and the same host-exact rule applies.
+
+| field | read it as |
+|---|---|
+| `unique_receipts` | the population actually compared |
+| `verdict_counts` | outcome per receipt, including `unreadable` |
+| `blocking_reason_counts` | closed reason codes that block a cutover |
+| `disagreeing_fields` | which field names differed, never their values |
+| `sample_has_no_blockers` | see below — **not** a cutover verdict |
+
+A transport failure is counted, not raised: one unreadable comparison must not
+end a run, because the run's value is the population it covers.
+
+### What `sample_has_no_blockers` does not mean
+
+It is deliberately not named `is_cutover_safe`. It says only that this sample
+had rows and none of them carried a blocking reason. A full cutover also needs
+a complete traffic cycle, collision/replay proof, and a named rollback owner.
+
+An empty population cannot read as clean — the property requires
+`unique_receipts > 0` — but a *small* one still can. Deciding the sample is
+representative is a judgement, and it belongs to a person.
+
+Only after that judgement: flip the destination binding to `enabled`, and
+retire the product's corresponding webhook, client, credentials and retry path
+**lowering the external-connector ratchet in the same change**. A retirement
+that lands without the ratchet moving leaves the old path counted as still
+owed.
+
 ## Connector releases and runtime boundaries
 
 A connector enters this deployment ONE way: it is exactly pinned in
