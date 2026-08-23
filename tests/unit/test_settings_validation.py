@@ -172,10 +172,9 @@ def test_production_start_does_not_require_the_owner_dsn() -> None:
     )
 
     problems = validate_settings(settings)
+    owner_dsn_problems = [p for p in problems if "MIGRATION_DATABASE_URL" in p]
 
-    assert not any("MIGRATION_DATABASE_URL" in problem for problem in problems), (
-        problems
-    )
+    assert owner_dsn_problems == []
 
 
 def test_a_migration_dsn_that_was_SET_to_localhost_is_still_refused() -> None:
