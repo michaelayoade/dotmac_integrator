@@ -18,6 +18,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -27,12 +28,14 @@ LANE = PROJECT_ROOT / ".github/workflows/release-image.yml"
 GUARD = PROJECT_ROOT / "scripts/assert_current_main.sh"
 
 
-def _lane() -> dict:
-    return yaml.safe_load(LANE.read_text(encoding="utf-8"))
+def _lane() -> dict[str, Any]:
+    loaded: dict[str, Any] = yaml.safe_load(LANE.read_text(encoding="utf-8"))
+    return loaded
 
 
-def _steps(job: str) -> list[dict]:
-    return _lane()["jobs"][job]["steps"]
+def _steps(job: str) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = _lane()["jobs"][job]["steps"]
+    return steps
 
 
 def _run_text(job: str) -> str:
