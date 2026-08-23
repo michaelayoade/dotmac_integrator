@@ -277,6 +277,9 @@ def _shadow_request(engine: Engine, receipt_id: UUID, registry: Any) -> Any | No
         destination = integration.resolve_destination(
             db, capability_binding_id=row.capability_binding_id, registry=registry
         )
+        source = integration.resolve_product_observation_source(
+            db, capability_binding_id=row.capability_binding_id
+        )
         claim = integration.ReceiptClaim(
             receipt_id=receipt_id,
             # A value object, not a lease: the shadow pass never increments
@@ -284,6 +287,7 @@ def _shadow_request(engine: Engine, receipt_id: UUID, registry: Any) -> Any | No
             attempt=1,
             leased_until=row.received_at,
             destination=destination,
+            source=source,
             provider_event_id=row.provider_event_id,
             event_type=row.event_type,
             observation=row.payload_json or {},

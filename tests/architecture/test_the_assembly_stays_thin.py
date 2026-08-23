@@ -425,6 +425,31 @@ def test_shadow_evidence_is_written_only_through_the_module_service() -> None:
     )
 
 
+def test_shadow_source_provenance_uses_the_module_resolver() -> None:
+    source = _function_source(SRC / "delivery.py", "_shadow_request")
+    assert "integration.resolve_product_observation_source" in source
+    assert "ConnectorInstallation" not in source
+    assert "CapabilityBinding" not in source
+
+
+def test_shadow_source_resolver_guard_bites_on_a_local_join() -> None:
+    plausible = "select(ConnectorInstallation).join(CapabilityBinding)"
+    assert "ConnectorInstallation" in plausible
+    assert "CapabilityBinding" in plausible
+
+
+def test_product_wire_selection_uses_only_the_descriptor_protocol_version() -> None:
+    source = _function_source(SRC / "product_port.py", "build_product_document")
+    assert "_PRODUCT_DOCUMENT_BUILDERS" in source
+    for product_fact in ("application", "capability_id", "connector_key"):
+        assert product_fact not in source
+
+
+def test_product_wire_selection_guard_bites_on_a_capability_branch() -> None:
+    plausible = "if request.destination.capability_id == 'some.contract.v1':"
+    assert "capability_id" in plausible
+
+
 def test_the_delivery_pump_refuses_a_non_writing_port() -> None:
     """Read positively: the bans above would also pass over a shadow pass that
     did nothing at all, and they say nothing about the WRITE pump."""

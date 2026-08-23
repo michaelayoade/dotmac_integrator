@@ -4,20 +4,21 @@
 classification and the idempotency key. It cannot own one thing — the protocol
 the destination application speaks — and this file is that one thing and nothing
 else. Read :class:`ObservationPortClient.deliver` and you have read the whole
-contribution: build an envelope from the CLAIM, post it, and translate the
-answer into `ProductAcceptance`.
+contribution: select the destination-owned descriptor version, build that
+version's document from the CLAIM, post it, and translate the answer into
+`ProductAcceptance`.
 
 ## Why this may be written here now, when it could not be before
 
 Authoring a wire contract inside the transport is what ADR-0024 forbids: the
 Integrator would become the sole author of a shape two systems have to agree on,
 and the destination would inherit it without ever having reviewed it. This file
-is therefore NOT an author. The contract is `dotmac_sub`'s
-``app/schemas/integrator_observation.py`` and ``app/api/integrator_observations.py``,
-reviewed and merged there; every field name, length, status code and refusal
-code below is transcribed from it. A disagreement between this file and that one
-is a defect HERE, or a contract change that has to happen THERE first — never
-something to smooth over locally.
+is therefore NOT an author. Product-owned, authenticated descriptors select a
+closed set of already-reviewed wire builders: the legacy v1 Sub messaging
+envelope and the provider-neutral ProductObservation v1 document owned by
+``dotmac-integration`` behind descriptor v2. A disagreement with either
+published contract is a defect HERE, or a contract change that has to happen at
+the owning source first — never something to smooth over locally.
 
 ## Two routes, two scopes, and the narrowness is the safety property
 
@@ -102,10 +103,11 @@ import re
 import ssl
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Final, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -138,6 +140,7 @@ __all__ = [
     "UnmappedDestinationBinding",
     "UrllibTransport",
     "build_envelope",
+    "build_product_document",
     "build_from_settings",
     "canonical_body",
     "canonical_fingerprint",
@@ -554,6 +557,43 @@ def build_envelope(request: Any) -> dict[str, object]:
     }
 
 
+_PRODUCT_DOCUMENT_BUILDERS: Final[Mapping[str, Callable[[Any], dict[str, object]]]] = (
+    MappingProxyType(
+        {
+            "dotmac.io/product-port-descriptor/v1": build_envelope,
+            "dotmac.io/product-port-descriptor/v2": (
+                integration.product_observation_document
+            ),
+        }
+    )
+)
+
+
+def build_product_document(request: Any) -> dict[str, object]:
+    """Select the product-owned wire protocol by descriptor version only.
+
+    V1 remains the legacy Sub messaging contract. V2 is the generic
+    ProductObservation projection owned by ``dotmac-integration``. Product,
+    provider and capability identities are deliberately absent from this
+    selection: those facts choose a durable descriptor, never an assembly
+    branch.
+    """
+
+    descriptor = getattr(request.destination, "product_port", None)
+    schema_version = getattr(descriptor, "schema_version", None)
+    if not isinstance(schema_version, str):
+        raise EnvelopeNotConstructible(
+            "product-port descriptor schema_version is missing or not a string"
+        )
+    try:
+        builder = _PRODUCT_DOCUMENT_BUILDERS[schema_version]
+    except KeyError as exc:
+        raise EnvelopeNotConstructible(
+            f"unsupported product-port descriptor schema {schema_version!r}"
+        ) from exc
+    return builder(request)
+
+
 # ── The transport seam ──────────────────────────────────────────────────────
 
 
@@ -904,7 +944,7 @@ class ObservationPortClient:
                 f"it is not eligible for {'mirror' if mirror else 'write'} delivery"
             )
         path = descriptor.mirror_path if mirror else descriptor.delivery_path
-        return f"{self._base}{path}", build_envelope(request)
+        return f"{self._base}{path}", build_product_document(request)
 
     def _post(
         self, url: str, envelope: Mapping[str, object], request: Any
@@ -1176,7 +1216,7 @@ class ProductPortDescriptorReconciler:
             ) from exc
         if not isinstance(document, dict) or set(document) != _DESCRIPTOR_FIELDS:
             raise ProductPortDescriptorError(
-                "the product descriptor does not have the exact v1 field set"
+                "the product descriptor does not have the exact field set"
             )
         scope = document.get("destination_scope")
         if not isinstance(scope, dict) or set(scope) != {"kind", "ref"}:

@@ -151,11 +151,13 @@ This is a **thin assembly**. The reusable behaviour lives in
     port is INSTALLED at startup (ADR-0009 shape) and the pump fails closed
     without one; it never marks a receipt done that it did not deliver.
 25. **The destination's wire contract is IMPLEMENTED here, never authored
-    here.** `product_port.py` is transcribed from the destination
-    application's own merged port (`dotmac_sub`'s
-    `app/api/integrator_observations.py` and
-    `app/schemas/integrator_observation.py`); a disagreement is a defect in
-    this file, or a contract change that happens in THAT repository first.
+    here.** Product-port descriptor v1 selects the legacy message adapter
+    transcribed from `dotmac_sub`'s merged port; descriptor v2 selects the
+    provider-neutral `dotmac_integration.product_observation_document`, whose
+    typed observation body is declared by the destination product. Selection is
+    by protocol schema version only — never product, provider, connector or
+    capability identity. A disagreement is a defect in this file, or a contract
+    change that happens in the owning product first.
     Three consequences that are easy to get wrong and expensive to discover:
     `provider_event_id` crosses the wire RAW because the destination
     namespaces it itself; the transport fingerprint covers the destination's
@@ -180,11 +182,12 @@ This is a **thin assembly**. The reusable behaviour lives in
     `processed` would look exactly like a completed cutover while losing every
     event. One switch (`PRODUCT_PORT_MODE`), read once, by the client; the worker
     starts the matching loop from the client's declaration, not a second flag.
-27. **The product owns one authenticated port descriptor; the Integrator
+27. **The product owns one authenticated, versioned port descriptor; the Integrator
     reconciles it.** The destination binding id, capability declaration, paths,
     contract version, activation state and opaque scope come from the product's
-    `ProductPortDescriptorV1`, never from parallel assembly maps or provider
-    input. The assembly pins the expected digest, authenticates the GET without
+    descriptor, never from parallel assembly maps or provider input. V1 and V2
+    share one exact authenticated field set; unknown versions fail closed. The
+    assembly pins the expected digest, authenticates the GET without
     following redirects, and invokes the module-owned reconciler only after the
     read completes. The resulting immutable destination revision is the local
     routing fact. Missing or changed evidence fails boot; an unreconciled

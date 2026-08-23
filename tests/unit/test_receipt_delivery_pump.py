@@ -40,12 +40,19 @@ class _Destination:
     destination_revision_id = uuid4()
 
 
+SOURCE = integration.ProductObservationSource(
+    installation_id=UUID("55555555-5555-4555-8555-555555555555"),
+    connector_key="synthetic_connector",
+)
+
+
 def _claim(receipt_id: UUID, attempt: int = 1) -> integration.ReceiptClaim:
     return integration.ReceiptClaim(
         receipt_id=receipt_id,
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
+        source=SOURCE,
         provider_event_id=f"provider-{receipt_id}",
         event_type="message.received",
         observation={"messages": []},

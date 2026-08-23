@@ -43,6 +43,7 @@ from dotmac_integrator.product_port import (
     ProductPortMode,
     ShadowClientCannotWrite,
     build_envelope,
+    build_product_document,
     canonical_body,
 )
 
@@ -51,6 +52,10 @@ API_KEY = "a-destination-machine-credential-0123456789"
 
 LOCAL_BINDING = UUID("11111111-1111-4111-8111-111111111111")
 REMOTE_BINDING = UUID("22222222-2222-4222-8222-222222222222")
+SOURCE = integration.ProductObservationSource(
+    installation_id=UUID("55555555-5555-4555-8555-555555555555"),
+    connector_key="synthetic_connector",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,6 +101,39 @@ class _Destination:
     contract_version = 1
     destination_revision_id = uuid4()
     product_port: object | None = _ProductPort()
+
+
+class _SettlementScope:
+    kind = "payment_provider_events"
+    ref = "verified"
+
+
+class _GenericProductPort:
+    schema_version = "dotmac.io/product-port-descriptor/v2"
+    application = "sub"
+    owner_module = "billing.settlement_observations"
+    capability_id = "payments.settlement.observation.v1"
+    capability_summary = "Verified settlement observations"
+    contract_version = 1
+    destination_binding_id = REMOTE_BINDING
+    delivery_path = (
+        f"/api/v1/integration/observations/payment-settlements/{REMOTE_BINDING}"
+    )
+    mirror_path = f"{delivery_path}/mirror"
+    destination_scope = _SettlementScope()
+    activation_state = "enabled"
+    source_revision = "d" * 64
+    descriptor_digest = "e" * 64
+
+
+class _GenericDestination:
+    capability_binding_id = LOCAL_BINDING
+    capability_id = "payments.settlement.observation.v1"
+    application = "sub"
+    scope = _SettlementScope()
+    contract_version = 1
+    destination_revision_id = uuid4()
+    product_port: object | None = _GenericProductPort()
 
 
 class _RecordingTransport:
@@ -159,14 +197,17 @@ def _claim(
     attempt: int = 1,
     *,
     provider_event_id: str = "wamid.HBgNMjM0",
+    destination: Any | None = None,
+    event_type: str = "messaging.receive.v1",
 ) -> Any:
     return integration.ReceiptClaim(
         receipt_id=UUID("33333333-3333-4333-8333-333333333333"),
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
-        destination=_Destination(),
+        destination=destination or _Destination(),
+        source=SOURCE,
         provider_event_id=provider_event_id,
-        event_type="messaging.receive.v1",
+        event_type=event_type,
         observation=observation,
         correlation_id="corr-1",
     )
@@ -210,6 +251,81 @@ def _destination_fingerprint(body: Mapping[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def test_descriptor_v2_uses_the_modules_generic_product_observation() -> None:
+    observation: dict[str, object] = {
+        "capability_id": "payments.settlement.observation.v1",
+        "observation_kind": "capture",
+        "provider_status": "successful",
+        "amount": {"amount": "1020.00", "currency": "NGN"},
+    }
+    request = integration.build_product_request(
+        _claim(
+            observation,
+            provider_event_id="settlement-event-1",
+            destination=_GenericDestination(),
+            event_type="payments.settlement.observation.v1",
+        )
+    )
+
+    document = build_product_document(request)
+
+    assert document == integration.product_observation_document(request)
+    assert document["source"] == {
+        "installation_id": str(SOURCE.installation_id),
+        "connector_key": SOURCE.connector_key,
+    }
+    assert document["scope"] == {
+        "kind": "payment_provider_events",
+        "ref": "verified",
+    }
+
+
+def test_descriptor_v2_write_and_mirror_send_the_same_generic_document() -> None:
+    request = integration.build_product_request(
+        _claim(
+            {
+                "capability_id": "payments.settlement.observation.v1",
+                "observation_kind": "capture",
+                "provider_status": "successful",
+            },
+            provider_event_id="settlement-event-2",
+            destination=_GenericDestination(),
+            event_type="payments.settlement.observation.v1",
+        )
+    )
+    writer, sent = _client(_ok())
+    shadow, mirrored = _client(
+        _answer(200, {"verdict": "match", "agrees": True}),
+        mode=ProductPortMode.MIRROR,
+    )
+
+    writer.deliver(request)
+    shadow.mirror(request)
+
+    assert sent.calls[0]["body"] == integration.product_observation_document(request)
+    assert mirrored.calls[0]["body"] == sent.calls[0]["body"]
+    assert sent.calls[0]["url"].endswith(str(REMOTE_BINDING))
+    assert mirrored.calls[0]["url"].endswith(f"{REMOTE_BINDING}/mirror")
+
+
+def test_an_unknown_product_wire_protocol_is_refused_before_the_network() -> None:
+    class _UnknownProductPort(_GenericProductPort):
+        schema_version = "dotmac.io/product-port-descriptor/v99"
+
+    class _UnknownDestination(_GenericDestination):
+        product_port = _UnknownProductPort()
+
+    request = integration.build_product_request(
+        _claim(
+            {"observation_kind": "synthetic"},
+            destination=_UnknownDestination(),
+        )
+    )
+
+    with pytest.raises(EnvelopeNotConstructible, match="unsupported"):
+        build_product_document(request)
 
 
 def test_the_canonical_body_carries_every_field_the_destination_dumps() -> None:
@@ -552,6 +668,7 @@ def test_an_unmapped_binding_is_retryable_and_never_reaches_the_wire() -> None:
         attempt=1,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Unmapped(),
+        source=SOURCE,
         provider_event_id="wamid.HBgNMjM0",
         event_type="messaging.receive.v1",
         observation=dict(MESSAGE_OBSERVATION),
@@ -574,6 +691,7 @@ def test_a_binding_naming_another_application_is_not_delivered() -> None:
         attempt=1,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Elsewhere(),
+        source=SOURCE,
         provider_event_id=str(MESSAGE_OBSERVATION["provider_event_id"]),
         event_type="messaging.receive.v1",
         observation=dict(MESSAGE_OBSERVATION),
@@ -871,6 +989,7 @@ def test_configured_disabled_is_mirror_eligible_but_never_write_eligible() -> No
         attempt=claim.attempt,
         leased_until=claim.leased_until,
         destination=_DisabledDestination(),
+        source=claim.source,
         provider_event_id=claim.provider_event_id,
         event_type=claim.event_type,
         observation=claim.observation,
