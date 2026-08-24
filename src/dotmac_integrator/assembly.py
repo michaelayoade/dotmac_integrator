@@ -66,6 +66,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
 from dotmac_integrator import (
+    command_port,
     delivery,
     health,
     ingress,
@@ -75,6 +76,7 @@ from dotmac_integrator import (
     secret_loading,
     telemetry,
 )
+from dotmac_integrator.command_port import CommandAuth, DeliveryCommand
 from dotmac_integrator.manifest import module as assembly_module
 from dotmac_integrator.operator_auth import (
     BindingRequest,
@@ -148,6 +150,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # deployment can authenticate with is in memory from this line onward,
         # so no store outage can reach a dispatch or an enablement.
         report = secret_loading.install_secrets(engine, settings)
+        if (
+            settings.command_port_enabled
+            and settings.command_port_api_key_ref not in report.held
+        ):
+            raise RuntimeError(
+                "command-port credential reference is not held; refusing to "
+                "start a command surface that can authenticate nobody"
+            )
         if settings.product_port_enabled:
             # Installed BEFORE the worker starts, so the pump never observes a
             # half-composed deployment — and AFTER the material is held, so an
@@ -394,6 +404,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: Operator,
     ) -> dict[str, Any]:
         return operations.replay_receipt(engine, receipt_id, actor, body.reason)
+
+    # ── Product commands ────────────────────────────────────────────────────
+    # A source application calling in.  It authenticates with its held machine
+    # credential, never an operator identity, and names only a capability and
+    # command — the module resolves the configured transport binding.
+    if settings.command_port_enabled:
+
+        @app.post("/commands/deliveries", tags=["commands"], status_code=202)
+        def enqueue_delivery(
+            body: DeliveryCommand,
+            _auth: CommandAuth,
+        ) -> dict[str, object]:
+            return command_port.enqueue(
+                engine,
+                capability_id=body.capability_id,
+                event_type=body.event_type,
+                idempotency_key=body.idempotency_key,
+                payload=body.payload,
+            )
 
     # ── Public ingress ──────────────────────────────────────────────────────
     # A PROVIDER calling in (`surface.RouteClass.INGRESS`). Authenticated by

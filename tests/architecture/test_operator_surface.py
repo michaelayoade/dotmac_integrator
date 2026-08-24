@@ -155,6 +155,31 @@ def test_ingress_is_not_mounted_when_the_deployment_turns_it_off() -> None:
     ]
 
 
+def test_the_command_route_has_its_own_authenticated_class() -> None:
+    """A source application is neither a provider nor a platform operator."""
+
+    from fastapi.routing import APIRoute
+
+    settings = build_settings(
+        command_port_enabled=True,
+        command_port_api_key_ref="env://INTEGRATOR_SECRET_COMMAND_PORT",
+    )
+    app = create_app(settings)
+    routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith("/commands/")
+    ]
+    assert [(route.path, route.methods) for route in routes] == [
+        ("/commands/deliveries", {"POST"})
+    ]
+    assert (
+        classify(routes[0].path, metrics_path=settings.metrics_path)
+        is RouteClass.COMMAND
+    )
+    assert audit_routes(app, metrics_path=settings.metrics_path) == []
+
+
 # ── Sensitivity proof (ADR-0018) ────────────────────────────────────────────
 
 
@@ -185,6 +210,14 @@ def _planted() -> FastAPI:
     def rotation_outside_the_operator_surface() -> dict[str, str]:
         return {}
 
+    @app.post("/commands/unguarded")
+    def unguarded_command() -> dict[str, str]:
+        return {}
+
+    @app.post("/commands/operator-guarded")
+    def operator_guarded_command(_actor: Operator) -> dict[str, str]:
+        return {}
+
     # The scrape endpoint with its authentication written in the handler BODY
     # instead of as a dependency — which is exactly what it looked like before
     # `ScrapeGuard` existed, and exactly what the dependency walk cannot see.
@@ -204,6 +237,10 @@ def test_the_auditor_reports_every_planted_mistake() -> None:
     assert "/ingress/provider" in violations and "public ingress" in violations
     assert "/health/ready" in violations and "probe carrying the operator" in violations
     assert "/ingress/endpoints/rotate" in violations
+    assert "/commands/unguarded" in violations and "require_command_port" in violations
+    assert (
+        "/commands/operator-guarded" in violations and "platform operator" in violations
+    )
     assert "/metrics" in violations and "ScrapeGuard" in violations
 
 

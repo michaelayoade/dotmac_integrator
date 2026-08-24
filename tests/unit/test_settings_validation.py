@@ -146,6 +146,35 @@ def test_the_assembly_does_not_accept_a_parallel_binding_id_list() -> None:
     assert "product_port_local_binding_ids" not in fields
 
 
+def test_an_enabled_command_port_requires_a_secret_reference() -> None:
+    problems = validate_settings(
+        build_settings(command_port_enabled=True, command_port_api_key_ref="")
+    )
+    assert any("COMMAND_PORT_API_KEY_REF" in problem for problem in problems)
+
+
+def test_command_port_material_cannot_be_written_as_a_literal_setting() -> None:
+    problems = validate_settings(
+        build_settings(
+            command_port_enabled=True,
+            command_port_api_key_ref="literal-material",
+        )
+    )
+    assert any("COMMAND_PORT_API_KEY_REF" in problem for problem in problems)
+
+
+def test_a_command_port_with_a_confined_reference_is_valid() -> None:
+    assert (
+        validate_settings(
+            build_settings(
+                command_port_enabled=True,
+                command_port_api_key_ref="env://INTEGRATOR_SECRET_COMMAND_PORT",
+            )
+        )
+        == []
+    )
+
+
 def test_production_start_does_not_require_the_owner_dsn() -> None:
     """The api and worker are given no MIGRATION_DATABASE_URL at all.
 

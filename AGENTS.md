@@ -251,3 +251,20 @@ This is a **thin assembly**. The reusable behaviour lives in
     path stays fail-closed regardless: an unreconciled destination is a
     pre-network `UNAVAILABLE`, never a receipt marked done.
     (`docs/UPGRADE-READINESS.md`)
+34. **Product commands name a capability, never a provider.**
+    `/commands/deliveries` is authenticated by a held source-application
+    credential that is neither an operator token nor a provider signature. Its
+    input is capability id, event type, stable idempotency key and payload; it
+    carries no connector key, installation id or provider selector. The module's
+    `resolve_binding` and `enqueue_delivery` are the only selection and outbox
+    writers. A 202 means durable acceptance into the outbox, never provider
+    delivery. (`tests/unit/test_command_port.py`;
+    `tests/architecture/test_operator_surface.py`)
+35. **Outbound provider I/O has three phases and no shared session.** The
+    worker drives module-owned `prepare` and commits/closes, calls `invoke` with
+    no session in scope, then calls conditional `settle` in a new transaction.
+    Its unlocked candidate query is a hint; the module's conditional UPDATE is
+    the claim. Contention and lost claims are values, one unavailable binding
+    cannot starve the batch, and logs contain counts only. Retry, backoff,
+    leases and outcomes remain module decisions. No provider branch belongs in
+    the pump. (`tests/unit/test_outbound_delivery_pump.py`)

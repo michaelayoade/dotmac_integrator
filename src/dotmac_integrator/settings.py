@@ -71,6 +71,22 @@ class Settings(BaseSettings):
     worker_lease_sweep_seconds: float = Field(default=60.0, gt=0)
     worker_batch_size: int = Field(default=20, ge=1)
 
+    # ── Product → Integrator command intake ─────────────────────────────────
+    command_port_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the authenticated provider-neutral POST /commands/deliveries "
+            "surface. Off until a source application has been configured."
+        ),
+    )
+    command_port_api_key_ref: str = Field(
+        default="",
+        description=(
+            "Reference to the source-application credential accepted as "
+            "X-Api-Key. A reference only; material is held at startup."
+        ),
+    )
+
     # ── Held secret material (ADR-0009) ─────────────────────────────────────
     # WHICH mechanisms may be dereferenced, and WHERE each is confined. Not
     # what any secret is, and not which secrets exist — that list is the
@@ -354,6 +370,19 @@ def validate_settings(settings: Settings) -> list[str]:
     of them, a boot wants to refuse on the first. Empty means acceptable.
     """
     problems: list[str] = []
+
+    if settings.command_port_enabled:
+        reference = settings.command_port_api_key_ref.strip()
+        if not reference:
+            problems.append(
+                "COMMAND_PORT_ENABLED is on and COMMAND_PORT_API_KEY_REF is "
+                "empty; an unauthenticated command intake is forbidden"
+            )
+        elif not reference.startswith(("env://", "file://")):
+            problems.append(
+                "COMMAND_PORT_API_KEY_REF must be an `env://` or `file://` "
+                "reference, never literal material"
+            )
 
     # Unconditional: a deployment whose operator surface has no working auth
     # mechanism is not a development convenience, it is an open control plane.

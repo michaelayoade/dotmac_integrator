@@ -344,6 +344,12 @@ FAMILIES: Final[tuple[MetricFamily, ...]] = (
         "they need counting.",
         "counter",
     ),
+    MetricFamily(
+        "integrator_worker_dispatch_failures_total",
+        "Outbound dispatch passes that raised. Kept distinct from lease sweep "
+        "failures because the operator remedies are different.",
+        "counter",
+    ),
     # ── Refusals ────────────────────────────────────────────────────────────
     MetricFamily(
         "integrator_ingress_refusals_total",
@@ -416,6 +422,7 @@ class IngressCounters:
         self._acceptances: dict[str, int] = dict.fromkeys(PRODUCT_ACCEPTANCES, 0)
         self._lost_claims = 0
         self._sweep_failures = 0
+        self._dispatch_failures = 0
 
     @staticmethod
     def _checked(value: str, allowed: Sequence[str], what: str) -> str:
@@ -477,6 +484,10 @@ class IngressCounters:
         with self._lock:
             self._sweep_failures += 1
 
+    def record_dispatch_failure(self) -> None:
+        with self._lock:
+            self._dispatch_failures += 1
+
     def samples(self) -> list[Sample]:
         with self._lock:
             refusals = dict(self._refusals)
@@ -486,7 +497,8 @@ class IngressCounters:
             ingress = dict(self._ingress)
             acceptances = dict(self._acceptances)
             lost = self._lost_claims
-            failures = self._sweep_failures
+            sweep_failures = self._sweep_failures
+            dispatch_failures = self._dispatch_failures
         return [
             *(
                 Sample("integrator_ingress_refusals_total", count, reason)
@@ -521,7 +533,8 @@ class IngressCounters:
                 for acceptance, count in acceptances.items()
             ),
             Sample("integrator_receipt_lost_claims_total", lost),
-            Sample("integrator_worker_sweep_failures_total", failures),
+            Sample("integrator_worker_sweep_failures_total", sweep_failures),
+            Sample("integrator_worker_dispatch_failures_total", dispatch_failures),
         ]
 
 

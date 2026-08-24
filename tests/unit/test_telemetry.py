@@ -460,3 +460,13 @@ def test_the_sweep_failure_counter_is_exported() -> None:
     counters = IngressCounters()
     counters.record_sweep_failure()
     assert "integrator_worker_sweep_failures_total 1" in render(counters.samples())
+
+
+def test_an_outbound_pass_failure_is_not_reported_as_a_lease_sweep_failure() -> None:
+    """The two loops have different remedies and therefore different facts."""
+
+    counters = IngressCounters()
+    counters.record_dispatch_failure()
+    rendered = render(counters.samples())
+    assert "integrator_worker_dispatch_failures_total 1" in rendered
+    assert "integrator_worker_sweep_failures_total 0" in rendered

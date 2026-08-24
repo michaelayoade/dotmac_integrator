@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-integrator"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Thin assembly composing dotmac-integration as an independently deployed connector control plane"
 authors = ["Dotmac"]
 readme = "README.md"
@@ -24,7 +24,7 @@ python = ">=3.11,<3.14"
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
 dotmac-kernel = "0.1.0a68"
-dotmac-integration = "0.1.0a13"
+dotmac-integration = "0.1.0a14"
 
 # ── Connectors ──────────────────────────────────────────────────────────────
 # Separately released distributions, each contributing exactly ONE connector key
@@ -40,7 +40,7 @@ dotmac-integration = "0.1.0a13"
 # one authenticated descriptor is projected onto every durable binding for its
 # capability, so overlapping connectors cannot be silently omitted by an
 # assembly-maintained binding-id list.
-dotmac-connector-whatsapp = "0.1.0a2"
+dotmac-connector-whatsapp = "0.1.0a3"
 dotmac-connector-meta-social = "0.1.0a1"
 dotmac-connector-linkedin = "0.1.0a1"
 dotmac-connector-mono = "0.1.0a1"

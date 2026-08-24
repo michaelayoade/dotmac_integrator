@@ -6,11 +6,12 @@ delivery gets, or what backoff applies. Those are `ExecutionPolicy`, and reading
 them from settings here would fork the policy: the module would hold one answer
 and the deployment another, for a question that already has an owner.
 
-## Why lease sweeping is the only pump today
+## The two data pumps
 
-Sweeping expired leases is idempotent, needs no connector, and is safe to run
-before any connector exists — a lease whose holder died must be reclaimed
-whether or not anything can dispatch.
+The outbound pump drives the module's `prepare` / `invoke` / `settle` seam and
+the receipt pump delivers verified observations to a destination product. Both
+use module-owned atomic claims. Sweeping expired leases remains idempotent and
+safe even before either side is configured.
 
 ## What this pump deliberately does NOT do
 
@@ -20,10 +21,9 @@ process that re-read a store every N seconds would put that store back on the
 path of everything it authenticates. `POST /operations/secrets/refresh` is the
 whole rotation mechanism.
 
-The dispatch pump is deliberately NOT here. It cannot be written honestly until
-a real connector exists to dispatch to, and a pump written against no connector
-would be shaped by guesses. It arrives with the first ingress-only connector
-distribution.
+Outbound dispatch is provider-neutral. Entry-point discovery supplies the
+installed registry and this worker supplies only scheduling; all eligibility,
+retry and settlement decisions remain in `dotmac_integration`.
 
 ## Which receipt pump runs is decided by the port, not by a second flag
 
@@ -42,9 +42,10 @@ import asyncio
 import contextlib
 import logging
 
+import dotmac_integration as integration
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import delivery, operations, telemetry
+from dotmac_integrator import delivery, operations, outbound, telemetry
 from dotmac_integrator.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,8 @@ class Worker:
         self._settings = settings
         self._task: asyncio.Task[None] | None = None
         self._delivery_task: asyncio.Task[None] | None = None
+        self._outbound_task: asyncio.Task[None] | None = None
+        self._registry = integration.discover()
         self._stopping = asyncio.Event()
         #: Unix time of the last COMPLETED sweep. `None` until one finishes —
         #: seeding it at construction would make a worker that has never run
@@ -79,6 +82,10 @@ class Worker:
     def delivering(self) -> bool:
         return self._delivery_task is not None and not self._delivery_task.done()
 
+    @property
+    def dispatching(self) -> bool:
+        return self._outbound_task is not None and not self._outbound_task.done()
+
     async def start(self) -> None:
         if not self._settings.worker_enabled:
             logger.info("worker disabled by configuration; API-only replica")
@@ -88,6 +95,14 @@ class Worker:
         logger.info(
             "worker started; lease sweep every %ss",
             self._settings.worker_lease_sweep_seconds,
+        )
+        self._outbound_task = asyncio.create_task(
+            self._dispatch_forever(), name="outbound-dispatch"
+        )
+        logger.info(
+            "outbound dispatch started; polling every %ss in batches of %s",
+            self._settings.worker_poll_seconds,
+            self._settings.worker_batch_size,
         )
         if not delivery.product_port_installed():
             # Loud, and NOT a fallback. A deployment receiving provider events
@@ -116,7 +131,7 @@ class Worker:
 
     async def stop(self) -> None:
         self._stopping.set()
-        for name in ("_delivery_task", "_task"):
+        for name in ("_delivery_task", "_outbound_task", "_task"):
             task = getattr(self, name)
             if task is None:
                 continue
@@ -158,6 +173,28 @@ class Worker:
                 logger.exception("receipt delivery pass failed; continuing")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    async def _dispatch_forever(self) -> None:
+        interval = self._settings.worker_poll_seconds
+        while not self._stopping.is_set():
+            try:
+                await asyncio.to_thread(self._dispatch_once)
+            except Exception:
+                telemetry.counters.record_dispatch_failure()
+                logger.exception("outbound dispatch pass failed; continuing")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    def _dispatch_once(self) -> None:
+        counted = outbound.dispatch_due_deliveries(
+            self._engine,
+            limit=self._settings.worker_batch_size,
+            registry=self._registry,
+        )
+        if counted["candidates"]:
+            # Counts only. Payload, idempotency key, binding and provider
+            # references belong in access-controlled rows, not logs.
+            logger.info("outbound dispatch pass: %s", sorted(counted.items()))
 
     def _deliver_once(self) -> None:
         if not delivery.product_port_writes():

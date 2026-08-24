@@ -125,6 +125,43 @@ for a token to expire.
 
 ---
 
+## Bringing up the product command port
+
+The command port is off by default. It is the authenticated product-to-
+Integrator edge for outbound effects; it is not an operator endpoint and a
+source application must never receive a platform-admin token.
+
+Provision one confined secret reference, then configure:
+
+```text
+COMMAND_PORT_ENABLED=true
+COMMAND_PORT_API_KEY_REF=file:///run/secrets/product-command-key
+```
+
+The referenced material is loaded at startup and on explicit secret refresh.
+Boot refuses when the port is enabled but its reference is missing or
+unresolved. The caller presents the value as `X-Api-Key`; a wrong value answers
+404 so the endpoint is not an oracle.
+
+Submit only the provider-neutral command contract:
+
+```json
+{
+  "capability_id": "messaging.send.v1",
+  "event_type": "send_text",
+  "idempotency_key": "source:message:42",
+  "payload": {"to": "<destination>", "text": "<content>"}
+}
+```
+
+The idempotency key identifies the logical effect and must be stable across
+caller retries. The module resolves exactly one enabled binding; absent or
+ambiguous routing answers 409 without exposing connector identity. HTTP 202
+means the row is durable, not that a provider accepted it. Provider acceptance,
+retry or reconciliation state is recorded asynchronously on that row.
+
+---
+
 ## Bringing up the product port
 
 The port is **off** on a fresh deployment and the default mode is `mirror`.

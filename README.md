@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel  0.1.0a68  ──┐
                            ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a13┘        (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a14┘        (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -138,7 +138,7 @@ export POETRY_HTTP_BASIC_FORGEJO_PASSWORD=...   # OpenBao: secret/dotmac/forgejo
 
 ## Surface
 
-Every route belongs to one of four CLASSES, and `create_app` refuses to return
+Every route belongs to one of five CLASSES, and `create_app` refuses to return
 an app that breaks a class rule — it is a boot failure, not a test failure.
 
 | Class | Prefix | Rule |
@@ -146,6 +146,7 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | probe | `/health/**` | Unauthenticated, read-only. An orchestrator holds no credential, and a probe that fails closed on an auth outage restarts healthy replicas. |
 | operator | `/operations/**` | `require_operator` on **every** route, reads included. Every mutation additionally carries a required `reason`. |
 | ingress | `/ingress/**` | Provider-authenticated inside the discovered connector, and must never carry the operator guard. |
+| command | `/commands/**` | Source-application credential, mutations only; never an operator token or provider signature. |
 | scrape | configured `METRICS_PATH` | Monitoring credential, read-only; neither an operator token nor a provider signature. |
 
 | Route | Purpose |
@@ -166,6 +167,7 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | |
 | `POST /operations/receipts/{id}/replay` | |
+| `POST /commands/deliveries` | Provider-neutral durable command intake. Resolves the one enabled capability binding and returns the outbox identity. |
 | `GET /ingress/{endpoint_key}` | Provider activation handshake. Answers for a CONFIGURED but still DISABLED binding. |
 | `POST /ingress/{endpoint_key}` | Provider delivery. Requires binding AND installation enabled. |
 | `GET /metrics` | Prometheus text exposition, bearer-authenticated. 404 when unauthorized. `METRICS_ENABLED=false` removes it. |
@@ -266,8 +268,8 @@ here would let an install months from now compose a combination nobody ran.
 
 | Distribution | Pin | Why this one |
 |---|---|---|
-| `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
-| `dotmac-integration` | `0.1.0a13` | Published SPI **1.3** module. Adds ProductObservation v1 projection, engine-owned source resolution and descriptor v2 compatibility; the lineage head remains `ig_0011` and `requires` is unchanged, which is why the bindings below are a re-derived no-op rather than an unexamined one. |
+| `dotmac-connector-whatsapp` | `0.1.0a3` | SPI **1.4** ingress plus delivery. Adds product-decided text/template/media wire translation and typed provider evidence while keeping historical manifests for already-pinned installations. |
+| `dotmac-integration` | `0.1.0a14` | Published SPI **1.4** module. Adds per-capability mode declarations, outbound provider evidence and terminal delivery-payload retention. The lineage advances to `ig_0012`; `requires` is unchanged, so the bindings below are a re-derived no-op rather than an assumed one. |
 | `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
 
 ### What a pin bump actually costs
@@ -327,7 +329,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a13` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a14` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -370,7 +372,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a13`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a14`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing
@@ -541,3 +543,27 @@ replay/collision, credential-scope, migration and rollback evidence.
 The failure this prevents is the expensive one. A shadow run that settled
 receipts as `processed` would look exactly like a completed cutover, while every
 observation it "delivered" was seen by nobody.
+
+## Outbound command delivery
+
+`POST /commands/deliveries` is the inverse edge: a product submits a declared
+capability, event type, stable idempotency key and product-decided payload. It
+does not name a connector, provider or installation. The module resolves the
+one enabled binding and durably enqueues `mod_intg.delivery_attempts`; the
+response returns only the opaque delivery id, state, replay flag and payload
+digest.
+
+The worker drives that row through the module's exact three phases:
+
+1. `prepare` validates the binding and immutable configuration pin, claims the
+   row, and commits;
+2. `invoke` materialises held secrets and calls the discovered plugin with no
+   session or transaction in scope;
+3. `settle` conditionally records the typed outcome and provider evidence, and
+   commits only while the original claim still holds.
+
+The unlocked candidate query is a hint. Several replicas seeing one id is
+normal; the module's conditional update grants the claim to one. A disabled or
+stale binding is counted and cannot starve unrelated commands behind it. Retry,
+backoff, lease duration, attempt limits and terminal classification remain
+module decisions—there is no corresponding assembly setting.

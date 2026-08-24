@@ -26,6 +26,8 @@ import dotmac_integration
 import dotmac_kernel
 import pytest
 
+import dotmac_integrator
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -62,6 +64,12 @@ def test_the_modules_own_version_matches_its_distribution_metadata(
     metadata. A wheel where they differ makes the composition report wrong in a
     way nothing else would catch."""
     assert module.__version__ == version(name)  # type: ignore[attr-defined]
+
+
+def test_the_assembly_version_matches_its_installed_distribution() -> None:
+    """The image tag, manifest and Python runtime must describe one build."""
+
+    assert dotmac_integrator.__version__ == version("dotmac-integrator")
 
 
 @pytest.mark.parametrize("name", PINNED)

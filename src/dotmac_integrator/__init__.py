@@ -34,7 +34,7 @@ import os
 
 from dotmac_integrator.settings import Settings
 
-__version__ = "0.1.0a0"
+__version__ = "0.1.0a3"
 
 if not os.environ.get("DATABASE_URL"):
     os.environ["DATABASE_URL"] = Settings().database_url

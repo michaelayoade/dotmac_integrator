@@ -417,18 +417,19 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-connector-whatsapp"
-version = "0.1.0a2"
-description = "Ingress-only Meta WhatsApp Cloud API connector for Dotmac Integrator"
+version = "0.1.0a3"
+description = "Meta WhatsApp Cloud API ingress and delivery connector for Dotmac Integrator"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_connector_whatsapp-0.1.0a2-py3-none-any.whl", hash = "sha256:2381c65b5ce41ac1fc315c062d3ebcc5d4622f59e62bae626a35eb972ae0b9a0"},
-    {file = "dotmac_connector_whatsapp-0.1.0a2.tar.gz", hash = "sha256:dee854fa29767dec9cfd1771ee553aa4f7b070e48de017f1f619a1659ce16f9f"},
+    {file = "dotmac_connector_whatsapp-0.1.0a3-py3-none-any.whl", hash = "sha256:01d53b0e6b4cbb133a032d51006ed41e3712fa3e37cbd0c2a805fbd2d3d7cb8a"},
+    {file = "dotmac_connector_whatsapp-0.1.0a3.tar.gz", hash = "sha256:1119716db40c3de5dde02f3bcf69967aa4336419f874df891a4ba089d09e6a09"},
 ]
 
 [package.dependencies]
-dotmac-integration = ">=0.1.0a10"
+dotmac-integration = ">=0.1.0a14"
+httpx = ">=0.27,<1.0"
 
 [package.source]
 type = "legacy"
@@ -437,14 +438,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a13"
+version = "0.1.0a14"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a13-py3-none-any.whl", hash = "sha256:81c63a853a90cbedf79b646b4c525a0bbf1ec9881c69ce0e0c9fd0a314d931bf"},
-    {file = "dotmac_integration-0.1.0a13.tar.gz", hash = "sha256:6f3b528847c2006c2c65195656631b29217e348a71ddee89ffe137e16a5cf289"},
+    {file = "dotmac_integration-0.1.0a14-py3-none-any.whl", hash = "sha256:297650f31d331d2b68d29c89e00473066c78d9eaf5b40eb7696e86ed41a48c33"},
+    {file = "dotmac_integration-0.1.0a14.tar.gz", hash = "sha256:9a09e01728eacde17ff1ff74f514f1f7272907d8ebd90702f1afce0dbf561603"},
 ]
 
 [package.dependencies]
@@ -2294,4 +2295,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "905149787a8ec5785c77afad40f55e091f29a83bbc18424442e92cbe837401c4"
+content-hash = "602b30c0e4d68c5449c088d3ef7a15a5d90745c598a97f93add70205940a9856"

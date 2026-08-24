@@ -27,6 +27,10 @@ prove the auditor bites.
                              knows it. Must never carry the operator guard:
                              the two populations share no credential, no
                              token audience and no failure mode.
+`COMMAND`    `/commands/**`  A PRODUCT application asking for a typed
+                             capability. Authenticated by the held command
+                             credential; it names no provider, connector or
+                             installation and every operation mutates.
 `SCRAPE`     `METRICS_PATH`  A monitoring system. Read-only, and
                              authenticated by a scrape token that is neither
                              an operator credential nor a provider signature.
@@ -70,6 +74,7 @@ from typing import Any, get_type_hints
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from dotmac_integrator.command_port import require_command_port
 from dotmac_integrator.operator_auth import OperationReason, require_operator
 from dotmac_integrator.telemetry import ScrapeGuard
 
@@ -93,6 +98,7 @@ class RouteClass(StrEnum):
     PROBE = "probe"
     OPERATOR = "operator"
     INGRESS = "ingress"
+    COMMAND = "command"
     SCRAPE = "scrape"
 
 
@@ -103,6 +109,7 @@ _PREFIXES: tuple[tuple[str, RouteClass], ...] = (
     ("/health/", RouteClass.PROBE),
     ("/operations/", RouteClass.OPERATOR),
     ("/ingress/", RouteClass.INGRESS),
+    ("/commands/", RouteClass.COMMAND),
 )
 
 
@@ -183,8 +190,8 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         if route_class is None:
             violations.append(
                 f"{path} is unclassified. Mount it under /health, /operations "
-                f"or /ingress — a route with no class has no rules, which is "
-                "how the ingress adapter would inherit the operator guard"
+                "/ingress or /commands — a route with no class has no rules, "
+                "which is how the ingress adapter would inherit the operator guard"
             )
             continue
 
@@ -219,6 +226,21 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
                 "provider holds no operator credential; sharing the guard ends "
                 "with the operator guard loosened until both fit through it"
             )
+        elif route_class is RouteClass.COMMAND:
+            if guarded:
+                violations.append(
+                    f"{path} is a product command route carrying the operator "
+                    "guard. A source application is not a platform operator"
+                )
+            if not mutating:
+                violations.append(
+                    f"{sorted(methods)} {path} is a non-mutating command route"
+                )
+            if require_command_port not in _dependency_calls(route):
+                violations.append(
+                    f"{path} is a command route with no `require_command_port` "
+                    "dependency"
+                )
         elif route_class is RouteClass.SCRAPE:
             if guarded:
                 violations.append(
