@@ -8,6 +8,33 @@ This file is evidence, not intent. Each claim states what was checked and what
 the check read, so the next reader can tell "verified" from "assumed" — the
 distinction the Starter's own publication ledger exists to preserve.
 
+## Polling pump prerequisite — not implemented at this revision
+
+This repository's checked-in dependency and lock pin `dotmac-integration`
+exactly at `0.1.0a13`. The worker contains no connector polling pump, creates no
+polling checkpoints, and carries no polling cadence or activation switch. No
+polling cutover, connector activation, callback change or external traffic is
+claimed here.
+
+The work is serialized because the assembly may consume only an externally
+verified exact release, never a local path or a declared-but-unpublished
+version:
+
+1. the module must publish and verify a public idempotent checkpoint-declaration
+   lifecycle plus stable, bounded enabled-checkpoint pagination;
+2. this repository then exact-pins that released version and refreshes its lock;
+3. only then may a generic pump land, default disabled, obtaining checkpoint ids
+   from the module page and delegating each id to the module's `poll_once`;
+4. activation and real cadence/coordinates remain a later operator decision.
+
+The current schema records cursor/version/advance time and the existing metrics
+can expose a stale checkpoint, but there is no module-owned per-poll failure,
+attempt or backoff record. A thin assembly must not invent that retry ledger.
+Before activation, the remaining reliability gate is either a module-owned
+retry-evidence lifecycle or an explicitly approved bounded-failure telemetry
+contract that survives process restarts and demonstrates that one failing poll
+cannot become an invisible permanent gap.
+
 ## Why three slices and not one change
 
 The obvious change is one PR that bumps the module and pins every published
