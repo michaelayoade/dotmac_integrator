@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import dotmac_integration as integration
 import pytest
@@ -224,6 +224,134 @@ def test_the_tenant_role_holds_nothing_on_the_platform_identity_tables(
 
 
 # ── Provider-neutral authoring ──────────────────────────────────────────────
+
+
+def test_the_settlement_plugins_compose_as_disabled_rows_without_authority(
+    operator: tuple[str, str],
+    migrated: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rehearse the last code-owned step without creating a deployment profile.
+
+    The actual installation and binding ids are durable module-owned rows, and
+    Sub's destination binding and descriptor digest are product-owned runtime
+    facts.  Checking either into this repository would create parallel routing
+    authority.  This disposable-database rehearsal instead proves the two real
+    pinned plugins can reach the exact safe predecessor state: draft
+    installations, disabled settlement bindings, no config or secret refs, no
+    ingress endpoint, no product port, no worker and no destination revision.
+    """
+
+    from dotmac_integration.models import CapabilityDestinationRevision
+
+    from dotmac_integrator import delivery, product_port
+
+    def _must_not_build_or_install(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a disabled product port must not be built or installed")
+
+    monkeypatch.setattr(product_port, "build_from_settings", _must_not_build_or_install)
+    monkeypatch.setattr(delivery, "install_product_port", _must_not_build_or_install)
+
+    app = create_app(
+        build_settings(
+            database_url=migrated,
+            product_port_enabled=False,
+            product_port_mode="mirror",
+            worker_enabled=False,
+            ingress_enabled=False,
+        )
+    )
+    token, _ = operator
+    headers = _headers(token)
+    installation_ids: list[UUID] = []
+    binding_ids: list[UUID] = []
+
+    with TestClient(app) as disabled:
+        assert app.state.worker.running is False
+        assert app.state.worker.delivering is False
+        assert not any(
+            getattr(route, "path", "").startswith("/ingress/") for route in app.routes
+        )
+
+        for connector_key in ("paystack", "flutterwave"):
+            profile_name = (
+                f"settlement-shadow-disabled-{connector_key}-{uuid4().hex[:8]}"
+            )
+            drafted = disabled.post(
+                "/operations/installations",
+                headers=headers,
+                json={
+                    "connector_key": connector_key,
+                    "name": profile_name,
+                    "environment": "test",
+                    "reason": (
+                        "prove settlement transport composes without activation"
+                    ),
+                },
+            )
+            assert drafted.status_code == 200, drafted.text
+            assert drafted.json()["state"] == "draft"
+            installation_id = UUID(drafted.json()["id"])
+            installation_ids.append(installation_id)
+
+            bound = disabled.post(
+                f"/operations/installations/{installation_id}/bindings",
+                headers=headers,
+                json={
+                    "capability_id": "payments.settlement.observation.v1",
+                    "scope": {"deployment": "settlement-shadow-disabled"},
+                    "reason": "bind the Sub-owned settlement observation contract",
+                },
+            )
+            assert bound.status_code == 200, bound.text
+            assert bound.json()["state"] == "disabled"
+            binding_ids.append(UUID(bound.json()["id"]))
+
+    engine = create_engine(migrated)
+    with Session(engine) as db:
+        installations = [
+            db.get(integration.ConnectorInstallation, identifier)
+            for identifier in installation_ids
+        ]
+        bindings = [
+            db.get(integration.CapabilityBinding, identifier)
+            for identifier in binding_ids
+        ]
+        config_revisions = db.scalars(
+            select(integration.ConnectorConfigRevision).where(
+                integration.ConnectorConfigRevision.installation_id.in_(
+                    installation_ids
+                )
+            )
+        ).all()
+        destinations = db.scalars(
+            select(CapabilityDestinationRevision).where(
+                CapabilityDestinationRevision.capability_binding_id.in_(binding_ids)
+            )
+        ).all()
+    engine.dispose()
+
+    assert {row.connector_key for row in installations if row is not None} == {
+        "paystack",
+        "flutterwave",
+    }
+    assert all(
+        row is not None
+        and row.state == "draft"
+        and row.current_config_revision_id is None
+        and row.enabled_at is None
+        for row in installations
+    )
+    assert all(
+        row is not None
+        and row.capability_id == "payments.settlement.observation.v1"
+        and row.state == "disabled"
+        and row.ingress_endpoint_key is None
+        and row.enabled_at is None
+        for row in bindings
+    )
+    assert config_revisions == []
+    assert destinations == []
 
 
 def test_an_operator_can_author_the_installed_connector_without_direct_rows(

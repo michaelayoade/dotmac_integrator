@@ -111,9 +111,16 @@ class _SettlementScope:
 class _GenericProductPort:
     schema_version = "dotmac.io/product-port-descriptor/v2"
     application = "sub"
-    owner_module = "billing.settlement_observations"
+    # Integrator-side compatibility fixture pinned to Sub 0324d2dcf:
+    # app/services/integrations/product_port_descriptor.py.  The assembly does
+    # not author either value. Sub owns the independent drift canary in
+    # tests/test_integrator_observation_port.py; this local fixture proves only
+    # how Integrator handles the recorded contract shape.
+    owner_module = "financial.payment_webhooks"
     capability_id = "payments.settlement.observation.v1"
-    capability_summary = "Verified settlement observations"
+    capability_summary = (
+        "Verified provider settlement observations for the financial owner"
+    )
     contract_version = 1
     destination_binding_id = REMOTE_BINDING
     delivery_path = (
@@ -308,6 +315,73 @@ def test_descriptor_v2_write_and_mirror_send_the_same_generic_document() -> None
     assert mirrored.calls[0]["body"] == sent.calls[0]["body"]
     assert sent.calls[0]["url"].endswith(str(REMOTE_BINDING))
     assert mirrored.calls[0]["url"].endswith(f"{REMOTE_BINDING}/mirror")
+
+
+def test_subs_configured_disabled_settlement_port_is_mirror_only() -> None:
+    """The first settlement profile is evidence-only, never a quiet write.
+
+    The observation is the complete typed shape accepted by Sub's merged
+    ``payments.settlement.observation.v1`` port.  A configured-disabled
+    descriptor must refuse the recording path before the transport is called,
+    while the same ProductObservation v1 document remains eligible for the
+    strictly narrower mirror path.
+    """
+
+    class _ConfiguredDisabledSettlementPort(_GenericProductPort):
+        activation_state = "configured_disabled"
+
+    class _ConfiguredDisabledSettlementDestination(_GenericDestination):
+        product_port = _ConfiguredDisabledSettlementPort()
+
+    observation: dict[str, object] = {
+        "capability_id": "payments.settlement.observation.v1",
+        "observation_kind": "capture",
+        "provider_status": "successful",
+        "amount": {"amount": "1020.00", "currency": "NGN"},
+        "provider_fee": {"amount": "20.00", "currency": "NGN"},
+        "occurred_at": "2026-08-25T10:30:00+00:00",
+        "arrival_mode": "ingress",
+        "confirmation_evidence": "connector_verified",
+        "merchant_reference": "DMAC-SETTLEMENT-1",
+        "transport_evidence": {
+            "provider_event_type": "charge.success",
+            "identity_source": "provider_event_id",
+            "provider_transaction_id": "provider-transaction-1",
+            "provider_webhook_id": "provider-webhook-1",
+            "authentication_scheme": "connector_verified",
+            "payload_integrity": "verified",
+        },
+    }
+    request = integration.build_product_request(
+        _claim(
+            observation,
+            provider_event_id="settlement-event-configured-disabled",
+            destination=_ConfiguredDisabledSettlementDestination(),
+            event_type="payments.settlement.observation.v1",
+        )
+    )
+    writer, sent = _client(_ok())
+    shadow, mirrored = _client(
+        _answer(200, {"verdict": "match", "agrees": True}),
+        mode=ProductPortMode.MIRROR,
+    )
+
+    write_outcome = writer.deliver(request)
+    mirror_verdict = shadow.mirror(request)
+
+    assert write_outcome.acceptance is integration.ProductAcceptance.UNAVAILABLE
+    assert sent.calls == []
+    assert shadow.writes is False
+    assert mirror_verdict.agrees is True
+    assert len(mirrored.calls) == 1
+    assert mirrored.calls[0]["url"] == (
+        "https://destination.example"
+        f"/api/v1/integration/observations/payment-settlements/"
+        f"{REMOTE_BINDING}/mirror"
+    )
+    assert mirrored.calls[0]["body"] == integration.product_observation_document(
+        request
+    )
 
 
 def test_an_unknown_product_wire_protocol_is_refused_before_the_network() -> None:

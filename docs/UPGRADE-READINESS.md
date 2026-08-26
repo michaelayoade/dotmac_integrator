@@ -309,6 +309,26 @@ zero unexplained drift. Only then may the product callback/client/credential and
 retry path be retired and its ratchet lowered. Flutterwave v4 repeats the same
 sequence after Paystack; the two are not activated as a pair.
 
+The repository's last authority-free predecessor is executable evidence, not a
+checked-in deployment profile. A disposable-PostgreSQL composition test drives
+the typed operator surface for both real pinned plugins and proves each can stop
+at a draft installation plus disabled
+`payments.settlement.observation.v1` binding, with no configuration revision,
+secret reference, ingress endpoint or destination projection. In that profile
+the product port, ingress and worker are off, and startup is planted to fail the
+test if it tries to build or install a client. An Integrator-side compatibility
+fixture pinned to Sub commit `0324d2dcf` proves how this assembly treats that
+recorded descriptor shape: `configured_disabled` is mirror-eligible but
+write-ineligible before any transport call. It is not a cross-repository drift
+detector. Sub owns that contract canary in
+`tests/test_integrator_observation_port.py`.
+
+Those tests deliberately do not mint the real coordinates. The Integrator
+module owns its installation and binding rows; Sub owns its destination binding
+UUID and descriptor digest. Their values are runtime facts created through the
+operator and authenticated product surfaces, so checking them into this
+repository would create a second routing authority rather than compose one.
+
 # What no slice does
 
 Stated so the next reader does not mistake absence for oversight:
