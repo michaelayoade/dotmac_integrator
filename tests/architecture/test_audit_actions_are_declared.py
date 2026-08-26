@@ -21,10 +21,16 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import dotmac_integration as integration
+from dotmac_kernel.audit_actions import active_audit_actions
+
+from dotmac_integrator.assembly import create_app
 from dotmac_integrator.operations import (
+    INTEGRATOR_AUDIT_ACTION_OWNER,
     INTEGRATOR_AUDIT_ACTION_PREFIX,
     INTEGRATOR_AUDIT_ACTIONS,
 )
+from tests.support import build_settings
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "dotmac_integrator"
 
@@ -78,6 +84,22 @@ def test_the_assembly_never_writes_the_modules_vocabulary() -> None:
         action.startswith(f"{INTEGRATOR_AUDIT_ACTION_PREFIX}.")
         for action in INTEGRATOR_AUDIT_ACTIONS
     )
+
+
+def test_create_app_installs_the_whole_composed_audit_vocabulary() -> None:
+    """Boot wiring, not just declaration prose.
+
+    Kernel a68 refuses every audit write when no registry was installed. Both
+    owners are asserted so installing only the module or only the assembly
+    cannot make this canary green.
+    """
+    create_app(build_settings())
+    registry = active_audit_actions()
+
+    for action in integration.module.audit_actions:
+        assert registry.owner(action) == integration.module.name
+    for action in INTEGRATOR_AUDIT_ACTIONS:
+        assert registry.owner(action) == INTEGRATOR_AUDIT_ACTION_OWNER
 
 
 def test_the_scan_actually_finds_actions() -> None:

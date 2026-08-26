@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.request
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -74,6 +73,12 @@ class _Scope:
     ref = "support"
 
 
+class _ProductPort:
+    delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
+    mirror_path = f"{delivery_path}/mirror"
+    activation_state = "enabled"
+
+
 class _Destination:
     capability_binding_id = LOCAL_BINDING
     capability_id = "messaging.receive.v1"
@@ -81,12 +86,12 @@ class _Destination:
     scope = _Scope()
     contract_version = 1
     destination_revision_id = UUID("44444444-4444-4444-8444-444444444444")
+    product_port = _ProductPort()
 
 
 OBSERVATION: dict[str, object] = {
     "provider": "chat_widget",
     "provider_account_scope": "acct-1",
-    "provider_event_id": "evt-1",
     "channel": "chat_widget",
     "observed_at": "2026-08-16T09:30:00+00:00",
     "message": {
@@ -104,6 +109,7 @@ def _request() -> Any:
             attempt=1,
             leased_until=datetime.now(UTC) + timedelta(minutes=5),
             destination=_Destination(),
+            provider_event_id="evt-1",
             event_type="messaging.receive.v1",
             observation=dict(OBSERVATION),
             correlation_id="corr-1",
@@ -115,8 +121,6 @@ def _client(transport: Any) -> ObservationPortClient:
     return ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
         api_key_ref=CREDENTIAL_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=1.0,
@@ -219,10 +223,11 @@ def test_no_frame_on_the_failing_path_still_holds_the_credential(
     def _refuse_to_connect(*_: object, **__: object) -> None:
         raise OSError("connection reset by peer")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _refuse_to_connect)
+    transport = UrllibTransport()
+    monkeypatch.setattr(transport._opener, "open", _refuse_to_connect)
 
     with pytest.raises(integration.TransportFailure) as failure:
-        _client(UrllibTransport()).deliver(_request())
+        _client(transport).deliver(_request())
 
     assert CREDENTIAL not in _locals_along(failure.value)
     assert CREDENTIAL not in str(failure.value)

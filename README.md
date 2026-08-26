@@ -434,11 +434,12 @@ Four decisions worth reading before touching it:
   field including the null ones and an empty attachment list. A fingerprint over
   the sparse dict a connector supplied would fail *every* delivery, complaining
   about a mangled body rather than about a missing key.
-- **The destination's binding id is configured, never derived.** Its port is
-  keyed on ITS capability-binding UUID, in ITS database. This deployment's is a
-  different UUID; posting the wrong one 404s at best and writes to somebody
-  else's binding at worst. `PRODUCT_PORT_BINDINGS` carries the pairing, and an
-  unmapped binding is refused before the network with its own code.
+- **The product publishes one authenticated descriptor.** It owns the remote
+  binding id, capability declaration, port paths, contract version and opaque
+  stream scope. `ProductPortDescriptorReconciler` reads that document before a
+  database transaction exists, checks its operator-approved digest, then
+  idempotently appends the module's immutable destination projection. There is
+  no second binding map or capability declaration in this assembly.
 - **Acceptance is mapped honestly.** `ACCEPTED` and `ALREADY_APPLIED` both mean
   the destination holds the consequence — `replayed` is the evidence the
   deduplication worked, and collapsing it would hide a double-send.

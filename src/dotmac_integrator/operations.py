@@ -69,6 +69,7 @@ from dotmac_integrator.secret_resolver import (
 #: directions: nothing is written that is not declared here, and nothing is
 #: declared here without a writer.
 INTEGRATOR_AUDIT_ACTION_PREFIX = "integrator"
+INTEGRATOR_AUDIT_ACTION_OWNER = "dotmac-integrator"
 INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.installation.enabled",
     "integrator.installation.enable_refused",

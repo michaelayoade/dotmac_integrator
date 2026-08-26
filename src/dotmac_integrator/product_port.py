@@ -40,7 +40,7 @@ A shadow deployment that quietly marked receipts `processed` would be the worst
 available outcome: it would look like a successful cutover and would have
 delivered nothing.
 
-## The destination's binding id is CONFIGURED, never derived
+## The destination declares its own binding id
 
 The port is keyed on the DESTINATION's own capability-binding UUID, which lives
 in the destination's database. This deployment's
@@ -50,23 +50,19 @@ derivation, no truncation and no "they're both UUIDs" assumption here: posting
 the wrong one 404s in the best case and writes to somebody else's binding in the
 worst.
 
-So the pairing is operator-supplied configuration (`PRODUCT_PORT_BINDINGS`), and
-an unmapped binding is refused BEFORE the network with its own error code. It is
-reported `UNAVAILABLE` rather than `REJECTED` because nothing was sent and the
-gap is a configuration one an operator closes — dead-lettering a customer's
-message over a missing map entry would destroy events to punish a typo.
+The assembly authenticates the product-owned descriptor, pins its digest, and a
+named reconciler stores that immutable declaration against the local binding.
+There is no operator-maintained second map to drift. A missing descriptor is
+refused BEFORE the network and reported `UNAVAILABLE`: nothing was sent and an
+operator can repair the projection without discarding a customer's message.
 
-## What the observation must already contain
+## Provider identity comes from the durable receipt
 
-`ProductRequest` carries the destination, the receipt id, the event type and the
-observation the connector normalized — and nothing else. In particular it does
-NOT carry the `provider_event_id`, which the destination's envelope requires.
-That identity therefore has to be in the connector's own normalized payload, and
-:data:`ENVELOPE_FIELDS` states exactly which keys this client needs to find
-there. A payload that cannot form an envelope is refused before the network as
-`REJECTED`: retrying identical bytes cannot help, the payload is preserved on
-the receipt row, and `POST /operations/receipts/{id}/replay` is the recovery
-path once the connector is fixed.
+`ProductRequest.provider_event_id` is the identity the ingress engine recorded
+and deduplicated.  The connector payload does not repeat it: two copies would
+create two possible truths for the same fact. A payload that cannot otherwise
+form an envelope is refused before the network as `REJECTED`; retrying identical
+bytes cannot repair a connector contract violation.
 
 ## The fingerprint has to be computed over the same bytes twice
 
@@ -99,8 +95,10 @@ otherwise put it on the receipt row.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
+import re
 import ssl
 import urllib.error
 import urllib.request
@@ -109,10 +107,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Final, Protocol
-from urllib.parse import quote
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import dotmac_integration as integration
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from dotmac_integrator.secret_resolver import redact, resolve_secrets
 
@@ -124,11 +124,14 @@ __all__ = [
     "CONTACT_PROFILE_FIELDS",
     "DELIVERY_RECEIPT_FIELDS",
     "ENVELOPE_FIELDS",
+    "LOCATION_FIELDS",
     "MESSAGE_FIELDS",
     "EnvelopeNotConstructible",
     "HttpAnswer",
     "MirrorVerdict",
     "ObservationPortClient",
+    "ProductPortDescriptorError",
+    "ProductPortDescriptorReconciler",
     "ProductPortMode",
     "ShadowClientCannotWrite",
     "Transport",
@@ -138,8 +141,6 @@ __all__ = [
     "build_from_settings",
     "canonical_body",
     "canonical_fingerprint",
-    "parse_bindings",
-    "parse_capabilities",
 ]
 
 #: The logical name the credential is resolved under. A logical name rather than
@@ -207,7 +208,7 @@ class WireField:
 #: handled separately because they are nested models rather than scalars.
 MESSAGE_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("contact_address", str, required=True, max_length=320),
-    WireField("body", str, required=True),
+    WireField("body", str),
     WireField("contact_name", str, max_length=255),
     WireField("subject", str, max_length=500),
     WireField("external_message_id", str, required=True, max_length=255),
@@ -240,6 +241,13 @@ ATTACHMENT_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("download_status", str, max_length=40),
 )
 
+#: Mirrors `IntegratorLocation`; the coordinates are validated separately so
+#: integers are normalized to floats exactly as Pydantic will dump them.
+LOCATION_FIELDS: Final[tuple[WireField, ...]] = (
+    WireField("name", str, max_length=255),
+    WireField("address", str, max_length=500),
+)
+
 #: Mirrors `IntegratorDeliveryReceiptObservation`. `error_codes` is a list of
 #: strings and is handled separately.
 DELIVERY_RECEIPT_FIELDS: Final[tuple[WireField, ...]] = (
@@ -248,16 +256,11 @@ DELIVERY_RECEIPT_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("recipient_id", str, max_length=255),
 )
 
-#: The identity half of the envelope, which the connector's normalized payload
-#: must supply. `provider_event_id` is here and not derived from anything,
-#: because it is the provider's OWN id: the destination namespaces it with its
-#: own observation-kind prefix, and a client that pre-prefixed would produce a
-#: doubly-prefixed identity — a second row for one upstream event, which is a
-#: duplicate rather than a dedupe.
+#: The provider context the connector's normalized payload must supply. The
+#: event identity itself comes from `ProductRequest`, i.e. the durable receipt.
 ENVELOPE_FIELDS: Final[tuple[WireField, ...]] = (
     WireField("provider", str, required=True, max_length=80),
     WireField("provider_account_scope", str, required=True, max_length=160),
-    WireField("provider_event_id", str, required=True, max_length=255),
     WireField("channel", str, required=True, max_length=40),
     WireField("observed_at", str, required=True),
 )
@@ -267,6 +270,11 @@ ENVELOPE_FIELDS: Final[tuple[WireField, ...]] = (
 _MESSAGE_KEY: Final = "message"
 _RECEIPT_KEY: Final = "delivery_receipt"
 _OBSERVATION_SLOTS: Final[frozenset[str]] = frozenset({_MESSAGE_KEY, _RECEIPT_KEY})
+#: Connector-owned provenance is persisted with the receipt for drift and
+#: repair, but is not part of Sub's product contract. Removing this one named
+#: field here keeps the product envelope provider-neutral without discarding
+#: the evidence from the module-owned receipt row.
+_TRANSPORT_EVIDENCE_KEY: Final = "transport_evidence"
 
 #: The destination's scope field, which carries this deployment's own binding
 #: scope as provenance. Bounded here so an over-long scope is named locally
@@ -343,6 +351,40 @@ def _mapping(value: object, *, where: str) -> Mapping[str, object]:
     return {str(key): item for key, item in value.items()}
 
 
+def _location(value: object, *, where: str) -> dict[str, object] | None:
+    if value is None:
+        return None
+    source = _mapping(value, where=where)
+    allowed = {"latitude", "longitude", "name", "address"}
+    unknown = sorted(set(source) - allowed)
+    if unknown:
+        raise EnvelopeNotConstructible(
+            f"{where} carries {unknown}, which the destination's schema forbids"
+        )
+    coordinates: dict[str, float] = {}
+    for name, lower, upper in (
+        ("latitude", -90.0, 90.0),
+        ("longitude", -180.0, 180.0),
+    ):
+        item = source.get(name)
+        if isinstance(item, bool) or not isinstance(item, int | float):
+            raise EnvelopeNotConstructible(f"{where}.{name} must be a number")
+        normalized = float(item)
+        if not lower <= normalized <= upper:
+            raise EnvelopeNotConstructible(
+                f"{where}.{name} must be between {lower:g} and {upper:g}"
+            )
+        coordinates[name] = normalized
+    return {
+        **coordinates,
+        **_expand(
+            {key: value for key, value in source.items() if key in {"name", "address"}},
+            LOCATION_FIELDS,
+            where=where,
+        ),
+    }
+
+
 def canonical_body(observation: Mapping[str, object]) -> tuple[str, dict[str, object]]:
     """The observation sub-document, expanded exactly as the destination dumps it.
 
@@ -386,14 +428,20 @@ def canonical_body(observation: Mapping[str, object]) -> tuple[str, dict[str, ob
                 "message.attachments must be a list of objects, not "
                 f"{type(attachments).__name__}"
             )
-        body["attachments"] = [
-            _expand(
-                _mapping(item, where="message.attachments[]"),
+        expanded_attachments: list[dict[str, object]] = []
+        for item in attachments:
+            attachment = _mapping(item, where="message.attachments[]")
+            location = attachment.get("location")
+            expanded = _expand(
+                {key: value for key, value in attachment.items() if key != "location"},
                 ATTACHMENT_FIELDS,
                 where="message.attachments[]",
             )
-            for item in attachments
-        ]
+            expanded["location"] = _location(
+                location, where="message.attachments[].location"
+            )
+            expanded_attachments.append(expanded)
+        body["attachments"] = expanded_attachments
         return _MESSAGE_KEY, body
 
     source = _mapping(observation[_RECEIPT_KEY], where=_RECEIPT_KEY)
@@ -460,6 +508,7 @@ def build_envelope(request: Any) -> dict[str, object]:
     """
     destination = request.destination
     observation = dict(request.observation or {})
+    observation.pop(_TRANSPORT_EVIDENCE_KEY, None)
 
     slot, body = canonical_body(observation)
     identity = _expand(
@@ -480,10 +529,10 @@ def build_envelope(request: Any) -> dict[str, object]:
         "contract_version": request.contract_version,
         "provider": identity["provider"],
         "provider_account_scope": identity["provider_account_scope"],
-        # RAW. The destination prefixes this with its own observation-kind
-        # namespace; pre-prefixing here would produce a second identity for one
-        # upstream event.
-        "provider_event_id": identity["provider_event_id"],
+        # Unchanged from the durable receipt. The destination translates this
+        # canonical connector identity into its own local namespace; the
+        # transport must not create a second identity rule.
+        "provider_event_id": request.provider_event_id,
         "channel": identity["channel"],
         "observed_at": _observed_at(identity["observed_at"]),
         "payload_fingerprint": canonical_fingerprint(body),
@@ -518,6 +567,17 @@ class Transport(Protocol):
         self, url: str, *, body: bytes, headers: Mapping[str, str], timeout: float
     ) -> HttpAnswer: ...
 
+    def get(
+        self, url: str, *, headers: Mapping[str, str], timeout: float
+    ) -> HttpAnswer: ...
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never forward a held credential to a redirect-selected origin."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
 
 class UrllibTransport:
     """The standard library, deliberately.
@@ -536,6 +596,10 @@ class UrllibTransport:
 
     def __init__(self) -> None:
         self._context = ssl.create_default_context()
+        self._opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self._context),
+            _RefuseRedirects(),
+        )
 
     def post(
         self, url: str, *, body: bytes, headers: Mapping[str, str], timeout: float
@@ -551,9 +615,7 @@ class UrllibTransport:
             url, data=body, headers=dict(headers), method="POST"
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310 - a fixed, configured https destination
-                request, timeout=timeout, context=self._context
-            ) as response:
+            with self._opener.open(request, timeout=timeout) as response:  # noqa: S310
                 return HttpAnswer(
                     status=int(response.status),
                     body=response.read(),
@@ -575,6 +637,27 @@ class UrllibTransport:
             raise integration.TransportFailure(
                 f"the destination could not be reached: {type(exc).__name__}",
                 error_code="destination_unreachable",
+            ) from exc
+        finally:
+            del request, headers
+
+    def get(
+        self, url: str, *, headers: Mapping[str, str], timeout: float
+    ) -> HttpAnswer:
+        request = urllib.request.Request(url, headers=dict(headers), method="GET")
+        try:
+            with self._opener.open(request, timeout=timeout) as response:  # noqa: S310
+                return HttpAnswer(
+                    status=int(response.status),
+                    body=response.read(),
+                    retry_after=response.headers.get("Retry-After"),
+                )
+        except urllib.error.HTTPError as answer:
+            return HttpAnswer(status=int(answer.code), body=answer.read())
+        except Exception as exc:
+            raise integration.TransportFailure(
+                f"the product descriptor could not be read: {type(exc).__name__}",
+                error_code="product_descriptor_unreachable",
             ) from exc
         finally:
             del request, headers
@@ -636,38 +719,6 @@ class MirrorVerdict:
         )
 
 
-def parse_bindings(raw: str) -> dict[UUID, UUID]:
-    """`local=remote,local=remote` into a map. Refuses anything ambiguous.
-
-    A configuration format rather than a database row because the destination's
-    binding id lives in the destination's database and there is no agreed
-    mechanism for it to arrive here — see this module's docstring and the
-    destination's own cutover document, which records the same gap as open.
-    """
-    pairs: dict[UUID, UUID] = {}
-    for entry in (part.strip() for part in raw.split(",")):
-        if not entry:
-            continue
-        local, separator, remote = entry.partition("=")
-        if not separator:
-            raise ValueError(
-                f"{entry!r} is not a `<local-binding-uuid>=<destination-binding-uuid>` "
-                "pair"
-            )
-        try:
-            key, value = UUID(local.strip()), UUID(remote.strip())
-        except ValueError as exc:
-            raise ValueError(f"{entry!r} does not name two UUIDs") from exc
-        if key in pairs and pairs[key] != value:
-            raise ValueError(
-                f"binding {key} is mapped to two different destination bindings; "
-                "one local binding has one destination, or a delivery's target "
-                "depends on parse order"
-            )
-        pairs[key] = value
-    return pairs
-
-
 # ── The client ──────────────────────────────────────────────────────────────
 
 #: Refusal codes the destination answers with, and what each one means for a
@@ -725,8 +776,6 @@ class ObservationPortClient:
         *,
         application: str,
         base_url: str,
-        api_path_prefix: str,
-        remote_bindings: Mapping[UUID, UUID],
         api_key_ref: str,
         mode: ProductPortMode,
         timeout_seconds: float,
@@ -739,8 +788,6 @@ class ObservationPortClient:
             )
         self._application = application
         self._base = base_url.rstrip("/")
-        self._prefix = "/" + api_path_prefix.strip("/") if api_path_prefix else ""
-        self._bindings = dict(remote_bindings)
         self._api_key_ref = api_key_ref
         self._mode = mode
         self._timeout = timeout_seconds
@@ -783,10 +830,9 @@ class ObservationPortClient:
             # was sent and an operator closes the gap without touching events.
             logger.warning(
                 "a receipt could not be addressed: its local binding has no "
-                "configured destination-side binding id, or the resolved "
-                "application is not this client's. Check PRODUCT_PORT_BINDINGS "
-                "and PRODUCT_PORT_APPLICATION. (No identifier is logged; the "
-                "receipt row names the binding.)"
+                "reconciled product descriptor, or the resolved application is "
+                "not this client's. Refresh the product-port descriptor. (No "
+                "identifier is logged; the receipt row names the binding.)"
             )
             return integration.ProductOutcome(
                 acceptance=integration.ProductAcceptance.UNAVAILABLE,
@@ -832,19 +878,20 @@ class ObservationPortClient:
                 f"binding names {destination.application!r}. One application has "
                 "one authenticated client"
             )
-        remote = self._bindings.get(destination.capability_binding_id)
-        if remote is None:
+        descriptor = getattr(destination, "product_port", None)
+        if descriptor is None:
             raise UnmappedDestinationBinding(
                 f"local capability binding {destination.capability_binding_id} "
-                "has no configured destination-side binding id. The destination "
-                "port is keyed on ITS OWN binding UUID, which lives in ITS "
-                "database and is not derivable from this one — add the pair to "
-                "PRODUCT_PORT_BINDINGS"
+                "has no reconciled product-owned port descriptor"
             )
-        path = f"{self._prefix}/integration/observations/{quote(str(remote))}"
-        return f"{self._base}{path}{'/mirror' if mirror else ''}", build_envelope(
-            request
-        )
+        allowed_states = {"configured_disabled", "enabled"} if mirror else {"enabled"}
+        if descriptor.activation_state not in allowed_states:
+            raise UnmappedDestinationBinding(
+                f"the product declares its port {descriptor.activation_state!r}; "
+                f"it is not eligible for {'mirror' if mirror else 'write'} delivery"
+            )
+        path = descriptor.mirror_path if mirror else descriptor.delivery_path
+        return f"{self._base}{path}", build_envelope(request)
 
     def _post(
         self, url: str, envelope: Mapping[str, object], request: Any
@@ -978,8 +1025,8 @@ class ObservationPortClient:
         capability it does not accept — permanent, and it says so with a typed
         code — and for a binding that is missing, disabled, quarantined or
         retired, which it deliberately reports without saying which. The second
-        is temporary far more often than not, and it is also what a wrong entry
-        in `PRODUCT_PORT_BINDINGS` looks like. Treating it as terminal would
+        is temporary far more often than not, and it is also what a stale
+        product descriptor looks like. Treating it as terminal would
         dead-letter real messages because an operator quarantined a binding for
         an hour, so the untyped 404 is retryable and the typed one is not.
         """
@@ -1024,49 +1071,210 @@ class ObservationPortClient:
 # ── Composition ─────────────────────────────────────────────────────────────
 
 
-def parse_capabilities(raw: str) -> integration.CapabilityRegistry:
-    """`id = application/module : summary`, `;`-separated, into a registry.
+class ProductPortDescriptorError(integration.DestinationBindingError):
+    """The product declaration could not be authenticated or reconciled."""
 
-    **The provenance of these declarations is an OPEN DECISION**, and this
-    parser is a stopgap that says so rather than a design. A capability is
-    declared by the owning business module, and how that declaration reaches
-    this deployment — a checked-in manifest, a build artefact, or a field on the
-    owner's own module manifest — has not been decided; the destination's
-    cutover document records the same gap. What is NOT open is that the
-    Integrator may never mint one, so this reads a declaration an operator
-    transcribed and refuses to invent a default when none is given.
 
-    `;` separates entries rather than `,` so a summary may contain a comma. A
-    contract nobody can describe is refused by the module's own constructor, so
-    the summary is required here too rather than synthesised — a generated
-    summary would be this deployment describing somebody else's contract.
+_DESCRIPTOR_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "application",
+        "owner_module",
+        "capability_id",
+        "capability_summary",
+        "contract_version",
+        "destination_binding_id",
+        "delivery_path",
+        "mirror_path",
+        "destination_scope",
+        "activation_state",
+        "source_revision",
+        "descriptor_digest",
+    }
+)
+
+
+class ProductPortDescriptorReconciler:
+    """Read the product owner, then idempotently repair the local snapshot.
+
+    The GET completes before a database session exists. The module-owned
+    reconcile runs afterwards in one short transaction, so an unavailable
+    product cannot leave a claim or a half-written destination revision.
     """
-    contracts: list[integration.CapabilityContract] = []
-    for entry in (part.strip() for part in raw.split(";")):
-        if not entry:
-            continue
-        head, separator, summary = entry.partition(":")
-        capability_id, owner_separator, owner = head.partition("=")
-        application, application_separator, module = owner.strip().partition("/")
-        if not (separator and owner_separator and application_separator):
-            raise ValueError(
-                f"{entry!r} is not `<capability.id.vN> = <application>/<module> : "
-                "<summary>`"
+
+    def __init__(
+        self,
+        *,
+        engine: Engine,
+        local_binding_id: UUID,
+        descriptor_url: str,
+        expected_digest: str,
+        api_key_ref: str,
+        mode: ProductPortMode,
+        timeout_seconds: float,
+        transport: Transport | None = None,
+    ) -> None:
+        parsed = urlsplit(descriptor_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ProductPortDescriptorError(
+                "PRODUCT_PORT_DESCRIPTOR_URL must be an http(s) URL without "
+                "credentials, query, or fragment"
             )
-        contracts.append(
-            integration.CapabilityContract(
-                capability_id=capability_id.strip(),
-                owner=integration.CapabilityOwner(
-                    application=application.strip(), module=module.strip()
-                ),
-                summary=summary.strip(),
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            raise ProductPortDescriptorError(
+                "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST must be 64 lowercase hex"
             )
+        self._engine = engine
+        self._local_binding_id = local_binding_id
+        self._descriptor_url = descriptor_url
+        self._expected_digest = expected_digest
+        self._api_key_ref = api_key_ref
+        self._mode = mode
+        self._timeout = timeout_seconds
+        self._transport: Transport = transport or UrllibTransport()
+        self._base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    def _read(self) -> integration.ProductPortDescriptorSnapshot:
+        key = resolve_secrets({PRODUCT_PORT_SECRET_NAME: self._api_key_ref})[
+            PRODUCT_PORT_SECRET_NAME
+        ]
+        try:
+            answer = self._transport.get(
+                self._descriptor_url,
+                headers={"Accept": "application/json", "X-Api-Key": key},
+                timeout=self._timeout,
+            )
+        finally:
+            del key
+        if answer.status != 200:
+            raise ProductPortDescriptorError(
+                f"the product descriptor endpoint answered {answer.status}"
+            )
+        try:
+            document = json.loads(answer.body)
+        except ValueError as exc:
+            raise ProductPortDescriptorError(
+                "the product descriptor endpoint did not return JSON"
+            ) from exc
+        if not isinstance(document, dict) or set(document) != _DESCRIPTOR_FIELDS:
+            raise ProductPortDescriptorError(
+                "the product descriptor does not have the exact v1 field set"
+            )
+        scope = document.get("destination_scope")
+        if not isinstance(scope, dict) or set(scope) != {"kind", "ref"}:
+            raise ProductPortDescriptorError(
+                "the product descriptor destination_scope is not {kind, ref}"
+            )
+        string_fields = (
+            "schema_version",
+            "application",
+            "owner_module",
+            "capability_id",
+            "capability_summary",
+            "delivery_path",
+            "mirror_path",
+            "activation_state",
+            "source_revision",
+            "descriptor_digest",
         )
-    return integration.CapabilityRegistry.from_declarations(contracts)
+        if (
+            any(
+                not isinstance(document[field], str) or not document[field]
+                for field in string_fields
+            )
+            or not isinstance(document["contract_version"], int)
+            or isinstance(document["contract_version"], bool)
+        ):
+            raise ProductPortDescriptorError(
+                "the product descriptor contains an invalid typed field"
+            )
+        if any(
+            not isinstance(scope[field], str) or not scope[field]
+            for field in ("kind", "ref")
+        ):
+            raise ProductPortDescriptorError(
+                "the product descriptor destination_scope contains an invalid field"
+            )
+        try:
+            snapshot = integration.ProductPortDescriptorSnapshot(
+                schema_version=document["schema_version"],
+                application=document["application"],
+                owner_module=document["owner_module"],
+                capability_id=document["capability_id"],
+                capability_summary=document["capability_summary"],
+                contract_version=document["contract_version"],
+                destination_binding_id=UUID(str(document["destination_binding_id"])),
+                delivery_path=document["delivery_path"],
+                mirror_path=document["mirror_path"],
+                destination_scope=integration.LocalScope(
+                    kind=scope["kind"], ref=scope["ref"]
+                ),
+                activation_state=document["activation_state"],
+                source_revision=document["source_revision"],
+                descriptor_digest=document["descriptor_digest"],
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProductPortDescriptorError(
+                "the product descriptor contains an invalid typed field"
+            ) from exc
+        computed = integration.product_port_descriptor_digest(snapshot)
+        if not hmac.compare_digest(snapshot.descriptor_digest, computed):
+            raise ProductPortDescriptorError(
+                "the product descriptor digest does not cover its published facts"
+            )
+        if not hmac.compare_digest(computed, self._expected_digest):
+            raise ProductPortDescriptorError(
+                "the product descriptor digest differs from the operator-approved pin"
+            )
+        return snapshot
+
+    def reconcile(
+        self,
+    ) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
+        descriptor = self._read()
+        registry = integration.CapabilityRegistry.from_declarations(
+            [
+                integration.CapabilityContract(
+                    capability_id=descriptor.capability_id,
+                    owner=integration.CapabilityOwner(
+                        application=descriptor.application,
+                        module=descriptor.owner_module,
+                    ),
+                    summary=descriptor.capability_summary,
+                )
+            ]
+        )
+        with Session(self._engine) as db:
+            integration.reconcile_product_port_descriptor(
+                db,
+                capability_binding_id=self._local_binding_id,
+                descriptor=descriptor,
+                registry=registry,
+                reconciled_by="assembly:product-port-descriptor-reconciler",
+            )
+            db.commit()
+        return (
+            ObservationPortClient(
+                application=descriptor.application,
+                base_url=self._base_url,
+                api_key_ref=self._api_key_ref,
+                mode=self._mode,
+                timeout_seconds=self._timeout,
+                transport=self._transport,
+            ),
+            registry,
+        )
 
 
 def build_from_settings(
-    settings: Any, *, held_references: tuple[str, ...]
+    settings: Any, *, engine: Engine, held_references: tuple[str, ...]
 ) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
     """The client and the registry this deployment routes by, from configuration.
 
@@ -1087,28 +1295,13 @@ def build_from_settings(
             "port with no credential fails every delivery with a refusal that "
             "looks like the destination's problem"
         )
-    registry = parse_capabilities(settings.product_port_capabilities)
-    if not registry.declared_ids:
-        raise integration.DestinationBindingError(
-            "PRODUCT_PORT_ENABLED is on and PRODUCT_PORT_CAPABILITIES declares "
-            "nothing. Every destination is resolved through a declared "
-            "capability contract, so an empty registry means no receipt can be "
-            "addressed — and the Integrator may not mint a declaration to fill "
-            "the gap"
-        )
-    client = ObservationPortClient(
-        application=settings.product_port_application.strip(),
-        base_url=settings.product_port_base_url.strip(),
-        api_path_prefix=settings.product_port_api_path_prefix,
-        remote_bindings=parse_bindings(settings.product_port_bindings),
+    reconciler = ProductPortDescriptorReconciler(
+        engine=engine,
+        local_binding_id=UUID(settings.product_port_local_binding_id),
+        descriptor_url=settings.product_port_descriptor_url.strip(),
+        expected_digest=settings.product_port_descriptor_expected_digest.strip(),
         api_key_ref=reference,
         mode=ProductPortMode(settings.product_port_mode),
         timeout_seconds=settings.product_port_timeout_seconds,
     )
-    if not registry.owned_by(client.application):
-        raise integration.DestinationBindingError(
-            f"no declared capability is owned by {client.application!r}, so "
-            "nothing this client serves can ever be resolved to it. "
-            "PRODUCT_PORT_APPLICATION and PRODUCT_PORT_CAPABILITIES disagree"
-        )
-    return client, registry
+    return reconciler.reconcile()

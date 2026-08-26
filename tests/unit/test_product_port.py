@@ -11,8 +11,8 @@ production, at the cost of real customer messages:
 
 * the fingerprint is computed over the destination's OWN canonical body, so a
   sparse observation cannot silently fail every delivery;
-* `provider_event_id` crosses the wire RAW, because the destination namespaces
-  it and a pre-prefixed id would be a second observation rather than a dedupe;
+* `provider_event_id` crosses from the durable receipt RAW, because the
+  destination namespaces it and a payload copy would create a second owner;
 * a 409 identity collision ESCALATES rather than reporting `already_applied`,
   because the two producers disagree about what the provider said and a human
   has to decide which is wrong.
@@ -24,24 +24,25 @@ import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import dotmac_integration as integration
 import dotmac_kernel.secret_sources as ks
 import pytest
+from sqlalchemy import create_engine
 
 from dotmac_integrator import product_port
 from dotmac_integrator.product_port import (
     EnvelopeNotConstructible,
     HttpAnswer,
     ObservationPortClient,
+    ProductPortDescriptorError,
+    ProductPortDescriptorReconciler,
     ProductPortMode,
     ShadowClientCannotWrite,
     build_envelope,
     canonical_body,
-    parse_bindings,
-    parse_capabilities,
 )
 
 API_KEY_REF = "env://INTEGRATOR_SECRET_DESTINATION_KEY"
@@ -49,6 +50,7 @@ API_KEY = "a-destination-machine-credential-0123456789"
 
 LOCAL_BINDING = UUID("11111111-1111-4111-8111-111111111111")
 REMOTE_BINDING = UUID("22222222-2222-4222-8222-222222222222")
+DESCRIPTOR_DIGEST = "a" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +72,22 @@ class _Scope:
     ref = "support"
 
 
+class _ProductPort:
+    schema_version = "dotmac.io/product-port-descriptor/v1"
+    application = "sub"
+    owner_module = "communications.team_inbox_integrator_envelope"
+    capability_id = "messaging.receive.v1"
+    capability_summary = "Inbound provider message and delivery-state observations"
+    contract_version = 1
+    destination_binding_id = REMOTE_BINDING
+    delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
+    mirror_path = f"{delivery_path}/mirror"
+    destination_scope = _Scope()
+    activation_state = "enabled"
+    source_revision = "b" * 64
+    descriptor_digest = DESCRIPTOR_DIGEST
+
+
 class _Destination:
     capability_binding_id = LOCAL_BINDING
     capability_id = "messaging.receive.v1"
@@ -77,6 +95,7 @@ class _Destination:
     scope = _Scope()
     contract_version = 1
     destination_revision_id = uuid4()
+    product_port: _ProductPort | None = _ProductPort()
 
 
 class _RecordingTransport:
@@ -85,6 +104,7 @@ class _RecordingTransport:
     def __init__(self, *answers: HttpAnswer) -> None:
         self._answers = list(answers)
         self.calls: list[dict[str, Any]] = []
+        self.get_calls: list[dict[str, Any]] = []
 
     def post(
         self, url: str, *, body: bytes, headers: Mapping[str, str], timeout: float
@@ -93,6 +113,14 @@ class _RecordingTransport:
             {"url": url, "body": json.loads(body), "headers": dict(headers)}
         )
         return self._answers.pop(0) if self._answers else _ok()
+
+    def get(
+        self, url: str, *, headers: Mapping[str, str], timeout: float
+    ) -> HttpAnswer:
+        self.get_calls.append(
+            {"url": url, "headers": dict(headers), "timeout": timeout}
+        )
+        return self._answers.pop(0)
 
 
 def _answer(status: int, payload: object, retry_after: str | None = None) -> HttpAnswer:
@@ -118,7 +146,6 @@ def _ok(replayed: bool = False) -> HttpAnswer:
 MESSAGE_OBSERVATION: dict[str, object] = {
     "provider": "meta_cloud_api",
     "provider_account_scope": "acct-1",
-    "provider_event_id": "wamid.HBgNMjM0",
     "channel": "whatsapp",
     "observed_at": "2026-08-16T09:30:00+00:00",
     "message": {
@@ -135,6 +162,7 @@ def _claim(observation: dict[str, object], attempt: int = 1) -> Any:
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
+        provider_event_id="wa:msg:wamid.HBgNMjM0",
         event_type="messaging.receive.v1",
         observation=observation,
         correlation_id="corr-1",
@@ -155,8 +183,6 @@ def _client(
         ObservationPortClient(
             application="sub",
             base_url="https://destination.example",
-            api_path_prefix="/api/v1",
-            remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
             api_key_ref=API_KEY_REF,
             mode=mode,
             timeout_seconds=5.0,
@@ -241,8 +267,38 @@ def test_the_provider_event_id_crosses_the_wire_raw() -> None:
     """
     envelope = build_envelope(_request())
 
-    assert envelope["provider_event_id"] == "wamid.HBgNMjM0"
+    assert envelope["provider_event_id"] == "wa:msg:wamid.HBgNMjM0"
     assert not str(envelope["provider_event_id"]).startswith("message:")
+
+
+def test_a_payload_copy_of_provider_identity_is_refused() -> None:
+    observation = dict(MESSAGE_OBSERVATION)
+    observation["provider_event_id"] = "a-second-source"
+
+    with pytest.raises(EnvelopeNotConstructible) as refused:
+        build_envelope(_request(observation))
+
+    assert "provider_event_id" in str(refused.value)
+
+
+def test_receipt_transport_evidence_does_not_cross_the_product_port() -> None:
+    """The receipt keeps wire provenance; Sub receives only its own contract."""
+    observation = {
+        **MESSAGE_OBSERVATION,
+        "transport_evidence": {
+            "locator": "/entry/0/changes/0/value/messages/0",
+            "identity_source": "provider",
+            "reason_code": None,
+        },
+    }
+
+    envelope = build_envelope(_request(observation))
+    message = cast(dict[str, object], envelope["message"])
+
+    assert "transport_evidence" not in envelope
+    assert "transport_evidence" not in message
+    evidence = cast(dict[str, object], observation["transport_evidence"])
+    assert evidence["identity_source"] == "provider"
 
 
 def test_the_envelope_is_addressed_only_from_the_resolved_destination() -> None:
@@ -291,6 +347,49 @@ def test_a_coercible_type_is_refused_rather_than_sent() -> None:
     assert "file_size" in str(refused.value)
 
 
+def test_attachment_only_location_is_canonicalized_without_inventing_body() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["body"] = None
+    observation["message"]["attachments"] = [
+        {
+            "asset_type": "location",
+            "location": {
+                "latitude": 9,
+                "longitude": 7.3986,
+                "name": "Abuja",
+                "address": "FCT",
+            },
+        }
+    ]
+
+    envelope = build_envelope(_request(observation))
+    message = cast(dict[str, object], envelope["message"])
+    attachments = cast(list[dict[str, object]], message["attachments"])
+
+    assert message["body"] is None
+    assert attachments[0]["location"] == {
+        "latitude": 9.0,
+        "longitude": 7.3986,
+        "name": "Abuja",
+        "address": "FCT",
+    }
+
+
+def test_invalid_location_is_refused_before_the_wire() -> None:
+    observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
+    observation["message"]["attachments"] = [
+        {
+            "asset_type": "location",
+            "location": {"latitude": 91, "longitude": 7.3986},
+        }
+    ]
+
+    with pytest.raises(EnvelopeNotConstructible) as refused:
+        build_envelope(_request(observation))
+
+    assert "latitude" in str(refused.value)
+
+
 def test_a_naive_observed_at_is_refused_because_the_destination_refuses_it() -> None:
     observation = json.loads(json.dumps(MESSAGE_OBSERVATION))
     observation["observed_at"] = "2026-08-16T09:30:00"
@@ -326,15 +425,27 @@ def test_an_unmapped_binding_is_retryable_and_never_reaches_the_wire() -> None:
     client = ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={},
         api_key_ref=API_KEY_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=5.0,
         transport=transport,
     )
 
-    outcome = client.deliver(_request())
+    class _Unmapped(_Destination):
+        product_port = None
+
+    claim = integration.ReceiptClaim(
+        receipt_id=uuid4(),
+        attempt=1,
+        leased_until=datetime.now(UTC) + timedelta(minutes=5),
+        destination=_Unmapped(),
+        provider_event_id="wa:msg:wamid.HBgNMjM0",
+        event_type="messaging.receive.v1",
+        observation=dict(MESSAGE_OBSERVATION),
+        correlation_id="corr-1",
+    )
+
+    outcome = client.deliver(integration.build_product_request(claim))
 
     assert outcome.acceptance is integration.ProductAcceptance.UNAVAILABLE
     assert outcome.error_code == "integrator.destination_not_addressable"
@@ -350,6 +461,7 @@ def test_a_binding_naming_another_application_is_not_delivered() -> None:
         attempt=1,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Elsewhere(),
+        provider_event_id="wa:msg:wamid.HBgNMjM0",
         event_type="messaging.receive.v1",
         observation=dict(MESSAGE_OBSERVATION),
         correlation_id="corr-1",
@@ -502,7 +614,7 @@ def test_an_unknown_capability_is_terminal_and_a_missing_binding_is_not() -> Non
     and it says so with a typed code — and ALSO for a binding that is missing,
     disabled, quarantined or retired, which it deliberately reports without
     saying which. The second is temporary far more often than not and is what a
-    wrong `PRODUCT_PORT_BINDINGS` entry looks like, so treating it as terminal
+    stale product-port descriptor looks like, so treating it as terminal
     would dead-letter real messages over an hour's quarantine.
     """
     typed, _ = _client(
@@ -569,11 +681,12 @@ def test_an_unreadable_success_is_retryable_rather_than_lost() -> None:
         def post(self, url: str, **_: Any) -> HttpAnswer:
             return HttpAnswer(status=200, body=b"<html>gateway</html>")
 
+        def get(self, url: str, **_: Any) -> HttpAnswer:
+            raise AssertionError("delivery must not read the descriptor")
+
     client = ObservationPortClient(
         application="sub",
         base_url="https://destination.example",
-        api_path_prefix="/api/v1",
-        remote_bindings={LOCAL_BINDING: REMOTE_BINDING},
         api_key_ref=API_KEY_REF,
         mode=ProductPortMode.WRITE,
         timeout_seconds=5.0,
@@ -675,26 +788,127 @@ def test_the_verdict_redaction_bites() -> None:
 # ── Composition ─────────────────────────────────────────────────────────────
 
 
-def test_bindings_parse_and_an_ambiguous_pair_is_refused() -> None:
-    assert parse_bindings(f"{LOCAL_BINDING}={REMOTE_BINDING}") == {
-        LOCAL_BINDING: REMOTE_BINDING
+def _descriptor_document(**changes: object) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schema_version": "dotmac.io/product-port-descriptor/v1",
+        "application": "sub",
+        "owner_module": "communications.team_inbox_integrator_envelope",
+        "capability_id": "messaging.receive.v1",
+        "capability_summary": (
+            "Inbound provider message and delivery-state observations"
+        ),
+        "contract_version": 1,
+        "destination_binding_id": str(REMOTE_BINDING),
+        "delivery_path": f"/api/v1/integration/observations/{REMOTE_BINDING}",
+        "mirror_path": (f"/api/v1/integration/observations/{REMOTE_BINDING}/mirror"),
+        "destination_scope": {"kind": "inbox", "ref": "support"},
+        "activation_state": "enabled",
+        "source_revision": "b" * 64,
     }
-    with pytest.raises(ValueError):
-        parse_bindings(f"{LOCAL_BINDING}={REMOTE_BINDING},{LOCAL_BINDING}={uuid4()}")
-    with pytest.raises(ValueError):
-        parse_bindings("not-a-pair")
+    document.update(changes)
+    digest = hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    document["descriptor_digest"] = digest
+    return document
 
 
-def test_capabilities_parse_into_the_modules_own_registry() -> None:
-    registry = parse_capabilities(
-        "messaging.receive.v1 = sub/communications : Inbound message observations"
+def test_the_named_reconciler_reads_before_opening_the_local_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    document = _descriptor_document()
+
+    class _DescriptorTransport(_RecordingTransport):
+        def get(self, *args: Any, **kwargs: Any) -> HttpAnswer:
+            events.append("authenticated-product-read")
+            return super().get(*args, **kwargs)
+
+    transport = _DescriptorTransport(_answer(200, document))
+
+    def _reconcile(*args: Any, **kwargs: Any) -> None:
+        events.append("local-reconcile")
+
+    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url=(
+            f"https://destination.example/api/v1/integration/observations/"
+            f"{REMOTE_BINDING}/descriptor"
+        ),
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
     )
-    contract = registry.get("messaging.receive.v1")
 
-    assert contract.owner.application == "sub"
-    assert contract.contract_version == 1
-    with pytest.raises(ValueError):
-        parse_capabilities("messaging.receive.v1")
+    client, registry = reconciler.reconcile()
+
+    assert events == ["authenticated-product-read", "local-reconcile"]
+    assert client.application == "sub"
+    assert registry.get("messaging.receive.v1").owner.application == "sub"
+    assert transport.get_calls[0]["headers"]["X-Api-Key"] == API_KEY
+
+
+def test_descriptor_drift_is_refused_before_local_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _descriptor_document()
+    reconciled = False
+
+    def _reconcile(*args: Any, **kwargs: Any) -> None:
+        nonlocal reconciled
+        reconciled = True
+
+    monkeypatch.setattr(integration, "reconcile_product_port_descriptor", _reconcile)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest="c" * 64,
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="operator-approved pin"):
+        reconciler.reconcile()
+
+    assert reconciled is False
+
+
+def test_a_descriptor_cannot_lie_behind_an_approved_digest_field() -> None:
+    document = _descriptor_document()
+    approved_digest = str(document["descriptor_digest"])
+    document["application"] = "erp"
+    transport = _RecordingTransport(_answer(200, document))
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        local_binding_id=LOCAL_BINDING,
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=approved_digest,
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="does not cover"):
+        reconciler.reconcile()
+
+
+def test_the_standard_transport_refuses_redirects() -> None:
+    transport = product_port.UrllibTransport()
+    redirect_handler = next(
+        handler
+        for handler in cast(Any, transport._opener).handlers
+        if isinstance(handler, product_port._RefuseRedirects)
+    )
+
+    assert cast(Any, redirect_handler).redirect_request() is None
 
 
 def test_a_base_url_without_a_scheme_is_refused_at_construction() -> None:
@@ -702,8 +916,6 @@ def test_a_base_url_without_a_scheme_is_refused_at_construction() -> None:
         ObservationPortClient(
             application="sub",
             base_url="destination.example",
-            api_path_prefix="/api/v1",
-            remote_bindings={},
             api_key_ref=API_KEY_REF,
             mode=ProductPortMode.WRITE,
             timeout_seconds=5.0,

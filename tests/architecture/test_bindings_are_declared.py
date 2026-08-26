@@ -9,19 +9,17 @@ The other half — whether the bound provider actually SUPPLIED the effect — c
 only be answered by the catalog, and lives in
 `tests/composition/test_the_bindings_are_proven.py`.
 
-## What changed at `dotmac-integration 0.1.0a4`
+## What changes with the `dotmac-integration 0.1.0a6` candidate
 
 Under `0.1.0a3` the module declared `requires = ()`. Every fail-closed check in
 this file was therefore satisfied by having nothing to check, which is why each
 one was written with a planted-input sensitivity proof rather than left to assert
 the passing case.
 
-a4 declares `requires = ("module_database_roles.v1", "idempotency_ledger.v1")`.
-That is the situation those proofs were built to anticipate, and it changes what
-they must demonstrate: the interesting proof is no longer "the detector reacts to
-a fabricated name", it is "the detector reacts when a REAL requirement loses its
-binding". Both are kept — the fabricated case still guards the parser, the real
-case guards the assembly.
+a6 adds `platform_audit_log.v1` to a4's database-role and idempotency-ledger
+requirements. The exact package pins remain on published a4 until a6 and its
+kernel a68 floor are released; this source-composed acceptance is what prevents
+that future pin move from discovering an unanswered prerequisite in deployment.
 """
 
 from __future__ import annotations
@@ -36,6 +34,7 @@ from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
     MODULE_DATABASE_ROLES_V1,
     OUTBOX_RELAY_V1,
+    PLATFORM_AUDIT_LOG_V1,
     TENANT_SCOPE_CATALOG_V1,
     PrerequisiteBinding,
     autoload_bindings,
@@ -51,13 +50,17 @@ from dotmac_integrator.migration_bindings import (
     unbound_prerequisites,
 )
 
-#: What `dotmac-integration 0.1.0a4` actually declares. Restated here ON PURPOSE,
+#: What the `dotmac-integration 0.1.0a6` candidate declares. Restated ON PURPOSE,
 #: unlike everything else in this file, which reads the installed manifest: a pin
 #: bump that silently changes the requirement set must fail with a diff a reviewer
 #: can see, not adapt to it. `test_the_pinned_release_declares_what_we_think_it
 #: _does` is the comparison.
 EXPECTED_REQUIREMENTS = frozenset(
-    {MODULE_DATABASE_ROLES_V1.name, IDEMPOTENCY_LEDGER_V1.name}
+    {
+        MODULE_DATABASE_ROLES_V1.name,
+        IDEMPOTENCY_LEDGER_V1.name,
+        PLATFORM_AUDIT_LOG_V1.name,
+    }
 )
 
 #: Effects this assembly composes a provider for and deliberately does NOT bind,
@@ -220,6 +223,7 @@ def test_the_revision_scan_actually_reads_the_composed_lineages() -> None:
     # revision resolves `depends_on` at import time and would need the bindings
     # installed first, making a static check depend on runtime state.
     assert "ig_0007_idempotency_ledger" in composed
+    assert "ig_0008_platform_audit_log" in composed
 
 
 def test_the_uncomposed_revision_detector_bites() -> None:
@@ -301,6 +305,6 @@ def test_each_binding_names_an_owner(binding: PrerequisiteBinding) -> None:
 
 
 def test_the_binding_set_is_not_empty() -> None:
-    """Two, matching a4's two requirements exactly. A count rather than a
+    """Three, matching a6's three requirements exactly. A count rather than a
     non-empty check, so retiring or adding a binding is a deliberate edit."""
-    assert len(ASSEMBLY_PREREQUISITE_BINDINGS) == 2
+    assert len(ASSEMBLY_PREREQUISITE_BINDINGS) == 3

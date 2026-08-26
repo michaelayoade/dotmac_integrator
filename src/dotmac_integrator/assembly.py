@@ -5,14 +5,17 @@ composition report, and thin adapters over operations the MODULE owns. Every
 handler validates its input, delegates, and serialises the result. None of them
 decides anything.
 
-## Three things happen at construction, and none of them is business logic
+## Four things happen at construction, and none of them is business logic
 
 1. `validate_settings` — refuse to start on unsafe production configuration.
 2. `require_a_correct_surface` — refuse to start on an unguarded or
    unclassified route (`surface.py`). Enforced here rather than only in a test,
    because a test proves the routes the test knows about and this proves the
    ones that are actually mounted.
-3. At lifespan startup, `install_secrets` — load every referenced secret into
+3. Install the process audit-action registry from the composed module plus this
+   assembly's declared operator actions. An uninstalled registry rejects every
+   audit write, while an empty default would conceal a wiring defect.
+4. At lifespan startup, `install_secrets` — load every referenced secret into
    memory before serving. ADR-0009: held, never fetched. A failure here is a
    failed boot, deliberately, because a process serving with no material looks
    healthy and refuses every enablement.
@@ -52,6 +55,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import dotmac_integration as integration
+from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import create_engine
@@ -108,6 +112,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             + "\n  - ".join(problems)
         )
 
+    # Installed from the whole COMPOSED vocabulary, not from whichever paths
+    # happen to be enabled today. A disabled writer may still finish in-flight
+    # work, and its durable action must not become undeclared during that
+    # transition. The assembly owns its operator actions under a distinct owner
+    # name; it does not add them to the module's manifest or namespace.
+    module_actions = tuple(
+        (integration.module.name, action) for action in integration.module.audit_actions
+    )
+    assembly_actions = tuple(
+        (operations.INTEGRATOR_AUDIT_ACTION_OWNER, action)
+        for action in operations.INTEGRATOR_AUDIT_ACTIONS
+    )
+    install_audit_actions(AuditActionRegistry((*module_actions, *assembly_actions)))
+
     engine = build_engine(settings)
     worker = Worker(engine=engine, settings=settings)
 
@@ -124,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # than failing every delivery later with a 401 that reads as the
             # destination's problem.
             client, registry = product_port.build_from_settings(
-                settings, held_references=report.held
+                settings, engine=engine, held_references=report.held
             )
             delivery.install_product_port(client, registry=registry)
         await worker.start()

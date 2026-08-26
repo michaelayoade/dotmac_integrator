@@ -44,6 +44,7 @@ def _claim(receipt_id: UUID, attempt: int = 1) -> integration.ReceiptClaim:
         attempt=attempt,
         leased_until=datetime.now(UTC) + timedelta(minutes=5),
         destination=_Destination(),
+        provider_event_id=f"provider-{receipt_id}",
         event_type="message.received",
         observation={"messages": []},
         correlation_id=str(receipt_id),

@@ -286,6 +286,7 @@ def mirror_due_receipts(engine: Engine, limit: int) -> dict[str, int]:
                 attempt=1,
                 leased_until=row.received_at,
                 destination=destination,
+                provider_event_id=row.provider_event_id,
                 event_type=row.event_type,
                 observation=row.payload_json or {},
                 correlation_id=row.correlation_id or str(receipt_id),

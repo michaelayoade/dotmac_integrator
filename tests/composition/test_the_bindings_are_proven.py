@@ -10,12 +10,13 @@ deploy time, through the same function: `require_prerequisites`. Running it here
 means a binding that has quietly stopped being true fails in CI rather than
 during `make migrate` on a deploy night.
 
-## What `dotmac-integration 0.1.0a4` changed
+## What the `dotmac-integration 0.1.0a6` candidate adds
 
 Under a3 the module declared nothing, so `alembic upgrade heads` never consulted
 a binding and this file was the ONLY thing checking the effects the module writes
-at runtime. a4 declares them, and `ig_0007_idempotency_ledger` calls
-`require_prerequisites` before any DDL — so the `migrated` fixture's own
+at runtime. a4 declared the roles and idempotency ledger; a6 adds
+`platform_audit_log.v1`, verified by `ig_0008_platform_audit_log`. The `migrated`
+fixture's own
 `upgrade heads` now exercises the real deploy-time path, and
 `test_the_upgrade_itself_verified_the_prerequisites` asserts that it did.
 
@@ -83,11 +84,11 @@ def test_each_bound_effect_has_a_verifier(effect: str) -> None:
 
 
 def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
-    """The fixture's `alembic upgrade heads` ran `ig_0007`, so the DEPLOY path
+    """The fixture's `alembic upgrade heads` ran through `ig_0008`, so the DEPLOY path
     was exercised — not merely this file's re-check afterwards.
 
-    `ig_0007_idempotency_ledger` creates nothing. Its entire body is
-    `require_prerequisites(op.get_bind(), REQUIRES)`, and it resolves its
+    `ig_0007_idempotency_ledger` and `ig_0008_platform_audit_log` create
+    nothing. Their bodies verify the requirements, and they resolve their
     `depends_on` from this assembly's bindings at import. So its presence in
     `alembic_version` is evidence of three separate things at once: the bindings
     were installed before the revision map was built, the ordering edge they
@@ -96,19 +97,20 @@ def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
 
     Asserted on the head of the `ig` branch rather than by scanning history,
     because `alembic_version` holds current heads and nothing else — the same
-    fact that makes an order canary the wrong instrument. `ig_0007` IS the head
-    at a4, so the row is the right question to ask.
+    fact that makes an order canary the wrong instrument. The a6 head is
+    `ig_0009_product_port_desc`, so its presence proves Alembic traversed both
+    verification-only predecessors.
     """
     engine = create_engine(migrated)
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT version_num FROM alembic_version"))
         applied = {row[0] for row in rows}
     engine.dispose()
-    assert "ig_0007_idempotency_ledger" in applied, (
+    assert "ig_0009_product_port_desc" in applied, (
         f"alembic_version holds {sorted(applied)}. The `ig` head at "
-        "dotmac-integration 0.1.0a4 is ig_0007_idempotency_ledger, whose only "
-        "body is require_prerequisites — if it did not run, the deploy-time "
-        "verification did not happen and `upgrade heads` applied one branch."
+        "the dotmac-integration 0.1.0a6 candidate is "
+        "ig_0009_product_port_desc; if it did not run, the deploy-time "
+        "verification path is incomplete or `upgrade heads` applied one branch."
     )
 
 
@@ -179,7 +181,7 @@ def test_the_verification_bites_on_this_database(migrated: str) -> None:
 
 
 def test_the_bound_effect_list_matches_what_the_module_requires() -> None:
-    """Two of the checks above iterate `BOUND_EFFECTS`; an emptied binding tuple
+    """Checks above iterate `BOUND_EFFECTS`; an emptied binding tuple
     would collect nothing and report success.
 
     Compared against the installed manifest rather than a literal, so this stays
@@ -193,5 +195,5 @@ def test_the_bound_effect_list_matches_what_the_module_requires() -> None:
             *dotmac_integration.module.platform_requires,
         )
     )
-    assert len(BOUND_EFFECTS) == 2
+    assert len(BOUND_EFFECTS) == 3
     assert frozenset(BOUND_EFFECTS) == required

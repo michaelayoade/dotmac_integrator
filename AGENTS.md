@@ -172,16 +172,16 @@ This is a **thin assembly**. The reusable behaviour lives in
     losing every event. One switch (`PRODUCT_PORT_MODE`), read once, by the
     client; the worker starts the matching loop from the client's own
     declaration rather than from a second flag.
-27. **The destination-side binding id and the capability declaration are
-    CONFIGURED, never derived.** The destination's port is keyed on ITS
-    capability-binding UUID, in ITS database; this deployment's is a different
-    UUID and no derivation exists. Both the pairing
-    (`PRODUCT_PORT_BINDINGS`) and the capability vocabulary
-    (`PRODUCT_PORT_CAPABILITIES`) are operator-supplied, both fail LOUD when
-    absent — a refused boot, or a pre-network `UNAVAILABLE` naming the gap —
-    and both are stopgaps whose provenance is an open decision recorded in the
-    destination's cutover document. The Integrator may never mint a capability
-    declaration.
+27. **The destination-side binding id and capability declaration come from the
+    PRODUCT OWNER, never provider metadata or assembly-authored config.** The
+    destination publishes one authenticated `ProductPortDescriptorV1`; an
+    operator pins its digest and the named product-port reconciler stores the
+    immutable snapshot against this deployment's local binding. The descriptor
+    supplies the product's binding UUID, declared capability owner and meaning,
+    local scope, paths and activation state as one fact, so no second mutable
+    map can drift. Missing, malformed or changed provenance fails boot or yields
+    pre-network `UNAVAILABLE`; the Integrator may never mint or silently repair
+    a product capability declaration.
 28. **The destination credential reaches no log, no traceback and no metric
     label.** Held at startup like any other material (rule 11), resolved per
     call as a dict lookup so a rotation takes effect without a restart, and

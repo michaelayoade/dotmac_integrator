@@ -15,7 +15,7 @@ hosts `public.tenants` in its own lineage and structurally cannot run kernel
 
 ## A binding is proven, never believed
 
-Three independent controls sit under these two declarations, and none of them is
+Three independent controls sit under these declarations, and none of them is
 this file:
 
 1. **Static** — `tests/architecture/test_bindings_are_declared.py` requires every
@@ -43,11 +43,13 @@ revisions, so the check fails against every database whose kernel lineage has
 advanced past `0001`. Kernel 0.1.0a67's `require_prerequisites` docstring records
 the same lesson; do not reintroduce it here.
 
-## Two effects, because two are required — and two were RETIRED
+## Three effects for the a6 candidate — and two remain RETIRED
 
-`dotmac-integration 0.1.0a4` declares
-`requires = ("module_database_roles.v1", "idempotency_ledger.v1")`. Both are
-bound below, and nothing else is.
+The currently published pin, `dotmac-integration 0.1.0a4`, declares
+`requires = ("module_database_roles.v1", "idempotency_ledger.v1")`. The a6
+candidate adds `platform_audit_log.v1`; this adoption branch binds all three in
+advance, but must not move its exact package pins until kernel a68 and integration
+a6 are published.
 
 Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
 Both were truthful — this deployment composes the whole kernel lineage, so kernel
@@ -72,13 +74,10 @@ kernel lineage, so if a future connector module requires one, re-binding it is
 the three lines below and `binding_for` fails closed with an explicit message in
 the meantime. That is the designed behaviour, not a gap.
 
-`platform_audit_events` is a third dependency and has no binding, because the
-kernel registers no prerequisite name for it — `dotmac_integration.operations`
-adapts `dotmac_kernel.audit.write_platform_audit_event` regardless. That is a
-kernel gap of the same class `idempotency_ledger.v1` and `outbox_relay.v1` closed
-in a66/a67, and it is deliberately NOT worked around here: an effect with no name
-cannot be bound, and inventing a local one would make this assembly a second
-authority over the kernel's vocabulary.
+`platform_audit_events` used to be an unnamed third dependency. Kernel a68 names
+and verifies it as `platform_audit_log.v1`, and integration a6 declares it. The
+binding below therefore names kernel revision `0026_platform_audit_log`; this
+assembly does not invent or restate the facility.
 
 ## The `ig_0001` literal edge — unrepaired through a4
 
@@ -106,6 +105,7 @@ from typing import Final
 from dotmac_kernel.prerequisites import (
     IDEMPOTENCY_LEDGER_V1,
     MODULE_DATABASE_ROLES_V1,
+    PLATFORM_AUDIT_LOG_V1,
     PrerequisiteBinding,
 )
 
@@ -139,6 +139,14 @@ ASSEMBLY_PREREQUISITE_BINDINGS: Final[tuple[PrerequisiteBinding, ...]] = (
     PrerequisiteBinding(
         prerequisite=IDEMPOTENCY_LEDGER_V1.name,
         provider_revision="0018_idempotency_one_owner",
+        provider_owner="kernel",
+    ),
+    # Kernel `0026` makes the platform audit table append-only for online roles
+    # and registers the complete shape as a named prerequisite. `ig_0008`
+    # verifies that effect before any integration-side audit write can run.
+    PrerequisiteBinding(
+        prerequisite=PLATFORM_AUDIT_LOG_V1.name,
+        provider_revision="0026_platform_audit_log",
         provider_owner="kernel",
     ),
 )
