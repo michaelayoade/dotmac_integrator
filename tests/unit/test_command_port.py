@@ -8,9 +8,11 @@ boundary without opening a database connection.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -154,3 +156,62 @@ def test_command_auth_uses_constant_time_comparison(
 
     assert response.status_code != 404
     assert compared == [("presented-material", "held-material")]
+
+
+class _UnitOfWork:
+    def __init__(self) -> None:
+        self.committed = False
+
+    def __enter__(self) -> _UnitOfWork:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        self.committed = True
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status_code", "detail"),
+    [
+        (
+            command_port.integration.DeliveryIdempotencyConflict,
+            409,
+            "idempotency key already identifies a different command",
+        ),
+        (
+            command_port.integration.DeliveryEnqueueRaced,
+            503,
+            "concurrent enqueue is not visible yet; retry this command",
+        ),
+    ],
+)
+def test_module_owned_enqueue_refusals_cross_the_port_without_material(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+    status_code: int,
+    detail: str,
+) -> None:
+    db = _UnitOfWork()
+    monkeypatch.setattr(command_port, "Session", lambda _engine: db)
+    monkeypatch.setattr(
+        command_port.integration,
+        "resolve_binding",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            installation_id="installation-material", id="binding-material"
+        ),
+    )
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise error_type("provider-secret payload-material key-material")
+
+    monkeypatch.setattr(command_port.integration, "enqueue_delivery", refuse)
+
+    with pytest.raises(HTTPException) as caught:
+        command_port.enqueue(object(), **_body())  # type: ignore[arg-type]
+
+    assert caught.value.status_code == status_code
+    assert caught.value.detail == detail
+    assert "material" not in str(caught.value.detail)
+    assert db.committed is False

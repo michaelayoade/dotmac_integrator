@@ -110,6 +110,22 @@ def enqueue(
                 409,
                 "no unambiguous enabled transport binding serves this capability",
             ) from exc
+        except integration.DeliveryIdempotencyConflict as exc:
+            # A product may retry the SAME logical effect, but it may not use
+            # one key to rename or reshape it.  Do not return the module text:
+            # identity and payload material belong to the source application.
+            raise HTTPException(
+                409,
+                "idempotency key already identifies a different command",
+            ) from exc
+        except integration.DeliveryEnqueueRaced as exc:
+            # The winner exists but is outside this transaction's snapshot.
+            # Retrying opens a new transaction that can observe it; 503 keeps
+            # that case distinct from a permanent changed-effect conflict.
+            raise HTTPException(
+                503,
+                "concurrent enqueue is not visible yet; retry this command",
+            ) from exc
         return {
             "delivery_id": str(delivery.id),
             "state": delivery.state,
