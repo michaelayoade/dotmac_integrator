@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel  0.1.0a68  ──┐
                            ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a13┘        (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a16┘        (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -91,6 +91,13 @@ the release and adoption evidence:
   run Paystack shadow first, cut it over on zero unexplained drift, then repeat
   for Flutterwave v4. ERP remains the GL owner and receives only product-owned
   accounting consequences, never provider transport.
+* **Polling runs without an assembly-owned retry engine.** Integration a16 is
+  pinned from immutable release run `32929018760` and peeled tag
+  `dotmac-integration-v0.1.0a16` at
+  `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e`. The worker wakes on its deployment
+  cadence, reads one bounded page through `due_polling_jobs`, and delegates each
+  complete attempt to `poll_once`; selection, failure evidence, retry state and
+  backoff remain module-owned.
 
 ### Runtime boundaries (SPI 1.3)
 
@@ -267,7 +274,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
-| `dotmac-integration` | `0.1.0a13` | Published SPI **1.3** module. Adds ProductObservation v1 projection, engine-owned source resolution and descriptor v2 compatibility; the lineage head remains `ig_0011` and `requires` is unchanged, which is why the bindings below are a re-derived no-op rather than an unexamined one. |
+| `dotmac-integration` | `0.1.0a16` | Published by release run `32929018760`; peeled tag `dotmac-integration-v0.1.0a16` resolves to `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e`. Adds delivery evidence/result migrations plus module-owned polling selection, attempt evidence and backoff; lineage head `ig_0014`, with the three existing prerequisites unchanged. |
 | `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
 
 ### What a pin bump actually costs
@@ -327,7 +334,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a13` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a16` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -370,7 +377,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a13`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a16`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing

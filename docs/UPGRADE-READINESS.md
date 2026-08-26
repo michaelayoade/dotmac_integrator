@@ -1,6 +1,6 @@
-# Upgrade readiness — the connector programme, in three slices
+# Upgrade readiness — the connector programme, in four slices
 
-**Date:** 2026-08-23 · **Scope:** composition only. No connector is activated,
+**Date:** 2026-08-26 · **Scope:** composition only. No connector is activated,
 no external traffic is taken, no product cutover happens, and nothing here
 changes a product domain decision.
 
@@ -8,7 +8,7 @@ This file is evidence, not intent. Each claim states what was checked and what
 the check read, so the next reader can tell "verified" from "assumed" — the
 distinction the Starter's own publication ledger exists to preserve.
 
-## Why three slices and not one change
+## Why four slices and not one change
 
 The obvious change is one PR that bumps the module and pins every published
 connector. It is wrong, and it is wrong for a structural reason rather than a
@@ -21,8 +21,9 @@ different owners.**
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
 | **2** | Reconcile every local binding for the capability, then pin the published cohort | module + this repository | a12 is registry-verified before the exact assembly pins resolve |
 | **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v2 descriptor and ProductObservation v1 agree before shadow begins |
+| **4** | Pin a16 and schedule its complete polling engine | module + this repository | immutable release oracle, re-derived bindings, refreshed lock and CI |
 
-Collapsing them means a red CI run cannot tell you which of the three broke, and
+Collapsing them means a red CI run cannot tell you which slice broke, and
 — worse — slice 2's fix would land on the same commit as the connector that
 needs it, so nothing would ever demonstrate the broken state it repairs.
 
@@ -308,6 +309,64 @@ mint ingress as required, and run the mirror path until every sampled event has
 zero unexplained drift. Only then may the product callback/client/credential and
 retry path be retired and its ratchet lowered. Flutterwave v4 repeats the same
 sequence after Paystack; the two are not activated as a pair.
+
+---
+
+# Slice 4 — Integration a16 and the thin polling worker
+
+**Status: implemented in source; CI is the acceptance owner. This is not a
+deployment or connector-activation claim.**
+
+## 4.1 Immutable release and exact composition
+
+The registry oracle now exists for `dotmac-integration 0.1.0a16`:
+
+| Coordinate | Immutable value |
+|---|---|
+| Release run | `32929018760` |
+| Tag | `dotmac-integration-v0.1.0a16` |
+| Peeled commit | `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e` |
+
+The assembly pins exactly `0.1.0a16`; it does not treat a version string in a
+manifest as publication evidence. The lock is generated with the repository's
+pinned Poetry 2.4.1 and the registry reader credential held only in process
+memory.
+
+## 4.2 The lineage moved; cross-lineage bindings did not
+
+a16 advances the integration lineage through three immutable revisions:
+
+* `ig_0012_delivery_evidence` adds bounded provider delivery evidence and the
+  delivery legal-hold ledger;
+* `ig_0013_delivery_result` persists only the capability-validated result, not a
+  raw provider response;
+* `ig_0014_polling_evidence` adds checkpoint retry state and append-only,
+  value-free polling failure evidence. It is the new `ig` head.
+
+The manifest still requires exactly `module_database_roles.v1`,
+`idempotency_ledger.v1` and `platform_audit_log.v1`. The existing providers
+remain truthful, so the binding tuple is unchanged. Static tests name all three
+new revisions and the PostgreSQL composition test now expects
+`ig_0014_polling_evidence` as the applied integration head.
+
+## 4.3 The worker schedules; a16 decides and records
+
+One wake-up does exactly this:
+
+1. call the public, read-only `due_polling_jobs` for one bounded page;
+2. call the public `poll_once` once for every returned checkpoint;
+3. report aggregate selected/succeeded/failed/recorded/duplicate counts only.
+
+There is no local query that reconstructs eligibility, no attempt counter, no
+failure classifier, no backoff formula and no assembly-owned retry row.
+`poll_once` records a failed attempt and advances its module-owned retry floor
+before re-raising; the assembly catches only to continue with the next job.
+Multiple replicas may select the same checkpoint, and the module's optimistic
+checkpoint version remains the sole race authority.
+
+The wake cadence and per-pass page size are deployment configuration. They do
+not decide when a failed job becomes eligible again; `due_polling_jobs` applies
+that floor from durable module state.
 
 # What no slice does
 

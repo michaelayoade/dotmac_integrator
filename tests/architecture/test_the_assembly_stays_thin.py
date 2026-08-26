@@ -196,6 +196,14 @@ OWNED_BY_THE_MODULE = (
     "set_binding_enabled",
     "validate_secret_refs",
     "record_delivery_outcome",
+    # a16 polling. The assembly schedules the public façade and owns none of
+    # its selector, attempt, evidence, classification or retry mechanics.
+    "due_polling_jobs",
+    "poll_once",
+    "classify_poll_failure",
+    "record_poll_failure",
+    "record_poll_success",
+    "poll_backoff_seconds",
     # SPI 1.3. The projection of the installed manifest set is the module's, and
     # an assembly-side one would be a second answer to "what did these
     # connectors declare" — computed from the same manifests, drifting the
@@ -214,6 +222,23 @@ def test_no_module_owned_function_is_redefined(name: str) -> None:
                     f"{path.name} defines {name!r}, which dotmac-integration "
                     "owns. Call it; do not restate it."
                 )
+
+
+def test_polling_uses_the_module_selector_and_complete_attempt() -> None:
+    code = _source_without_docstrings(SRC / "polling.py")
+    assert "integration.due_polling_jobs(" in code
+    assert "integration.poll_once(" in code
+    for private_path in (
+        "integration.prepare_poll(",
+        "integration.invoke_poll(",
+        "integration.record_poll_batch(",
+        "integration.record_poll_failure(",
+        "integration.record_poll_success(",
+    ):
+        assert private_path not in code, (
+            f"polling.py calls {private_path!r}; drive poll_once rather than "
+            "reassembling its phases or durable evidence path"
+        )
 
 
 # ── 5. No DDL ───────────────────────────────────────────────────────────────
