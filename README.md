@@ -480,7 +480,20 @@ cannot become a writer by accident. That narrowness is honoured on this side:
 the client declares a direction, `install_product_port` requires it, a `MIRROR`
 client's `deliver` raises, and the delivery pump refuses to run against one. A
 shadow deployment runs `mirror_due_receipts` instead — it claims nothing,
-settles nothing, and returns verdict counts.
+settles nothing, and returns verdict counts. Each result is also appended as
+`integrator.shadow_comparison.observed` in the platform audit trail, keyed by
+`PRODUCT_PORT_SHADOW_REVISION`. Terminal results run once per receipt and
+revision; `no_counterpart`, an unreadable response, or an unrecognised report is
+sampled again only after `PRODUCT_PORT_SHADOW_RETRY_SECONDS`. Changing the
+revision deliberately re-drives the full population after an image or contract
+change.
+
+`GET /operations/shadow-report` reduces those append-only events to the latest
+result per receipt and exposes counts, fields and the observation window — no
+receipt or provider identifiers. Its `sample_has_no_blockers` field is one
+input to the destination-owned cutover gate, never approval by itself: traffic
+cycle coverage, replay/collision proof, credential scope, migrations and the
+rollback owner remain separately required.
 
 The failure this prevents is the expensive one. A shadow run that settled
 receipts as `processed` would look exactly like a completed cutover, while every

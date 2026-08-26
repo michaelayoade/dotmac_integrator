@@ -49,7 +49,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import secret_loading, telemetry
+from dotmac_integrator import secret_loading, shadow_evidence, telemetry
 from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
@@ -192,6 +192,18 @@ def installed_connectors() -> dict[str, Any]:
 def health_report(engine: Engine) -> dict[str, Any]:
     with Session(engine) as db:
         return _jsonable_mapping(integration.health_report(db))
+
+
+def shadow_report(engine: Engine, comparison_revision: str) -> dict[str, object]:
+    """Aggregate persisted comparison facts; never approve a cutover."""
+
+    if not comparison_revision.strip():
+        raise HTTPException(
+            409,
+            "shadow comparison is not configured; set an immutable "
+            "PRODUCT_PORT_SHADOW_REVISION in mirror mode",
+        )
+    return shadow_evidence.shadow_report(engine, comparison_revision).as_dict()
 
 
 def _lifecycle_conflict(exc: Exception) -> HTTPException:

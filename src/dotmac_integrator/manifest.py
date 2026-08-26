@@ -24,6 +24,7 @@ INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.installation.enabled",
     "integrator.installation.enable_refused",
     "integrator.secrets.refreshed",
+    "integrator.shadow_comparison.observed",
 )
 
 module = ModuleManifest(

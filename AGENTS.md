@@ -168,11 +168,17 @@ This is a **thin assembly**. The reusable behaviour lives in
     never defaulted, because neither default is safe — a `MIRROR` client's
     `deliver` raises, `deliver_due_receipts` refuses a non-writing port, and
     `mirror_due_receipts` is what a shadow deployment runs: it claims nothing,
-    settles nothing, and returns verdict COUNTS. A shadow run that marked
-    receipts `processed` would look exactly like a completed cutover while
-    losing every event. One switch (`PRODUCT_PORT_MODE`), read once, by the
-    client; the worker starts the matching loop from the client's own
-    declaration rather than from a second flag.
+    settles nothing, returns verdict COUNTS, and appends privacy-safe evidence
+    to the platform audit trail under one immutable
+    `PRODUCT_PORT_SHADOW_REVISION`. Terminal evidence is not repeated in that
+    revision; transient findings are sampled after the configured evidence
+    interval, and a new revision re-drives the population. The aggregate report
+    may say only that its non-empty sample has no blockers — it is never the
+    full cutover decision. A shadow run that marked receipts `processed` would
+    look exactly like a completed cutover while losing every event. One switch
+    (`PRODUCT_PORT_MODE`), read once, by the client; the worker starts the
+    matching loop from the client's own declaration rather than from a second
+    flag.
 27. **The destination-side binding id and the capability declaration are
     CONFIGURED, never derived.** The destination's port is keyed on ITS
     capability-binding UUID, in ITS database; this deployment's is a different

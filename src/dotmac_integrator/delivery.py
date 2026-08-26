@@ -49,6 +49,7 @@ instead: it claims nothing, settles nothing, and produces verdicts.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -57,7 +58,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import telemetry
+from dotmac_integrator import shadow_evidence, telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ __all__ = [
     "ShadowPortInstalled",
     "deliver_due_receipts",
     "due_receipt_ids",
+    "due_shadow_receipt_ids",
     "install_product_port",
     "mirror_due_receipts",
     "product_port",
@@ -192,6 +194,54 @@ def due_receipt_ids(engine: Engine, limit: int) -> tuple[UUID, ...]:
     return tuple(row[0] for row in rows)
 
 
+def due_shadow_receipt_ids(
+    engine: Engine,
+    limit: int,
+    *,
+    comparison_revision: str,
+    retry_after_seconds: float,
+    now: datetime | None = None,
+) -> tuple[UUID, ...]:
+    """Receipts without terminal evidence in this comparison revision.
+
+    This is a selector, not a claim.  Two mirror workers may compare the same
+    receipt and append two audit events; the destination records nothing and
+    the report reduces them to one latest observation.  What matters here is
+    avoiding an unbounded re-read of every terminal receipt on every poll.
+    """
+
+    receipt = integration.InboxReceipt
+    latest = shadow_evidence.latest_shadow_evidence(comparison_revision)
+    current = now or datetime.now(UTC)
+    retry_before = current - timedelta(seconds=retry_after_seconds)
+    latest_verdict = latest.c.details["verdict"].as_string()
+    due = sa.func.now()
+    with Session(engine) as db:
+        rows = db.execute(
+            sa.select(receipt.id)
+            .outerjoin(latest, sa.cast(receipt.id, sa.String) == latest.c.receipt_id)
+            .where(
+                receipt.state.in_(_DELIVERABLE_STATES),
+                sa.or_(receipt.leased_until.is_(None), receipt.leased_until < due),
+                sa.or_(
+                    receipt.next_attempt_at.is_(None), receipt.next_attempt_at <= due
+                ),
+                sa.or_(
+                    latest.c.receipt_id.is_(None),
+                    sa.and_(
+                        latest_verdict.in_(
+                            tuple(shadow_evidence.RETRYABLE_SHADOW_VERDICTS)
+                        ),
+                        latest.c.observed_at <= retry_before,
+                    ),
+                ),
+            )
+            .order_by(receipt.received_at, receipt.id)
+            .limit(limit)
+        ).all()
+    return tuple(row[0] for row in rows)
+
+
 def deliver_due_receipts(engine: Engine, limit: int) -> dict[str, int]:
     """One pass. Claim, call, settle — per receipt, through the module.
 
@@ -244,16 +294,49 @@ def deliver_due_receipts(engine: Engine, limit: int) -> dict[str, int]:
     return counted
 
 
-def mirror_due_receipts(engine: Engine, limit: int) -> dict[str, int]:
+def _shadow_request(engine: Engine, receipt_id: UUID, registry: Any) -> Any | None:
+    """Build the exact write-path request without claiming the receipt."""
+
+    receipt = integration.InboxReceipt
+    with Session(engine) as db:
+        row = db.get(receipt, receipt_id)
+        if row is None:
+            return None
+        destination = integration.resolve_destination(
+            db, capability_binding_id=row.capability_binding_id, registry=registry
+        )
+        claim = integration.ReceiptClaim(
+            receipt_id=receipt_id,
+            # A value object, not a lease: the shadow pass never increments
+            # anything, so 1 is simply the smallest number the module's own
+            # invariant accepts.
+            attempt=1,
+            leased_until=row.received_at,
+            destination=destination,
+            event_type=row.event_type,
+            observation=row.payload_json or {},
+            correlation_id=row.correlation_id or str(receipt_id),
+        )
+    return integration.build_product_request(claim)
+
+
+def mirror_due_receipts(
+    engine: Engine,
+    limit: int,
+    *,
+    comparison_revision: str,
+    retry_after_seconds: float,
+) -> dict[str, int]:
     """One SHADOW pass. Verdict counts out; not one row changed.
 
     The point of the shadow window is that both producers can run on live
     traffic without either being repointed, so this pass must be
     indistinguishable from not running at all as far as state is concerned. It
     therefore takes no claim, writes no receipt column and settles nothing — the
-    delivery lifecycle is untouched and the same receipts are read again on the
-    next pass, which is correct rather than wasteful: a shadow verdict is
-    evidence about a comparison, not a step in a workflow.
+    delivery lifecycle is untouched. Each result is appended to the platform
+    audit trail under an immutable comparison revision. Terminal receipts are
+    not reread in that revision; transient findings are sampled again only
+    after the configured interval, and a new revision re-drives the population.
 
     The request handed to the client is built with the module's own
     `build_product_request`, from a claim value constructed IN MEMORY. That is
@@ -262,42 +345,36 @@ def mirror_due_receipts(engine: Engine, limit: int) -> dict[str, int]:
     differently-assembled body would prove something about a body nobody will
     ever send.
 
-    Verdicts are returned as COUNTS. A per-receipt verdict names the provider's
-    event identity, which belongs on an operator's screen and not in this
-    process's return value or its log line.
+    Verdicts are returned as COUNTS. Durable evidence names only this system's
+    receipt UUID plus closed verdict/reason codes and field names — never the
+    provider event identity, values, payload or exception text.
     """
     gateway, registry = product_port()
     counted: dict[str, int] = {"compared": 0, "unreadable": 0}
-    receipt = integration.InboxReceipt
-
-    for receipt_id in due_receipt_ids(engine, limit):
-        with Session(engine) as db:
-            row = db.get(receipt, receipt_id)
-            if row is None:
-                continue
-            destination = integration.resolve_destination(
-                db, capability_binding_id=row.capability_binding_id, registry=registry
-            )
-            claim = integration.ReceiptClaim(
-                receipt_id=receipt_id,
-                # A value object, not a lease: the shadow pass never increments
-                # anything, so 1 is simply the smallest number the module's own
-                # invariant accepts.
-                attempt=1,
-                leased_until=row.received_at,
-                destination=destination,
-                event_type=row.event_type,
-                observation=row.payload_json or {},
-                correlation_id=row.correlation_id or str(receipt_id),
-            )
+    for receipt_id in due_shadow_receipt_ids(
+        engine,
+        limit,
+        comparison_revision=comparison_revision,
+        retry_after_seconds=retry_after_seconds,
+    ):
         try:
-            verdict = gateway.mirror(integration.build_product_request(claim))
+            request = _shadow_request(engine, receipt_id, registry)
+            if request is None:
+                continue
+            verdict = shadow_evidence.normalize_verdict(gateway.mirror(request))
         except (integration.TransportFailure, integration.DeliveryError):
             # Counted, not raised. One unreadable comparison must not end a
             # shadow run — the run's whole value is the population it covers,
             # and the destination refuses to call an empty one safe.
             counted["unreadable"] += 1
-            continue
-        counted["compared"] += 1
-        counted[verdict.verdict] = counted.get(verdict.verdict, 0) + 1
+            verdict = shadow_evidence.unreadable_verdict()
+        else:
+            counted["compared"] += 1
+            counted[verdict.verdict] = counted.get(verdict.verdict, 0) + 1
+        shadow_evidence.record_shadow_observation(
+            engine,
+            receipt_id=receipt_id,
+            comparison_revision=comparison_revision,
+            verdict=verdict,
+        )
     return counted
