@@ -160,6 +160,23 @@ A **failed** refresh keeps the working set: a mount that vanished during a
 rotation attempt leaves a working process working, and the response says the
 rotation did not land.
 
+For command-key rotation, add the new issuer public-key reference and its exact
+account/deployment record to the versioned document named by
+`COMMAND_ISSUER_ASSIGNMENTS_REF` before the issuer starts using its new
+`key_id`. The public-key and assignment key sets must match, so update both as
+one refresh. Keep the retiring key and assignment through the maximum envelope
+lifetime plus clock-skew window; remove both only after that overlap and refresh
+again. A malformed or mismatched assignment document retains the complete prior
+working set. Receipt-key rotation uses
+a new `RECEIPT_SIGNING_KEY_ID` and private-key reference; distribute the new
+public verification key to receipt consumers before the switch. A receipt key
+must never reuse an issuer, licence, operator-session or destination key.
+
+Malformed Ed25519 material makes startup/refresh fail as one broken
+cryptographic working set. The prior parsed keys remain active after a failed
+refresh; the request path never re-reads a file, environment variable or key
+store.
+
 ### When an enablement is refused
 
 `409` naming a reference means the material is not held. `GET

@@ -86,3 +86,52 @@ def test_an_unimplemented_operator_mechanism_is_fatal_outside_production_too() -
 def test_the_implemented_mechanism_passes_everywhere() -> None:
     assert OPERATOR_AUTH_MECHANISMS == ("platform_admin",)
     assert validate_settings(build_settings()) == []
+
+
+def test_an_enabled_machine_command_surface_requires_all_held_key_refs() -> None:
+    problems = validate_settings(build_settings(command_surface_enabled=True))
+    assert any("COMMAND_AUDIENCE" in problem for problem in problems)
+    assert any("COMMAND_PUBLIC_KEY_REFS" in problem for problem in problems)
+    assert any("COMMAND_ISSUER_ASSIGNMENTS_REF" in problem for problem in problems)
+    assert any("RECEIPT_SIGNING_KEY_ID" in problem for problem in problems)
+    assert any("RECEIPT_SIGNING_PRIVATE_KEY_REF" in problem for problem in problems)
+
+
+def test_machine_command_key_references_are_valid_and_distinct() -> None:
+    settings = build_settings(
+        command_surface_enabled=True,
+        command_audience="dotmac-integrator:test",
+        command_public_key_refs=("issuer-1=env://INTEGRATOR_SECRET_SHARED_KEY"),
+        command_issuer_assignments_ref=("env://INTEGRATOR_SECRET_ISSUER_ASSIGNMENTS"),
+        receipt_signing_key_id="receipt-1",
+        receipt_signing_private_key_ref=("env://INTEGRATOR_SECRET_SHARED_KEY"),
+    )
+    problems = validate_settings(settings)
+    assert any("must be distinct" in problem for problem in problems)
+
+
+def test_issuer_assignment_document_cannot_alias_key_material() -> None:
+    settings = build_settings(
+        command_surface_enabled=True,
+        command_audience="dotmac-integrator:test",
+        command_public_key_refs=("issuer-1=env://INTEGRATOR_SECRET_ISSUER_PUBLIC"),
+        command_issuer_assignments_ref=("env://INTEGRATOR_SECRET_ISSUER_PUBLIC"),
+        receipt_signing_key_id="receipt-1",
+        receipt_signing_private_key_ref=("env://INTEGRATOR_SECRET_RECEIPT_PRIVATE"),
+    )
+    assert any(
+        "issuer-assignment reference must be distinct" in problem
+        for problem in validate_settings(settings)
+    )
+
+
+def test_a_complete_machine_command_configuration_is_accepted() -> None:
+    settings = build_settings(
+        command_surface_enabled=True,
+        command_audience="dotmac-integrator:test",
+        command_public_key_refs=("issuer-1=env://INTEGRATOR_SECRET_ISSUER_PUBLIC"),
+        command_issuer_assignments_ref=("env://INTEGRATOR_SECRET_ISSUER_ASSIGNMENTS"),
+        receipt_signing_key_id="receipt-1",
+        receipt_signing_private_key_ref=("env://INTEGRATOR_SECRET_RECEIPT_PRIVATE"),
+    )
+    assert validate_settings(settings) == []

@@ -116,6 +116,10 @@ an app that breaks a class rule — it is a boot failure, not a test failure.
 | `POST /operations/leases/release-expired` | Reclaim leases whose holder died. |
 | `POST /operations/deliveries/{id}/replay` | |
 | `POST /operations/receipts/{id}/replay` | |
+| `POST /commands/provisioning/plan` | Ed25519-authenticated typed plan validation; signed receipt response. |
+| `POST /commands/provisioning/apply` | Accept and drive one exact approval-bound apply step through the module ledger. |
+| `POST /commands/provisioning/observe` | Observe one indeterminate/remote operation after every signed pin matches durable state. |
+| `POST /commands/provisioning/cancel` | Bounded typed cancellation after every signed pin matches durable state. |
 | `GET /ingress/{endpoint_key}` | Provider activation handshake. Answers for a CONFIGURED but still DISABLED binding. |
 | `POST /ingress/{endpoint_key}` | Provider delivery. Requires binding AND installation enabled. |
 | `GET /metrics` | Prometheus text exposition, bearer-authenticated. 404 when unauthorized. `METRICS_ENABLED=false` removes it. |
@@ -127,6 +131,175 @@ which is worse than no record.
 Reads are guarded too. The connector inventory and the health report together
 describe which integrations this fleet runs and which of them are unattended,
 which is reconnaissance rather than a status page.
+
+### Machine provisioning commands
+
+`/commands/**` is a third authentication population: neither a person on
+`/operations/**` nor a provider on `/ingress/**`. Every body is a strict
+`integrator.provisioning-command.v1` envelope signed with Ed25519 and binding
+`key_id`, exact audience, timezone-aware `issued_at`/`expires_at`,
+`command_id`, `nonce`, and the canonical body hash. `nonce` must equal
+`command_id`; the module's durable command record is the one replay/collision
+owner, so this assembly has no nonce cache or second ledger.
+
+`COMMAND_ISSUER_ASSIGNMENTS_REF` names a held JSON document with contract
+`integrator.command-issuer-assignments.v2`. Its exact shape is an
+`assignments` array of `{key_id, account_ref, deployment_instances}` records;
+each deployment entry is
+`{deployment_ref, capability_instance_refs}`. All three lists are non-empty,
+unique and canonically sorted. The assignment key set must exactly equal the
+held public-key set. V1 is not accepted as a wildcard migration. PLAN, APPLY,
+OBSERVE and CANCEL all carry `deployment_ref` and `capability_instance_ref`,
+and the guard refuses any unassigned exact pair before delegation. The derived
+`account_ref` and signed pair are projected into the signed receipt.
+
+Canonical JSON is UTF-8 with recursively sorted keys, `,`/`:` separators,
+ASCII escaping, explicit nulls, and no non-finite numbers (`NaN` and infinities
+are refused before hashing). The body hash is `sha256:` plus the SHA-256
+hex digest of that canonical body. The Ed25519 signature covers the canonical
+header without `signature` or `body`; `body_sha256` binds the body. The checked
+cross-repository vector is
+[`docs/fixtures/provisioning_plan_command_v1.json`](docs/fixtures/provisioning_plan_command_v1.json)
+for PLAN and
+[`docs/fixtures/provisioning_apply_command_v1.json`](docs/fixtures/provisioning_apply_command_v1.json)
+for APPLY.
+PLAN stays deliberately minimal: `deployment_ref`, `capability_id`,
+`capability_instance_ref`, `capability_binding_id`, `plan_hash`,
+`config_digest`, and exact `steps`. The
+module resolves and verifies the local binding, connector configuration and
+owner contract, then persists an immutable settlement receipt keyed by the
+envelope's command id and request-body digest.
+
+An APPLY body carries the static, pre-approval fields
+`approved_command_template_digest` and
+`prerequisite_capability_binding_ids`, the static
+`prerequisite_evidence_bindings`, plus the dispatch-time
+`prerequisite_receipt_pins` (all three arrays are present and empty when there
+are no cross-binding edges). Binding ids are unique and sorted
+lexicographically by their canonical lowercase UUID strings. The approved
+template is exactly
+`deployment_ref`, positive `desired_state_revision`,
+`desired_state_version_id`, `desired_state_hash`, `saved_plan_id`,
+`profile_version_id`, `profile_code`, positive
+`profile_version` and `profile_schema_version`, `profile_content_hash`,
+`command_schema_version`, `capability_id`, `capability_instance_ref`,
+`capability_owner_code`,
+`capability_code`, positive `capability_schema_version`,
+`capability_contract_attestation_id`, `capability_contract_digest`, and the
+canonically sorted exact request/result schema identities for the a69 engine
+verbs (`apply`, `cancel`, `observe`, `plan`) in `capability_operations`,
+`capability_binding_id`, equal `binding_ref`, `installation_id`,
+`installation_ref`, `connector_key`, `connector_version`,
+`connector_manifest_digest`, `connector_configuration_revision_id`,
+`configuration_snapshot_ref`, positive `configuration_schema_version`,
+`configuration_hash`, `artifact_digest` (the connector artifact), the explicit
+nullable `component_artifact_digest`, `config_digest`,
+`execution_policy_digest` (the module-owned policy fingerprint, never
+assembly-authored policy values), exact provider-neutral `steps`, and
+`prerequisite_capability_binding_ids` plus
+`prerequisite_evidence_bindings`. For this first SPI, every step
+`endpoint_code` equals the versioned `capability_id`; it is not an a69 engine
+operation code. The template excludes
+`plan_hash`, `approval_request_id`, approval/grant material, the later PLAN
+validation evidence, and dynamic prerequisite receipt pins. Its digest uses the
+same canonical JSON and `sha256:` encoding as the body. Both the top-level
+field and `approval.approved_command_template_digest` must equal that computed
+digest.
+
+APPLY and its verified grant carry the same `approval_request_id`,
+`approval_request_binding_hash`, `saved_plan_id`, `plan_command_id`,
+`plan_validation_receipt_id` (the Vendor's verified-ingress row),
+`plan_validation_receipt_digest` (the signed transport receipt digest),
+`plan_validation_request_body_digest`, and `module_plan_receipt_hash`. The
+Integrator compares body and grant; the module corroborates the PLAN command,
+request digest and module receipt against its locked durable command record. No
+assembly receipt or replay ledger is introduced.
+
+Each dynamic pin has exactly these fields:
+
+| field | wire type | constraint |
+|---|---|---|
+| `operation_id` | UUID string | immutable upstream operation |
+| `capability_binding_id` | UUID string | maps one-for-one to the approved static prerequisite set |
+| `terminal_receipt_sequence` | integer | at least 1; must be the upstream operation's latest terminal receipt |
+| `terminal_receipt_digest` | string | `sha256:` plus 64 lowercase hex characters |
+| `required_terminal_status` | string | exactly `succeeded` in v1 |
+
+The pin array is unique by `operation_id` and sorted lexicographically by its
+canonical lowercase UUID string. Same-binding `steps[].depends_on` contains
+only step keys from that APPLY body; cross-binding edges are the approved
+symbolic binding set plus the exact later receipt evidence. Dynamic receipt
+pins are deliberately excluded from the global plan hash and template digest
+because they do not exist at approval time. They remain covered by the command
+body hash/signature and the module's command replay fingerprint.
+
+Each static evidence mapping has exactly these fields:
+
+| field | wire type | constraint |
+|---|---|---|
+| `source_capability_binding_id` | UUID string | member of the approved prerequisite binding set |
+| `source_step_key` | stable code | exact upstream step |
+| `source_schema_ref` / `source_schema_digest` | canonical schema ref / `sha256:` digest | upstream operation's persisted a69 APPLY-output schema |
+| `source_pointer` | string | non-root RFC 6901 pointer classified `public_non_secret` by the held output schema |
+| `target_step_key` | stable code | member of this command's exact step set |
+| `target_schema_ref` / `target_schema_digest` | canonical schema ref / `sha256:` digest | this command's a69 APPLY-input schema |
+| `target_pointer` | string | non-root RFC 6901 input location, unique with its target step |
+| `required` | boolean | whether absent upstream public evidence refuses execution |
+
+Mappings are unique and sorted by
+`(source_capability_binding_id, source_step_key, source_pointer,
+target_step_key, target_pointer)`, using the canonical lowercase UUID string.
+Operation identity is implicitly APPLY. No evidence value appears in the
+approved template or command. The module schema-validates connector output and
+persists only its classified public projection in the upstream immutable
+receipt. For a downstream step it validates the exact upstream receipt pin,
+source and target held schemas and public classification, injects into a copy
+of the step input immediately before connector I/O, and records only the
+resolved-input digest for that injection rather than copying resolved values
+into audit material. The assembly owns no evidence store or resolver.
+
+The assembly opens and closes each module transaction around prepare and
+settle, and invokes the connector with no session held. Apply identity,
+plan/observe/cancel replay, prerequisite-receipt validation, expected-pin
+comparison, operation state and the structured receipt chain all belong to
+`dotmac-integration`. It recomputes the static template digest, requires the
+verified grant to approve it, and locks upstream operations in UUID order. It
+then requires the same deployment and plan, exact binding, succeeded state,
+and exact latest terminal receipt sequence/hash/status before plugin I/O. The
+module resolves approved cross-binding evidence only from that locked
+receipt's public projection; secret and unclassified evidence fail closed. The
+APPLY route claims and invokes at most one durable step per authenticated
+dispatch. While the receipt remains actionable, the caller re-dispatches the
+same command id and body (in a fresh valid envelope when necessary); a replay
+may therefore advance the next unclaimed step but can never duplicate a
+settled one. An `indeterminate` outcome is observed or cancelled and is never
+blindly applied again.
+
+The HTTP response signs the module's verified projection with a separate Integrator
+receipt key; it never attests an unverified caller-supplied observe/cancel pin.
+The module owns and verifies the immutable hash chain; it accepts no private-key
+signer. This assembly owns only the canonical transport projection and its
+separate Ed25519 signature.
+For PLAN the signed transport projection lifts the module settlement receipt
+hash and complete receipt material (command fingerprint, request-body digest,
+result digest, capability instance reference and receipt hash).
+For APPLY/OBSERVE/CANCEL the signed transport projection also lifts the latest
+module receipt sequence and hash beside the full verified `module_receipts`
+chain. Every projected operation receipt includes the module-owned nullable
+`step_key` and `provider_operation_ref`; operation-level receipts carry nulls,
+while step-result receipts carry both, so a receiver never infers a multi-step
+correlation from free-form evidence. Every transport and module receipt also
+projects the immutable `capability_instance_ref`. A receiver verifies both the transport
+signature and module-chain continuity through that terminal pin.
+
+The command setting is off by default. When enabled with the real gateway,
+construction requires the complete published module façade and refuses boot
+before mounting routes if any symbol is absent. The currently declared a4 pin
+does not provide that façade. Integration a5 and kernel a68 were subsequently
+published for independent verification-evidence/contract changes, so the first
+admissible command-surface releases are Integration a6 built on kernel a69.
+Both must be published and registry-verified before the exact pins move; a
+working-tree or path dependency is not release evidence.
 
 ## Secret material
 
@@ -215,8 +388,8 @@ months from now compose a combination nobody has ever run.
 
 | Distribution | Pin | Why this one |
 |---|---|---|
-| `dotmac-integration` | `0.1.0a4` | The newest **published** release — `dotmac-integration-v0.1.0a4`, tagged from Starter `306a40e` and verified on the registry. It is the first release that DECLARES the prerequisites it has always depended on. |
-| `dotmac-kernel` | `0.1.0a67` | The newest published kernel. `0.1.0a4` floors at `>=0.1.0a66` (a capability raise: a58…a65 have the ledger TABLES but not the `idempotency_ledger.v1` NAME, so the manifest will not import). a67 also registers `outbox_relay.v1`, which this deployment does not use. |
+| `dotmac-integration` | `0.1.0a4` | This assembly's latest registry-verified pin. Published a5 adds SPI verification evidence but not the provisioning façade; jumping through it cannot enable commands. The next candidate is a6 after publication/index verification. |
+| `dotmac-kernel` | `0.1.0a67` | This assembly's latest verified kernel pin. `0.1.0a4` floors at `>=0.1.0a66`; published a68 is already allocated, so the managed contract grammar must release as a69 before the assembly pin moves with Integration a6. |
 
 ### What a pin bump actually costs
 

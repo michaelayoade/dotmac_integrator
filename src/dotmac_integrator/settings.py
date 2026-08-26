@@ -11,6 +11,7 @@ threads to run. It may not say what a connector is allowed to do.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 
 from pydantic import Field
@@ -97,6 +98,67 @@ class Settings(BaseSettings):
             "'platform_admin' is the kernel's platform bearer token, adapted — "
             "it is the only implemented mechanism and it is what supplies the "
             "actor_admin_id every audit row needs."
+        ),
+    )
+
+    # ── Machine command authentication ─────────────────────────────────────
+    # A command issuer is neither a person nor an ingress provider.  These
+    # references are loaded with all other held material at startup and on the
+    # explicit operator refresh; the request path only sees parsed public keys.
+    command_surface_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the Ed25519-authenticated /commands/provisioning surface. "
+            "Off by default until issuer keys and a distinct receipt signer "
+            "are configured."
+        ),
+    )
+    command_audience: str = Field(
+        default="",
+        description=(
+            "Exact audience every signed command must name.  This should be "
+            "unique to this Integrator deployment."
+        ),
+    )
+    command_public_key_refs: str = Field(
+        default="",
+        description=(
+            "Comma-separated `<key_id>=<env://...|file://...>` Ed25519 public "
+            "key references. Values contain base64-encoded raw 32-byte keys."
+        ),
+    )
+    command_issuer_assignments_ref: str = Field(
+        default="",
+        description=(
+            "Reference to the versioned command-issuer account/deployment "
+            "assignment document. It is loaded with the issuer keys at startup "
+            "and on explicit refresh; requests use only the held parsed map."
+        ),
+    )
+    command_clock_skew_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=300,
+        description="Allowed issuer clock lead when checking issued_at.",
+    )
+    command_max_lifetime_seconds: int = Field(
+        default=300,
+        ge=1,
+        le=3600,
+        description="Maximum expires_at - issued_at for a command envelope.",
+    )
+    receipt_signing_key_id: str = Field(
+        default="",
+        description=(
+            "Identifier of this deployment's dedicated Ed25519 receipt key. "
+            "It is not a Vendor, licence, operator-session or command key."
+        ),
+    )
+    receipt_signing_private_key_ref: str = Field(
+        default="",
+        description=(
+            "Reference to the dedicated receipt-signing Ed25519 private seed, "
+            "base64-encoded as 32 raw bytes and held at startup."
         ),
     )
     # ── Kernel-owned knobs, MIRRORED so they can be validated and documented ─
@@ -284,6 +346,79 @@ OPERATOR_AUTH_MECHANISMS: tuple[str, ...] = ("platform_admin",)
 #: than "write, but don't".
 PRODUCT_PORT_MODES: tuple[str, ...] = ("mirror", "write")
 
+_KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def command_public_key_references(raw: str) -> dict[str, str]:
+    """Parse the configured issuer-key map without touching key material."""
+    parsed: dict[str, str] = {}
+    for entry in (part.strip() for part in raw.split(",") if part.strip()):
+        if "=" not in entry:
+            raise ValueError(
+                "COMMAND_PUBLIC_KEY_REFS entries must be `<key_id>=<reference>`"
+            )
+        key_id, reference = (part.strip() for part in entry.split("=", 1))
+        if _KEY_ID.fullmatch(key_id) is None:
+            raise ValueError(f"invalid command key id {key_id!r}")
+        if key_id in parsed:
+            raise ValueError(f"duplicate command key id {key_id!r}")
+        if not reference.startswith(("env://", "file://")):
+            raise ValueError(
+                f"command public key {key_id!r} must use an env:// or file:// "
+                "reference"
+            )
+        parsed[key_id] = reference
+    return parsed
+
+
+def _command_surface_problems(settings: Settings) -> list[str]:
+    if not settings.command_surface_enabled:
+        return []
+    problems: list[str] = []
+    if not settings.command_audience.strip():
+        problems.append("COMMAND_SURFACE_ENABLED is on and COMMAND_AUDIENCE is empty")
+    try:
+        issuer_refs = command_public_key_references(settings.command_public_key_refs)
+    except ValueError as exc:
+        problems.append(str(exc))
+        issuer_refs = {}
+    if not issuer_refs:
+        problems.append(
+            "COMMAND_SURFACE_ENABLED is on and COMMAND_PUBLIC_KEY_REFS has no keys"
+        )
+    assignment_ref = settings.command_issuer_assignments_ref.strip()
+    if not assignment_ref.startswith(("env://", "file://")):
+        problems.append(
+            "COMMAND_ISSUER_ASSIGNMENTS_REF must be an env:// or file:// "
+            "reference to the versioned issuer assignment document"
+        )
+    if assignment_ref and assignment_ref in issuer_refs.values():
+        problems.append(
+            "the issuer-assignment reference must be distinct from every "
+            "command issuer public-key reference"
+        )
+    if _KEY_ID.fullmatch(settings.receipt_signing_key_id) is None:
+        problems.append(
+            "RECEIPT_SIGNING_KEY_ID must be a non-empty stable key identifier"
+        )
+    receipt_ref = settings.receipt_signing_private_key_ref.strip()
+    if not receipt_ref.startswith(("env://", "file://")):
+        problems.append(
+            "RECEIPT_SIGNING_PRIVATE_KEY_REF must be an env:// or file:// "
+            "reference to the dedicated Integrator receipt key"
+        )
+    if receipt_ref and receipt_ref in issuer_refs.values():
+        problems.append(
+            "the receipt-signing key reference must be distinct from every "
+            "command issuer public-key reference"
+        )
+    if assignment_ref and assignment_ref == receipt_ref:
+        problems.append(
+            "the issuer-assignment reference must be distinct from the receipt "
+            "private-key reference"
+        )
+    return problems
+
 
 def _product_port_problems(settings: Settings) -> list[str]:
     """Everything a configured destination must have before the port is built.
@@ -346,6 +481,7 @@ def validate_settings(settings: Settings) -> list[str]:
         )
 
     problems.extend(_product_port_problems(settings))
+    problems.extend(_command_surface_problems(settings))
 
     if settings.environment != "production":
         return problems

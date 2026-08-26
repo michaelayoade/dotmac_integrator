@@ -27,6 +27,9 @@ prove the auditor bites.
                              knows it. Must never carry the operator guard:
                              the two populations share no credential, no
                              token audience and no failure mode.
+`COMMAND`    `/commands/**`  A control-plane machine sending a signed,
+                             time-bounded Ed25519 command. It carries machine
+                             authentication, never operator authentication.
 `SCRAPE`     `METRICS_PATH`  A monitoring system. Read-only, and
                              authenticated by a scrape token that is neither
                              an operator credential nor a provider signature.
@@ -70,6 +73,7 @@ from typing import Any, get_type_hints
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from dotmac_integrator.machine_commands import MachineCommandGuard
 from dotmac_integrator.operator_auth import OperationReason, require_operator
 from dotmac_integrator.telemetry import ScrapeGuard
 
@@ -93,6 +97,7 @@ class RouteClass(StrEnum):
     PROBE = "probe"
     OPERATOR = "operator"
     INGRESS = "ingress"
+    COMMAND = "command"
     SCRAPE = "scrape"
 
 
@@ -103,6 +108,7 @@ _PREFIXES: tuple[tuple[str, RouteClass], ...] = (
     ("/health/", RouteClass.PROBE),
     ("/operations/", RouteClass.OPERATOR),
     ("/ingress/", RouteClass.INGRESS),
+    ("/commands/", RouteClass.COMMAND),
 )
 
 
@@ -180,7 +186,7 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         if route_class is None:
             violations.append(
                 f"{path} is unclassified. Mount it under /health, /operations "
-                f"or /ingress — a route with no class has no rules, which is "
+                f"/ingress or /commands — a route with no class has no rules, which is "
                 "how the ingress adapter would inherit the operator guard"
             )
             continue
@@ -188,6 +194,9 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         methods = {method.upper() for method in route.methods or set()}
         mutating = bool(methods & MUTATING_METHODS)
         guarded = require_operator in _dependency_calls(route)
+        machine_guarded = any(
+            isinstance(call, MachineCommandGuard) for call in _dependency_calls(route)
+        )
 
         if route_class is RouteClass.OPERATOR:
             if not guarded:
@@ -216,6 +225,18 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
                 "provider holds no operator credential; sharing the guard ends "
                 "with the operator guard loosened until both fit through it"
             )
+        elif route_class is RouteClass.COMMAND:
+            if guarded:
+                violations.append(
+                    f"{path} is a machine-command route carrying the operator "
+                    "guard. A command issuer is not a person and holds no "
+                    "operator session"
+                )
+            if not machine_guarded:
+                violations.append(
+                    f"{path} is a machine-command route with no "
+                    "`MachineCommandGuard` dependency"
+                )
         elif route_class is RouteClass.SCRAPE:
             if guarded:
                 violations.append(

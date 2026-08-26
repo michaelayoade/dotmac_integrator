@@ -40,7 +40,10 @@ assembly owns the transaction, and it declines to commit one.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Literal, NoReturn, Protocol, cast
 from uuid import UUID
 
 import dotmac_integration as integration
@@ -49,7 +52,16 @@ from fastapi import HTTPException
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import secret_loading, telemetry
+from dotmac_integrator import machine_commands, secret_loading, telemetry
+from dotmac_integrator.machine_commands import (
+    ApplyCommand,
+    AuthenticatedCommand,
+    CancelCommand,
+    ObserveCommand,
+    PlanCommand,
+    ReceiptPayload,
+    SignedReceipt,
+)
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
     missing_references,
@@ -74,6 +86,739 @@ INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.installation.enable_refused",
     "integrator.secrets.refreshed",
 )
+
+# Every published module name required by the command gateway.  Keep this as a
+# complete boot gate rather than discovering one missing phase halfway through
+# a signed request: a deployment pinned to the preceding module release must
+# refuse enablement, not mount a surface it cannot finish.
+PROVISIONING_MODULE_SYMBOLS: tuple[str, ...] = (
+    "CAPABILITY_INSTANCE_REF_PATTERN",
+    "require_capability_instance_ref",
+    "ProvisionStep",
+    "VerifiedApprovalGrant",
+    "ProvisioningCommand",
+    "ProvisioningCapabilityOperationPin",
+    "PrerequisiteReceiptPin",
+    "PrerequisiteEvidenceBinding",
+    "ExpectedProvisioningPin",
+    "CommandIdentityCollision",
+    "ProvisioningRefused",
+    "prepare_provisioning_plan",
+    "invoke_prepared_plan",
+    "settle_provisioning_plan",
+    "accept_provisioning_command",
+    "prepare_next_apply",
+    "invoke_prepared_provisioning",
+    "settle_provisioning",
+    "prepare_next_observation",
+    "invoke_prepared_observation",
+    "settle_observation",
+    "prepare_cancellation",
+    "invoke_prepared_cancellation",
+    "settle_cancellation",
+    "read_provisioning_receipts",
+    "ProvisioningPlanReceiptView",
+    "read_provisioning_plan_receipt",
+)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ProvisioningOutcome:
+    """Safe transport projection returned by a module-backed façade."""
+
+    state: str
+    operation_id: UUID | None = None
+    replayed: bool | None = None
+    evidence: dict[str, object] = field(default_factory=dict)
+    capability_instance_ref: str | None = None
+    plan_hash: str | None = None
+    approval_digest: str | None = None
+    artifact_digest: str | None = None
+    config_digest: str | None = None
+    latest_module_receipt_sequence: int | None = None
+    latest_module_receipt_hash: str | None = None
+    module_plan_receipt_hash: str | None = None
+
+
+class ProvisioningPlanReceiptProjection(Protocol):
+    command_id: str
+    command_fingerprint: str
+    capability_instance_ref: str
+    request_body_digest: str
+    result_digest: str
+    receipt_hash: str
+
+
+class ProvisioningReceiptProjection(Protocol):
+    sequence: int
+    receipt_kind: str
+    step_key: str | None
+    provider_operation_ref: str | None
+    previous_receipt_hash: str | None
+    receipt_hash: str
+    plan_hash: str
+    capability_instance_ref: str
+    connector_key: str
+    connector_version: str
+    manifest_digest: str
+    artifact_digest: str
+    config_digest: str
+    approval_digest: str
+    evidence: Mapping[str, object]
+
+
+class ProvisioningGateway(Protocol):
+    """Assembly seam over dotmac-integration's four public façades.
+
+    The concrete implementation below remains a direct adapter to top-level
+    published symbols; it owns no provisioning decision.
+    """
+
+    def plan(
+        self, engine: Engine, command_id: str, body: PlanCommand
+    ) -> ProvisioningOutcome: ...
+
+    def apply(
+        self, engine: Engine, command_id: str, body: ApplyCommand
+    ) -> ProvisioningOutcome: ...
+
+    def observe(
+        self, engine: Engine, command_id: str, body: ObserveCommand
+    ) -> ProvisioningOutcome: ...
+
+    def cancel(
+        self, engine: Engine, command_id: str, body: CancelCommand
+    ) -> ProvisioningOutcome: ...
+
+
+def require_provisioning_module_surface() -> None:
+    """Refuse boot unless the composed module publishes the whole a6 seam."""
+    missing = tuple(
+        name
+        for name in PROVISIONING_MODULE_SYMBOLS
+        if getattr(integration, name, None) is None
+    )
+    if not missing:
+        return
+    version = getattr(integration, "__version__", "unknown")
+    qualified = ", ".join(f"dotmac_integration.{name}" for name in missing)
+    raise RuntimeError(
+        f"dotmac-integration {version} does not publish the complete "
+        f"provisioning command surface: {qualified}"
+    )
+
+
+def _module_symbol(name: str) -> Any:
+    symbol = getattr(integration, name, None)
+    if symbol is None:
+        version = getattr(integration, "__version__", "unknown")
+        raise RuntimeError(
+            f"dotmac-integration {version} does not publish required symbol "
+            f"dotmac_integration.{name}",
+        )
+    return symbol
+
+
+class ModuleProvisioningGateway:
+    """Direct adapter to the module's public provisioning transaction façades."""
+
+    def plan(
+        self, engine: Engine, command_id: str, body: PlanCommand
+    ) -> ProvisioningOutcome:
+        registry = integration.discover()
+        step_type = _module_symbol("ProvisionStep")
+        prepare = _module_symbol("prepare_provisioning_plan")
+        invoke = _module_symbol("invoke_prepared_plan")
+        settle = _module_symbol("settle_provisioning_plan")
+        read_plan_receipt = _module_symbol("read_provisioning_plan_receipt")
+        request_body_digest = machine_commands.body_digest(body)
+        steps = tuple(
+            step_type(
+                step_key=step.step_key,
+                endpoint_code=step.endpoint_code,
+                depends_on=step.depends_on,
+                input=step.input,
+            )
+            for step in body.steps
+        )
+        try:
+            with Session(engine) as db:
+                prepared = prepare(
+                    db,
+                    command_id=command_id,
+                    deployment_ref=body.deployment_ref,
+                    capability_id=body.capability_id,
+                    capability_instance_ref=body.capability_instance_ref,
+                    binding_id=body.capability_binding_id,
+                    config_digest=body.config_digest,
+                    plan_hash=body.plan_hash,
+                    request_body_digest=request_body_digest,
+                    steps=steps,
+                    registry=registry,
+                )
+                db.commit()
+            replayed = prepared is None
+            if prepared is not None:
+                result = invoke(
+                    prepared, registry=registry, resolve_secrets=resolve_secrets
+                )
+                with Session(engine) as db:
+                    settle(db, prepared=prepared, result=result)
+                    db.commit()
+            with Session(engine) as db:
+                plan_receipt = cast(
+                    ProvisioningPlanReceiptProjection,
+                    read_plan_receipt(db, command_id=command_id),
+                )
+        except Exception as exc:
+            _raise_provisioning_refusal(exc)
+        if plan_receipt.command_id != command_id:
+            raise RuntimeError("module PLAN receipt command identity differs")
+        if plan_receipt.request_body_digest != request_body_digest:
+            raise RuntimeError("module PLAN receipt request body digest differs")
+        if plan_receipt.capability_instance_ref != body.capability_instance_ref:
+            raise RuntimeError("module PLAN receipt capability instance differs")
+        return ProvisioningOutcome(
+            state="planned",
+            replayed=replayed,
+            capability_instance_ref=str(plan_receipt.capability_instance_ref),
+            plan_hash=body.plan_hash,
+            config_digest=body.config_digest,
+            module_plan_receipt_hash=str(plan_receipt.receipt_hash),
+            evidence={
+                "step_count": len(body.steps),
+                "module_plan_receipt": {
+                    "command_id": str(plan_receipt.command_id),
+                    "command_fingerprint": str(plan_receipt.command_fingerprint),
+                    "capability_instance_ref": str(
+                        plan_receipt.capability_instance_ref
+                    ),
+                    "request_body_digest": str(plan_receipt.request_body_digest),
+                    "result_digest": str(plan_receipt.result_digest),
+                    "receipt_hash": str(plan_receipt.receipt_hash),
+                },
+            },
+        )
+
+    def apply(
+        self, engine: Engine, command_id: str, body: ApplyCommand
+    ) -> ProvisioningOutcome:
+        step_type = _module_symbol("ProvisionStep")
+        operation_pin_type = _module_symbol("ProvisioningCapabilityOperationPin")
+        approval_type = _module_symbol("VerifiedApprovalGrant")
+        prerequisite_type = _module_symbol("PrerequisiteReceiptPin")
+        evidence_binding_type = _module_symbol("PrerequisiteEvidenceBinding")
+        command_type = _module_symbol("ProvisioningCommand")
+        accept = _module_symbol("accept_provisioning_command")
+        prepare = _module_symbol("prepare_next_apply")
+        invoke = _module_symbol("invoke_prepared_provisioning")
+        settle = _module_symbol("settle_provisioning")
+        read_receipts = _module_symbol("read_provisioning_receipts")
+        registry = integration.discover()
+        command = command_type(
+            command_id=command_id,
+            deployment_ref=body.deployment_ref,
+            desired_state_revision=body.desired_state_revision,
+            desired_state_version_id=body.desired_state_version_id,
+            desired_state_hash=body.desired_state_hash,
+            saved_plan_id=body.saved_plan_id,
+            approval_request_id=body.approval_request_id,
+            approval_request_binding_hash=body.approval_request_binding_hash,
+            plan_command_id=body.plan_command_id,
+            plan_validation_receipt_id=body.plan_validation_receipt_id,
+            plan_validation_receipt_digest=body.plan_validation_receipt_digest,
+            plan_validation_request_body_digest=(
+                body.plan_validation_request_body_digest
+            ),
+            module_plan_receipt_hash=body.module_plan_receipt_hash,
+            profile_version_id=body.profile_version_id,
+            profile_code=body.profile_code,
+            profile_version=body.profile_version,
+            profile_schema_version=body.profile_schema_version,
+            profile_content_hash=body.profile_content_hash,
+            command_schema_version=body.command_schema_version,
+            capability_id=body.capability_id,
+            capability_instance_ref=body.capability_instance_ref,
+            capability_owner_code=body.capability_owner_code,
+            capability_code=body.capability_code,
+            capability_schema_version=body.capability_schema_version,
+            capability_contract_attestation_id=(
+                body.capability_contract_attestation_id
+            ),
+            capability_contract_digest=body.capability_contract_digest,
+            capability_operations=tuple(
+                operation_pin_type(**operation.model_dump(mode="python"))
+                for operation in body.capability_operations
+            ),
+            capability_binding_id=body.capability_binding_id,
+            binding_ref=body.binding_ref,
+            installation_id=body.installation_id,
+            installation_ref=body.installation_ref,
+            connector_key=body.connector_key,
+            connector_version=body.connector_version,
+            connector_manifest_digest=body.connector_manifest_digest,
+            connector_configuration_revision_id=(
+                body.connector_configuration_revision_id
+            ),
+            configuration_snapshot_ref=body.configuration_snapshot_ref,
+            configuration_schema_version=body.configuration_schema_version,
+            configuration_hash=body.configuration_hash,
+            plan_hash=body.plan_hash,
+            expected_plan_hash=body.expected_plan_hash,
+            artifact_digest=body.artifact_digest,
+            component_artifact_digest=body.component_artifact_digest,
+            config_digest=body.config_digest,
+            execution_policy_digest=body.execution_policy_digest,
+            prerequisite_capability_binding_ids=(
+                body.prerequisite_capability_binding_ids
+            ),
+            prerequisite_evidence_bindings=tuple(
+                evidence_binding_type(**binding.model_dump(mode="python"))
+                for binding in body.prerequisite_evidence_bindings
+            ),
+            prerequisite_receipt_pins=tuple(
+                prerequisite_type(
+                    operation_id=pin.operation_id,
+                    capability_binding_id=pin.capability_binding_id,
+                    terminal_receipt_sequence=pin.terminal_receipt_sequence,
+                    terminal_receipt_digest=pin.terminal_receipt_digest,
+                    required_terminal_status=pin.required_terminal_status,
+                )
+                for pin in body.prerequisite_receipt_pins
+            ),
+            approval=approval_type(
+                grant_ref=body.approval.grant_ref,
+                approval_request_id=body.approval.approval_request_id,
+                approval_request_binding_hash=(
+                    body.approval.approval_request_binding_hash
+                ),
+                saved_plan_id=body.approval.saved_plan_id,
+                approved_plan_hash=body.approval.approved_plan_hash,
+                approved_command_template_digest=(
+                    body.approval.approved_command_template_digest
+                ),
+                plan_command_id=body.approval.plan_command_id,
+                plan_validation_receipt_id=(body.approval.plan_validation_receipt_id),
+                plan_validation_receipt_digest=(
+                    body.approval.plan_validation_receipt_digest
+                ),
+                plan_validation_request_body_digest=(
+                    body.approval.plan_validation_request_body_digest
+                ),
+                module_plan_receipt_hash=body.approval.module_plan_receipt_hash,
+                digest=body.approval.digest,
+                expires_at=body.approval.expires_at,
+                verified_at=body.approval.verified_at,
+            ),
+            steps=tuple(
+                step_type(
+                    step_key=step.step_key,
+                    endpoint_code=step.endpoint_code,
+                    depends_on=step.depends_on,
+                    input=step.input,
+                )
+                for step in body.steps
+            ),
+        )
+        try:
+            with Session(engine) as db:
+                accepted = accept(db, command, registry=registry)
+                db.commit()
+            replayed = not bool(accepted.is_new)
+            with Session(engine) as db:
+                prepared = prepare(
+                    db,
+                    operation_id=accepted.operation_id,
+                    registry=registry,
+                )
+                db.commit()
+            if prepared is None:
+                receipts = _read_module_receipts(
+                    engine, accepted.operation_id, read_receipts
+                )
+                return _operation_outcome(
+                    state=str(accepted.state),
+                    operation_id=accepted.operation_id,
+                    replayed=replayed,
+                    receipts=receipts,
+                )
+            result = invoke(
+                prepared, registry=registry, resolve_secrets=resolve_secrets
+            )
+            with Session(engine) as db:
+                operation = settle(db, prepared=prepared, result=result)
+                receipts = tuple(read_receipts(db, operation_id=accepted.operation_id))
+                state = str(operation.state)
+                db.commit()
+        except Exception as exc:
+            _raise_provisioning_refusal(exc)
+        return _operation_outcome(
+            state=state,
+            operation_id=accepted.operation_id,
+            replayed=replayed,
+            receipts=receipts,
+        )
+
+    def observe(
+        self, engine: Engine, command_id: str, body: ObserveCommand
+    ) -> ProvisioningOutcome:
+        registry = integration.discover()
+        expected_type = _module_symbol("ExpectedProvisioningPin")
+        prepare = _module_symbol("prepare_next_observation")
+        invoke = _module_symbol("invoke_prepared_observation")
+        settle = _module_symbol("settle_observation")
+        read_receipts = _module_symbol("read_provisioning_receipts")
+        expected = expected_type(
+            deployment_ref=body.deployment_ref,
+            capability_instance_ref=body.capability_instance_ref,
+            step_key=body.step_key,
+            provider_operation_ref=body.provider_operation_ref,
+            plan_hash=body.plan_hash,
+            artifact_digest=body.artifact_digest,
+            config_digest=body.config_digest,
+            approval_digest=body.approval_digest,
+        )
+        try:
+            with Session(engine) as db:
+                prepared = prepare(
+                    db,
+                    command_id=command_id,
+                    operation_id=body.operation_id,
+                    expected=expected,
+                    registry=registry,
+                )
+                db.commit()
+            if prepared is None:
+                receipts = _read_module_receipts(
+                    engine, body.operation_id, read_receipts
+                )
+                return _verified_existing_outcome(body.operation_id, receipts)
+            result = invoke(
+                prepared, registry=registry, resolve_secrets=resolve_secrets
+            )
+            with Session(engine) as db:
+                operation = settle(db, prepared=prepared, result=result)
+                receipts = tuple(read_receipts(db, operation_id=body.operation_id))
+                state = str(operation.state)
+                db.commit()
+        except Exception as exc:
+            _raise_provisioning_refusal(exc)
+        return _operation_outcome(
+            state=state,
+            operation_id=body.operation_id,
+            replayed=False,
+            receipts=receipts,
+        )
+
+    def cancel(
+        self, engine: Engine, command_id: str, body: CancelCommand
+    ) -> ProvisioningOutcome:
+        registry = integration.discover()
+        expected_type = _module_symbol("ExpectedProvisioningPin")
+        prepare = _module_symbol("prepare_cancellation")
+        invoke = _module_symbol("invoke_prepared_cancellation")
+        settle = _module_symbol("settle_cancellation")
+        read_receipts = _module_symbol("read_provisioning_receipts")
+        expected = expected_type(
+            deployment_ref=body.deployment_ref,
+            capability_instance_ref=body.capability_instance_ref,
+            step_key=body.step_key,
+            provider_operation_ref=body.provider_operation_ref,
+            plan_hash=body.plan_hash,
+            artifact_digest=body.artifact_digest,
+            config_digest=body.config_digest,
+            approval_digest=body.approval_digest,
+        )
+        try:
+            with Session(engine) as db:
+                prepared = prepare(
+                    db,
+                    command_id=command_id,
+                    operation_id=body.operation_id,
+                    expected=expected,
+                    reason=body.reason,
+                    registry=registry,
+                )
+                db.commit()
+            if prepared is None:
+                receipts = _read_module_receipts(
+                    engine, body.operation_id, read_receipts
+                )
+                return _verified_existing_outcome(body.operation_id, receipts)
+            result = invoke(
+                prepared, registry=registry, resolve_secrets=resolve_secrets
+            )
+            with Session(engine) as db:
+                operation = settle(db, prepared=prepared, result=result)
+                receipts = tuple(read_receipts(db, operation_id=body.operation_id))
+                state = str(operation.state)
+                db.commit()
+        except Exception as exc:
+            _raise_provisioning_refusal(exc)
+        return _operation_outcome(
+            state=state,
+            operation_id=body.operation_id,
+            replayed=False,
+            receipts=receipts,
+        )
+
+
+def _raise_provisioning_refusal(exc: Exception) -> NoReturn:
+    collision_type = _module_symbol("CommandIdentityCollision")
+    refusal_type = _module_symbol("ProvisioningRefused")
+    if isinstance(exc, collision_type):
+        raise HTTPException(409, "command identity collision") from exc
+    if isinstance(exc, refusal_type):
+        raise HTTPException(409, redact(str(exc))) from exc
+    raise exc
+
+
+def _read_module_receipts(
+    engine: Engine, operation_id: UUID, reader: Any
+) -> tuple[ProvisioningReceiptProjection, ...]:
+    with Session(engine) as db:
+        return cast(
+            tuple[ProvisioningReceiptProjection, ...],
+            tuple(reader(db, operation_id=operation_id)),
+        )
+
+
+def _module_receipt_evidence(
+    receipts: tuple[ProvisioningReceiptProjection, ...],
+) -> dict[str, object]:
+    return {
+        "module_receipts": [
+            {
+                "sequence": receipt.sequence,
+                "receipt_kind": receipt.receipt_kind,
+                "step_key": receipt.step_key,
+                "provider_operation_ref": receipt.provider_operation_ref,
+                "previous_receipt_hash": receipt.previous_receipt_hash,
+                "receipt_hash": receipt.receipt_hash,
+                "plan_hash": receipt.plan_hash,
+                "capability_instance_ref": receipt.capability_instance_ref,
+                "connector_key": receipt.connector_key,
+                "connector_version": receipt.connector_version,
+                "manifest_digest": receipt.manifest_digest,
+                "artifact_digest": receipt.artifact_digest,
+                "config_digest": receipt.config_digest,
+                "approval_digest": receipt.approval_digest,
+                "evidence": dict(receipt.evidence),
+            }
+            for receipt in receipts
+        ]
+    }
+
+
+def _operation_outcome(
+    *,
+    state: str,
+    operation_id: UUID,
+    replayed: bool | None,
+    receipts: tuple[ProvisioningReceiptProjection, ...],
+) -> ProvisioningOutcome:
+    latest = receipts[-1] if receipts else None
+    if latest is None:
+        raise HTTPException(
+            409,
+            "the module returned no verified provisioning receipt for "
+            "this operation",
+        )
+    return ProvisioningOutcome(
+        state=state,
+        operation_id=operation_id,
+        replayed=replayed,
+        evidence=_module_receipt_evidence(receipts),
+        capability_instance_ref=str(latest.capability_instance_ref),
+        plan_hash=str(latest.plan_hash),
+        approval_digest=str(latest.approval_digest),
+        artifact_digest=str(latest.artifact_digest),
+        config_digest=str(latest.config_digest),
+        latest_module_receipt_sequence=int(latest.sequence),
+        latest_module_receipt_hash=str(latest.receipt_hash),
+    )
+
+
+def _verified_existing_outcome(
+    operation_id: UUID, receipts: tuple[ProvisioningReceiptProjection, ...]
+) -> ProvisioningOutcome:
+    latest = receipts[-1] if receipts else None
+    if latest is None:
+        raise HTTPException(
+            409,
+            "the command is not actionable and no verified module receipt exists",
+        )
+    return _operation_outcome(
+        state=str(latest.receipt_kind),
+        operation_id=operation_id,
+        replayed=None,
+        receipts=receipts,
+    )
+
+
+def _require_signed_module_chain_projection(outcome: ProvisioningOutcome) -> None:
+    """Refuse to sign a terminal pin detached from the projected module chain."""
+    projected = outcome.evidence.get("module_receipts")
+    if not isinstance(projected, list) or not projected:
+        raise RuntimeError("module receipt projection is absent")
+    previous_hash: str | None = None
+    for index, item in enumerate(projected):
+        if not isinstance(item, Mapping):
+            raise RuntimeError("module receipt projection is malformed")
+        sequence = item.get("sequence")
+        receipt_hash = item.get("receipt_hash")
+        predecessor = item.get("previous_receipt_hash")
+        if sequence != index + 1 or predecessor != previous_hash:
+            raise RuntimeError("module receipt projection is not continuous")
+        if item.get("capability_instance_ref") != outcome.capability_instance_ref:
+            raise RuntimeError("module receipt capability instance differs")
+        if not isinstance(receipt_hash, str):
+            raise RuntimeError("module receipt projection is malformed")
+        previous_hash = receipt_hash
+    latest = projected[-1]
+    if (
+        latest.get("sequence") != outcome.latest_module_receipt_sequence
+        or latest.get("receipt_hash") != outcome.latest_module_receipt_hash
+    ):
+        raise RuntimeError("latest module receipt pin differs from projected chain")
+
+
+def _require_signed_plan_receipt_projection(
+    command: AuthenticatedCommand[PlanCommand], outcome: ProvisioningOutcome
+) -> None:
+    """Refuse to sign a PLAN receipt detached from the module-owned record."""
+    projected = outcome.evidence.get("module_plan_receipt")
+    if not isinstance(projected, Mapping):
+        raise RuntimeError("module PLAN receipt projection is absent")
+    if projected.get("command_id") != command.command_id:
+        raise RuntimeError("module PLAN receipt command identity differs")
+    if projected.get("request_body_digest") != command.body_sha256:
+        raise RuntimeError("module PLAN receipt request body digest differs")
+    if projected.get("capability_instance_ref") != command.body.capability_instance_ref:
+        raise RuntimeError("module PLAN receipt capability instance differs")
+    if projected.get("receipt_hash") != outcome.module_plan_receipt_hash:
+        raise RuntimeError("module PLAN receipt hash differs from projection")
+
+
+def _signed_provisioning_outcome(
+    operation: Literal["plan", "apply", "observe", "cancel"],
+    command: AuthenticatedCommand[Any],
+    outcome: ProvisioningOutcome,
+) -> SignedReceipt:
+    body = command.body
+    caller_plan_hash = body.plan_hash
+    capability_instance_ref = outcome.capability_instance_ref
+    if (
+        capability_instance_ref is None
+        or capability_instance_ref != body.capability_instance_ref
+    ):
+        raise RuntimeError("module capability instance differs from signed command")
+    if isinstance(body, PlanCommand) and not isinstance(body, ApplyCommand):
+        caller_approval_digest = None
+        caller_artifact_digest = None
+        if outcome.module_plan_receipt_hash is None:
+            raise RuntimeError("PLAN receipt must come from verified module state")
+        _require_signed_plan_receipt_projection(command, outcome)
+    elif isinstance(body, ApplyCommand):
+        caller_approval_digest = None
+        caller_artifact_digest = None
+        if any(
+            value is None
+            for value in (
+                outcome.plan_hash,
+                outcome.approval_digest,
+                outcome.artifact_digest,
+                outcome.config_digest,
+                outcome.latest_module_receipt_sequence,
+                outcome.latest_module_receipt_hash,
+            )
+        ):
+            raise RuntimeError(
+                "apply receipt pins must come from verified module state"
+            )
+        _require_signed_module_chain_projection(outcome)
+    else:
+        caller_approval_digest = body.approval_digest
+        caller_artifact_digest = body.artifact_digest
+        if any(
+            value is None
+            for value in (
+                outcome.plan_hash,
+                outcome.approval_digest,
+                outcome.artifact_digest,
+                outcome.config_digest,
+                outcome.latest_module_receipt_sequence,
+                outcome.latest_module_receipt_hash,
+            )
+        ):
+            raise RuntimeError(
+                "observe/cancel receipt pins must come from verified module state"
+            )
+        _require_signed_module_chain_projection(outcome)
+    receipt = ReceiptPayload(
+        receipt_contract_version="integrator.provisioning-receipt.v1",
+        command_contract_version=command.contract_version,
+        operation=operation,
+        command_id=command.command_id,
+        nonce=command.nonce,
+        issuer_account_ref=command.issuer_account_ref,
+        deployment_ref=body.deployment_ref,
+        capability_instance_ref=capability_instance_ref,
+        request_body_sha256=command.body_sha256,
+        plan_hash=outcome.plan_hash or caller_plan_hash,
+        approval_digest=outcome.approval_digest or caller_approval_digest,
+        artifact_digest=outcome.artifact_digest or caller_artifact_digest,
+        config_digest=outcome.config_digest or body.config_digest,
+        outcome=outcome.state,
+        operation_id=outcome.operation_id,
+        replayed=outcome.replayed,
+        latest_module_receipt_sequence=(outcome.latest_module_receipt_sequence),
+        latest_module_receipt_hash=outcome.latest_module_receipt_hash,
+        module_plan_receipt_hash=outcome.module_plan_receipt_hash,
+        occurred_at=datetime.now(UTC),
+        evidence=outcome.evidence,
+    )
+    return machine_commands.sign_receipt(receipt)
+
+
+def plan_provisioning(
+    engine: Engine,
+    command: AuthenticatedCommand[PlanCommand],
+    gateway: ProvisioningGateway,
+) -> SignedReceipt:
+    return _signed_provisioning_outcome(
+        "plan", command, gateway.plan(engine, command.command_id, command.body)
+    )
+
+
+def apply_provisioning(
+    engine: Engine,
+    command: AuthenticatedCommand[ApplyCommand],
+    gateway: ProvisioningGateway,
+) -> SignedReceipt:
+    return _signed_provisioning_outcome(
+        "apply", command, gateway.apply(engine, command.command_id, command.body)
+    )
+
+
+def observe_provisioning(
+    engine: Engine,
+    command: AuthenticatedCommand[ObserveCommand],
+    gateway: ProvisioningGateway,
+) -> SignedReceipt:
+    return _signed_provisioning_outcome(
+        "observe", command, gateway.observe(engine, command.command_id, command.body)
+    )
+
+
+def cancel_provisioning(
+    engine: Engine,
+    command: AuthenticatedCommand[CancelCommand],
+    gateway: ProvisioningGateway,
+) -> SignedReceipt:
+    return _signed_provisioning_outcome(
+        "cancel", command, gateway.cancel(engine, command.command_id, command.body)
+    )
 
 
 def _record(

@@ -1,0 +1,33 @@
+{
+  "body": {
+    "deployment_ref": "deployment-0001",
+    "capability_id": "managed.service.provision.v1",
+    "capability_instance_ref": "managed.service-primary",
+    "capability_binding_id": "d9e93437-fb89-4db6-8a53-bf85beb26a33",
+    "plan_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "config_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "steps": [
+      {
+        "step_key": "identity-client",
+        "endpoint_code": "managed.service.provision.v1",
+        "depends_on": [],
+        "input": {
+          "desired_ref": "deployment-0001"
+        }
+      }
+    ]
+  },
+  "body_sha256": "sha256:1a8f0cc0d9fd11a2639dcb8b4685be0e9930859ebe70cd7cbd71d89729dfb28e",
+  "canonical_body": "{\"capability_binding_id\":\"d9e93437-fb89-4db6-8a53-bf85beb26a33\",\"capability_id\":\"managed.service.provision.v1\",\"capability_instance_ref\":\"managed.service-primary\",\"config_digest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"deployment_ref\":\"deployment-0001\",\"plan_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"steps\":[{\"depends_on\":[],\"endpoint_code\":\"managed.service.provision.v1\",\"input\":{\"desired_ref\":\"deployment-0001\"},\"step_key\":\"identity-client\"}]}",
+  "canonical_signature_input": "{\"audience\":\"dotmac-integrator:abuja\",\"body_sha256\":\"sha256:1a8f0cc0d9fd11a2639dcb8b4685be0e9930859ebe70cd7cbd71d89729dfb28e\",\"command_id\":\"plan-command-0001\",\"contract_version\":\"integrator.provisioning-command.v1\",\"expires_at\":\"2026-08-17T12:02:00Z\",\"issued_at\":\"2026-08-17T12:00:00Z\",\"key_id\":\"vendor-command-2026-01\",\"nonce\":\"plan-command-0001\"}",
+  "unsigned_header": {
+    "audience": "dotmac-integrator:abuja",
+    "body_sha256": "sha256:1a8f0cc0d9fd11a2639dcb8b4685be0e9930859ebe70cd7cbd71d89729dfb28e",
+    "command_id": "plan-command-0001",
+    "contract_version": "integrator.provisioning-command.v1",
+    "expires_at": "2026-08-17T12:02:00Z",
+    "issued_at": "2026-08-17T12:00:00Z",
+    "key_id": "vendor-command-2026-01",
+    "nonce": "plan-command-0001"
+  }
+}

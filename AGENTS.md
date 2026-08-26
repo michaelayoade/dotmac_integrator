@@ -191,5 +191,45 @@ This is a **thin assembly**. The reusable behaviour lives in
     `finally`, so an error reporter capturing frame locals finds nothing. All
     three carry sensitivity proofs
     (`test_the_destination_credential_never_escapes.py`).
-29. **Validate before pushing**: `make check`. CI is the acceptance owner —
+29. **Machine commands are a distinct authentication population.**
+    `/commands/**` carries a `MachineCommandGuard`, never `require_operator`
+    and never provider-ingress authentication. The Ed25519 signature binds the
+    exact audience, `key_id`, timezone-aware `issued_at`/`expires_at`,
+    `command_id`, `nonce` and canonical body hash. `nonce == command_id` is
+    mandatory: the module's durable command record is the sole replay and
+    collision owner, so this assembly has no nonce cache or command ledger.
+    The byte contract is pinned by
+    `docs/fixtures/provisioning_apply_command_v1.json` and its sensitivity test.
+    A held v2 issuer-assignment document maps every command `key_id` to exactly
+    one account and canonical deployment/instance pairs. Every command body
+    carries `deployment_ref` and `capability_instance_ref`; the guard refuses
+    an unassigned exact pair before `operations.py` or the module can run. V1
+    is not a wildcard fallback. Public-key and assignment key sets must match
+    exactly at install/refresh.
+30. **Command keys and issuer assignments are HELD; receipt keys are separate.** Public issuer keys
+    and the receipt private key load once at startup and on the explicit
+    operator secret refresh; no request reaches a store or reparses material.
+    A malformed refresh retains the old working set. Keys and assignments
+    rotate as one working set. The receipt key may not
+    equal any issuer key and is never a Vendor, licence, session or destination
+    key. Material has no repr/log/error path; references and key ids only.
+31. **Provisioning persistence and decisions stay in `dotmac-integration`.**
+    `operations.py` owns only transaction boundaries: prepare and settle each
+    commit in their own session, with `invoke_*` between them and no session in
+    scope. Plan/apply/observe/cancel use the module's top-level a6 façades;
+    APPLY passes an approved static command-template digest, its canonical
+    prerequisite binding ids, canonical value-free
+    `PrerequisiteEvidenceBinding` mappings, and canonical
+    `PrerequisiteReceiptPin` dispatch evidence for cross-binding edges. The
+    mappings are part of the template; dynamic receipt pins are covered by the
+    signed body and module command fingerprint but never by the pre-existing
+    plan/template hash. Only the module may lock upstream receipts, validate
+    held a69 input/output schemas and public evidence classification, inject a
+    copied step input, or retain public evidence. Observe/cancel pass
+    `ExpectedProvisioningPin`; the
+    module checks both pin types against locked immutable state before plugin
+    I/O. Signed HTTP receipts use module-verified pins/receipt projections
+    rather than unverified caller claims. No provider name, arbitrary shell
+    primitive or assembly ledger is admissible.
+32. **Validate before pushing**: `make check`. CI is the acceptance owner —
     local runs are not evidence.

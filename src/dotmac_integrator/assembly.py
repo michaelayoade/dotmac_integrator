@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 import dotmac_integration as integration
 from fastapi import Depends, FastAPI, Request, Response
@@ -61,10 +61,23 @@ from dotmac_integrator import (
     delivery,
     health,
     ingress,
+    machine_commands,
     operations,
     product_port,
     secret_loading,
     telemetry,
+)
+from dotmac_integrator.machine_commands import (
+    ApplyCommand,
+    AuthenticatedCommand,
+    CancelCommand,
+    ObserveCommand,
+    PlanCommand,
+    SignedReceipt,
+    require_apply_command,
+    require_cancel_command,
+    require_observe_command,
+    require_plan_command,
 )
 from dotmac_integrator.operator_auth import OperationReason, Operator
 from dotmac_integrator.redaction import install_log_redaction
@@ -89,7 +102,11 @@ def build_engine(settings: Settings) -> Engine:
     )
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    provisioning_gateway: operations.ProvisioningGateway | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
 
     # BEFORE anything can log. The ingress endpoint key is a bearer credential
@@ -108,8 +125,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             + "\n  - ".join(problems)
         )
 
+    if settings.command_surface_enabled and provisioning_gateway is None:
+        operations.require_provisioning_module_surface()
+
     engine = build_engine(settings)
     worker = Worker(engine=engine, settings=settings)
+    command_gateway = provisioning_gateway or operations.ModuleProvisioningGateway()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -117,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # deployment can authenticate with is in memory from this line onward,
         # so no store outage can reach a dispatch or an enablement.
         report = secret_loading.install_secrets(engine, settings)
+        machine_commands.install_crypto_from_held(settings)
         if settings.product_port_enabled:
             # Installed BEFORE the worker starts, so the pump never observes a
             # half-composed deployment — and AFTER the material is held, so an
@@ -270,6 +292,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actor: Operator,
     ) -> dict[str, Any]:
         return operations.replay_receipt(engine, receipt_id, actor, body.reason)
+
+    # ── Signed machine commands ────────────────────────────────────────────
+    # A separate credential population from operators and providers. Each
+    # handler receives an already authenticated typed envelope, delegates once
+    # through operations.py, and returns its signed structured receipt.
+    if settings.command_surface_enabled:
+
+        @app.post("/commands/provisioning/plan", tags=["commands"])
+        def provision_plan(
+            command: Annotated[
+                AuthenticatedCommand[PlanCommand], Depends(require_plan_command)
+            ],
+        ) -> SignedReceipt:
+            return operations.plan_provisioning(engine, command, command_gateway)
+
+        @app.post("/commands/provisioning/apply", tags=["commands"])
+        def provision_apply(
+            command: Annotated[
+                AuthenticatedCommand[ApplyCommand], Depends(require_apply_command)
+            ],
+        ) -> SignedReceipt:
+            return operations.apply_provisioning(engine, command, command_gateway)
+
+        @app.post("/commands/provisioning/observe", tags=["commands"])
+        def provision_observe(
+            command: Annotated[
+                AuthenticatedCommand[ObserveCommand],
+                Depends(require_observe_command),
+            ],
+        ) -> SignedReceipt:
+            return operations.observe_provisioning(engine, command, command_gateway)
+
+        @app.post("/commands/provisioning/cancel", tags=["commands"])
+        def provision_cancel(
+            command: Annotated[
+                AuthenticatedCommand[CancelCommand], Depends(require_cancel_command)
+            ],
+        ) -> SignedReceipt:
+            return operations.cancel_provisioning(engine, command, command_gateway)
 
     # ── Public ingress ──────────────────────────────────────────────────────
     # A PROVIDER calling in (`surface.RouteClass.INGRESS`). Authenticated by

@@ -68,7 +68,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
@@ -282,6 +282,9 @@ class StoredReferenceSource:
         dereferencers: Mapping[str, ReferenceDereferencer],
         *,
         extra_references: Iterable[str] = (),
+        validators: Mapping[str, Callable[[str], object]] | None = None,
+        required_references: Iterable[str] = (),
+        working_set_validator: Callable[[Mapping[str, str]], object] | None = None,
     ) -> None:
         self._engine = engine
         self._dereferencers = dict(dereferencers)
@@ -291,6 +294,11 @@ class StoredReferenceSource:
         self._extra = frozenset(
             reference.strip() for reference in extra_references if reference.strip()
         )
+        self._validators = dict(validators or {})
+        self._required = frozenset(
+            reference.strip() for reference in required_references if reference.strip()
+        )
+        self._working_set_validator = working_set_validator
 
     def load(self) -> Mapping[str, str]:
         global _last_report
@@ -330,7 +338,41 @@ class StoredReferenceSource:
                     "characters and cannot be redacted from an error message"
                 )
                 continue
+            validator = self._validators.get(reference)
+            if validator is not None:
+                try:
+                    validator(value)
+                except (TypeError, ValueError) as exc:
+                    # A malformed rotation is a broken working set, not one
+                    # optional connector reference. Raising makes the kernel's
+                    # refresh retain the prior complete set. Name the pointer,
+                    # never the material or the parser exception.
+                    raise SecretStoreUnavailable(
+                        f"material at {reference!r} is invalid for its "
+                        "configured cryptographic purpose"
+                    ) from exc
             held[reference] = value
+
+        missing_required = sorted(self._required - held.keys())
+        if missing_required:
+            # Required assembly cryptography is one working set. A partial
+            # result must raise BEFORE the kernel swaps it in, which is what
+            # preserves the prior keys when a rotation is incomplete.
+            raise SecretStoreUnavailable(
+                "required cryptographic reference(s) are unavailable: "
+                + ", ".join(missing_required)
+            )
+
+        if self._working_set_validator is not None:
+            try:
+                self._working_set_validator(held)
+            except (TypeError, ValueError) as exc:
+                # Cross-key rules (notably receipt/issuer separation) need the
+                # whole candidate set. Validate before returning so the kernel
+                # never swaps a broken rotation into the held working set.
+                raise SecretStoreUnavailable(
+                    "the complete cryptographic working set is invalid"
+                ) from exc
 
         _last_report = SecretLoadReport(
             held=tuple(sorted(held)),
@@ -398,11 +440,34 @@ def install_secrets(engine: Engine, settings: Settings) -> SecretLoadReport:
     without the material it was configured to hold looks healthy and refuses
     every enablement, which is a harder failure to read than not starting.
     """
-    assembly_owned = (
+    from dotmac_integrator import machine_commands
+
+    assembly_owned = list(
         (settings.product_port_api_key_ref,) if settings.product_port_enabled else ()
     )
+    validators: dict[str, Callable[[str], object]] = {}
+    required_references: list[str] = []
+    if settings.command_surface_enabled:
+        command_refs = settings.command_public_key_refs
+        from dotmac_integrator.settings import command_public_key_references
+
+        assembly_owned.extend(command_public_key_references(command_refs).values())
+        assembly_owned.append(settings.command_issuer_assignments_ref)
+        assembly_owned.append(settings.receipt_signing_private_key_ref)
+        validators.update(machine_commands.crypto_material_validators(settings))
+        required_references.extend(validators)
+    working_set_validator = (
+        (lambda material: machine_commands.validate_crypto_material(settings, material))
+        if settings.command_surface_enabled
+        else None
+    )
     source = StoredReferenceSource(
-        engine, build_dereferencers(settings), extra_references=assembly_owned
+        engine,
+        build_dereferencers(settings),
+        extra_references=assembly_owned,
+        validators=validators,
+        required_references=required_references,
+        working_set_validator=working_set_validator,
     )
     names = install_secret_source(source)
     logger.info(
@@ -421,4 +486,7 @@ def refresh() -> SecretLoadReport:
     rotation attempt leaves a working process working.
     """
     refresh_secrets()
+    from dotmac_integrator import machine_commands
+
+    machine_commands.refresh_crypto_from_held()
     return _last_report
