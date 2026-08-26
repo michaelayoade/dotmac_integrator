@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-integrator"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Thin assembly composing dotmac-integration as an independently deployed connector control plane"
 authors = ["Dotmac"]
 readme = "README.md"
@@ -9,9 +9,9 @@ packages = [{ include = "dotmac_integrator", from = "src" }]
 # Every installer derives from this value; see scripts/check_poetry_toolchain.py.
 requires-poetry = "2.4.1"
 
-# NOT published. This is a deployable application, not a distribution: nothing
-# pins it, so a version here is a deployment label rather than a contract. It is
-# absent from every release workflow deliberately.
+# This is a deployable application, not a Python distribution: nothing pins it,
+# so this version is an immutable image/deployment label rather than a library
+# contract. The protected image lane publishes it; module release lanes do not.
 classifiers = ["Private :: Do Not Upload"]
 
 [tool.poetry.dependencies]
