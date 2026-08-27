@@ -24,7 +24,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Iterator, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -78,7 +78,8 @@ class _Scope:
 
 
 class _ProductPort:
-    schema_version = "dotmac.io/product-port-descriptor/v1"
+    schema_version = "dotmac.io/product-port-descriptor/v3"
+    wire_schema_version = "dotmac.io/integrator-observation-envelope/v1"
     application = "sub"
     owner_module = "communications.team_inbox_integrator_envelope"
     capability_id = "messaging.receive.v1"
@@ -109,7 +110,8 @@ class _SettlementScope:
 
 
 class _GenericProductPort:
-    schema_version = "dotmac.io/product-port-descriptor/v2"
+    schema_version = "dotmac.io/product-port-descriptor/v3"
+    wire_schema_version = "dotmac.io/product-observation/v1"
     application = "sub"
     owner_module = "billing.settlement_observations"
     capability_id = "payments.settlement.observation.v1"
@@ -253,7 +255,7 @@ def _destination_fingerprint(body: Mapping[str, object]) -> str:
     ).hexdigest()
 
 
-def test_descriptor_v2_uses_the_modules_generic_product_observation() -> None:
+def test_the_generic_wire_uses_the_modules_product_observation() -> None:
     observation: dict[str, object] = {
         "capability_id": "payments.settlement.observation.v1",
         "observation_kind": "capture",
@@ -282,7 +284,7 @@ def test_descriptor_v2_uses_the_modules_generic_product_observation() -> None:
     }
 
 
-def test_descriptor_v2_write_and_mirror_send_the_same_generic_document() -> None:
+def test_the_generic_wire_sends_the_same_write_and_mirror_document() -> None:
     request = integration.build_product_request(
         _claim(
             {
@@ -312,7 +314,7 @@ def test_descriptor_v2_write_and_mirror_send_the_same_generic_document() -> None
 
 def test_an_unknown_product_wire_protocol_is_refused_before_the_network() -> None:
     class _UnknownProductPort(_GenericProductPort):
-        schema_version = "dotmac.io/product-port-descriptor/v99"
+        wire_schema_version = "dotmac.io/product-observation/v99"
 
     class _UnknownDestination(_GenericDestination):
         product_port = _UnknownProductPort()
@@ -1055,8 +1057,29 @@ def test_the_verdict_redaction_bites() -> None:
 
 
 def _descriptor_document(**changes: object) -> dict[str, object]:
+    contract = integration.CapabilityContract(
+        capability_id="messaging.receive.v1",
+        owner=integration.CapabilityOwner(
+            application="sub",
+            module="communications.team_inbox_integrator_envelope",
+        ),
+        summary="Inbound provider message and delivery-state observations",
+        schema_grace=integration.SchemaGrace(
+            reason=(
+                "The shared messaging.receive.v1 id is still served by divergent "
+                "connector-normalized observation payloads; its successor "
+                "contracts and exact connector digest claims are not published yet."
+            ),
+            retire_after=date(2026, 9, 30),
+            tracked_by=(
+                "docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md"
+                "#capability-schema-grace"
+            ),
+        ),
+    )
     document: dict[str, object] = {
-        "schema_version": "dotmac.io/product-port-descriptor/v1",
+        "schema_version": "dotmac.io/product-port-descriptor/v3",
+        "wire_schema_version": "dotmac.io/integrator-observation-envelope/v1",
         "application": "sub",
         "owner_module": "communications.team_inbox_integrator_envelope",
         "capability_id": "messaging.receive.v1",
@@ -1070,6 +1093,7 @@ def _descriptor_document(**changes: object) -> dict[str, object]:
         "destination_scope": {"kind": "inbox", "ref": "support"},
         "activation_state": "configured_disabled",
         "source_revision": "b" * 64,
+        "capability_contract": integration.capability_contract_document(contract),
     }
     document.update(changes)
     document["descriptor_digest"] = hashlib.sha256(
@@ -1114,7 +1138,11 @@ def test_the_named_reconciler_reads_before_opening_the_local_transaction(
 
     assert events == ["authenticated-product-read", "local-reconcile"]
     assert client.application == "sub"
-    assert registry.get("messaging.receive.v1").owner.application == "sub"
+    contract = registry.get("messaging.receive.v1")
+    assert contract.owner.application == "sub"
+    assert contract.schema_grace is not None
+    assert contract.schema_grace.retire_after == date(2026, 9, 30)
+    assert contract.schema_grace.tracked_by.endswith("#capability-schema-grace")
     assert transport.calls[0]["headers"]["X-Api-Key"] == API_KEY
 
 
@@ -1164,6 +1192,65 @@ def test_a_descriptor_cannot_lie_behind_an_approved_digest_field() -> None:
     )
 
     with pytest.raises(ProductPortDescriptorError, match="does not cover"):
+        reconciler.reconcile()
+
+
+def test_a_legacy_descriptor_cannot_make_the_assembly_invent_a_contract() -> None:
+    document = _descriptor_document()
+    document["schema_version"] = "dotmac.io/product-port-descriptor/v1"
+    del document["wire_schema_version"]
+    del document["capability_contract"]
+    document["descriptor_digest"] = hashlib.sha256(
+        json.dumps(
+            {
+                key: value
+                for key, value in document.items()
+                if key != "descriptor_digest"
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="exact field set"):
+        reconciler.reconcile()
+
+
+def test_a_product_contract_with_a_false_digest_is_refused() -> None:
+    document = _descriptor_document()
+    contract = cast(dict[str, object], document["capability_contract"])
+    contract["contract_digest"] = "0" * 64
+    document["descriptor_digest"] = hashlib.sha256(
+        json.dumps(
+            {
+                key: value
+                for key, value in document.items()
+                if key != "descriptor_digest"
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite+pysqlite:///:memory:"),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+
+    with pytest.raises(ProductPortDescriptorError, match="invalid typed field"):
         reconciler.reconcile()
 
 

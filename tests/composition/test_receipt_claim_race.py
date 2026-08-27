@@ -10,7 +10,7 @@ assembly's migrated PostgreSQL schema because the statement contains
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from threading import Barrier
 from uuid import UUID, uuid4
 
@@ -31,6 +31,14 @@ def _registry() -> integration.CapabilityRegistry:
                     module="team_inbox",
                 ),
                 summary="Record one verified inbound messaging observation.",
+                schema_grace=integration.SchemaGrace(
+                    reason=(
+                        "this receipt-claim fixture exercises concurrency, not a "
+                        "payload contract"
+                    ),
+                    retire_after=date(2099, 12, 31),
+                    tracked_by="tests/composition/test_receipt_claim_race.py",
+                ),
             ),
         )
     )

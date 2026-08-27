@@ -282,8 +282,8 @@ def test_docstring_stripping_removes_prose_but_keeps_code() -> None:
     raw = sample.read_text(encoding="utf-8")
     stripped = _source_without_docstrings(sample)
 
-    assert "ExecutionPolicy" in raw, "fixture assumption broke"
-    assert "ExecutionPolicy" not in stripped, "prose survived stripping"
+    assert "failure classification" in raw, "fixture assumption broke"
+    assert "failure classification" not in stripped, "prose survived stripping"
     assert "class Worker" in stripped, "code did not survive stripping"
 
 
@@ -463,9 +463,11 @@ def test_shadow_source_resolver_guard_bites_on_a_local_join() -> None:
     assert "CapabilityBinding" in plausible
 
 
-def test_product_wire_selection_uses_only_the_descriptor_protocol_version() -> None:
+def test_product_wire_selection_uses_only_the_declared_wire_version() -> None:
     source = _function_source(SRC / "product_port.py", "build_product_document")
     assert "_PRODUCT_DOCUMENT_BUILDERS" in source
+    assert "wire_schema_version" in source
+    assert 'getattr(descriptor, "schema_version"' not in source
     for product_fact in ("application", "capability_id", "connector_key"):
         assert product_fact not in source
 

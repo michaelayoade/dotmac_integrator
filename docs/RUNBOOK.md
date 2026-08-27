@@ -146,8 +146,8 @@ and talking to nobody.
 This is the human gate, and it is the reason the port cannot be brought up in
 one step.
 
-Read the destination's authenticated descriptor — for `dotmac_sub` that is
-`GET /api/v1/integration/observations/{binding}/descriptor`, which answers
+Read the destination's authenticated contract descriptor — for `dotmac_sub`
+that is `GET /api/v1/integration/observations/{binding}/descriptor/v3`, which answers
 with
 `activation_state: "configured_disabled"` before delivery is enabled, because
 importing the descriptor is a *prerequisite* for activation rather than a

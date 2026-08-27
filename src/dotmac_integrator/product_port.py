@@ -4,8 +4,8 @@
 classification and the idempotency key. It cannot own one thing — the protocol
 the destination application speaks — and this file is that one thing and nothing
 else. Read :class:`ObservationPortClient.deliver` and you have read the whole
-contribution: select the destination-owned descriptor version, build that
-version's document from the CLAIM, post it, and translate the answer into
+contribution: select the destination-owned wire version, build that version's
+document from the CLAIM, post it, and translate the answer into
 `ProductAcceptance`.
 
 ## Why this may be written here now, when it could not be before
@@ -13,12 +13,13 @@ version's document from the CLAIM, post it, and translate the answer into
 Authoring a wire contract inside the transport is what ADR-0024 forbids: the
 Integrator would become the sole author of a shape two systems have to agree on,
 and the destination would inherit it without ever having reviewed it. This file
-is therefore NOT an author. Product-owned, authenticated descriptors select a
-closed set of already-reviewed wire builders: the legacy v1 Sub messaging
-envelope and the provider-neutral ProductObservation v1 document owned by
-``dotmac-integration`` behind descriptor v2. A disagreement with either
-published contract is a defect HERE, or a contract change that has to happen at
-the owning source first — never something to smooth over locally.
+is therefore NOT an author. Product-owned, authenticated descriptor v3 carries
+an independent ``wire_schema_version`` and the product-owned capability
+contract. The wire selects one of the already-reviewed builders: the legacy Sub
+messaging envelope or the provider-neutral ProductObservation v1 document owned
+by ``dotmac-integration``. A disagreement with either published contract is a
+defect HERE, or a contract change that has to happen at the owning source first
+— never something to smooth over locally.
 
 ## Two routes, two scopes, and the narrowness is the safety property
 
@@ -560,8 +561,8 @@ def build_envelope(request: Any) -> dict[str, object]:
 _PRODUCT_DOCUMENT_BUILDERS: Final[Mapping[str, Callable[[Any], dict[str, object]]]] = (
     MappingProxyType(
         {
-            "dotmac.io/product-port-descriptor/v1": build_envelope,
-            "dotmac.io/product-port-descriptor/v2": (
+            "dotmac.io/integrator-observation-envelope/v1": build_envelope,
+            "dotmac.io/product-observation/v1": (
                 integration.product_observation_document
             ),
         }
@@ -570,26 +571,25 @@ _PRODUCT_DOCUMENT_BUILDERS: Final[Mapping[str, Callable[[Any], dict[str, object]
 
 
 def build_product_document(request: Any) -> dict[str, object]:
-    """Select the product-owned wire protocol by descriptor version only.
+    """Select the product-owned wire protocol by its independent version only.
 
-    V1 remains the legacy Sub messaging contract. V2 is the generic
-    ProductObservation projection owned by ``dotmac-integration``. Product,
-    provider and capability identities are deliberately absent from this
-    selection: those facts choose a durable descriptor, never an assembly
-    branch.
+    The messaging envelope and generic ProductObservation wire are independent
+    of descriptor protocol v3. Product, provider and capability identities are
+    deliberately absent from this selection: those facts choose a durable
+    descriptor, never an assembly branch.
     """
 
     descriptor = getattr(request.destination, "product_port", None)
-    schema_version = getattr(descriptor, "schema_version", None)
-    if not isinstance(schema_version, str):
+    wire_schema_version = getattr(descriptor, "wire_schema_version", None)
+    if not isinstance(wire_schema_version, str):
         raise EnvelopeNotConstructible(
-            "product-port descriptor schema_version is missing or not a string"
+            "product-port descriptor wire_schema_version is missing or not a string"
         )
     try:
-        builder = _PRODUCT_DOCUMENT_BUILDERS[schema_version]
+        builder = _PRODUCT_DOCUMENT_BUILDERS[wire_schema_version]
     except KeyError as exc:
         raise EnvelopeNotConstructible(
-            f"unsupported product-port descriptor schema {schema_version!r}"
+            f"unsupported product-port wire schema {wire_schema_version!r}"
         ) from exc
     return builder(request)
 
@@ -1131,6 +1131,7 @@ class ProductPortDescriptorError(integration.DestinationBindingError):
 _DESCRIPTOR_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "schema_version",
+        "wire_schema_version",
         "application",
         "owner_module",
         "capability_id",
@@ -1142,6 +1143,7 @@ _DESCRIPTOR_FIELDS: Final[frozenset[str]] = frozenset(
         "destination_scope",
         "activation_state",
         "source_revision",
+        "capability_contract",
         "descriptor_digest",
     }
 )
@@ -1225,6 +1227,7 @@ class ProductPortDescriptorReconciler:
             )
         string_fields = (
             "schema_version",
+            "wire_schema_version",
             "application",
             "owner_module",
             "capability_id",
@@ -1246,6 +1249,15 @@ class ProductPortDescriptorReconciler:
             raise ProductPortDescriptorError(
                 "the product descriptor contains an invalid typed field"
             )
+        if document["schema_version"] != "dotmac.io/product-port-descriptor/v3":
+            raise ProductPortDescriptorError(
+                "the product descriptor must use the contract-carrying v3 protocol"
+            )
+        contract_document = document["capability_contract"]
+        if not isinstance(contract_document, Mapping):
+            raise ProductPortDescriptorError(
+                "the product descriptor capability_contract is not an object"
+            )
         if any(
             not isinstance(scope[field], str) or not scope[field]
             for field in ("kind", "ref")
@@ -1254,6 +1266,13 @@ class ProductPortDescriptorReconciler:
                 "the product descriptor destination_scope contains an invalid field"
             )
         try:
+            capability_contract = integration.capability_contract_from_document(
+                contract_document,
+                capability_id=document["capability_id"],
+                application=document["application"],
+                owner_module=document["owner_module"],
+                summary=document["capability_summary"],
+            )
             snapshot = integration.ProductPortDescriptorSnapshot(
                 schema_version=document["schema_version"],
                 application=document["application"],
@@ -1270,6 +1289,8 @@ class ProductPortDescriptorReconciler:
                 activation_state=document["activation_state"],
                 source_revision=document["source_revision"],
                 descriptor_digest=document["descriptor_digest"],
+                wire_schema_version=document["wire_schema_version"],
+                capability_contract=capability_contract,
             )
         except (TypeError, ValueError, KeyError) as exc:
             raise ProductPortDescriptorError(
@@ -1290,18 +1311,12 @@ class ProductPortDescriptorReconciler:
         self,
     ) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
         descriptor = self._read()
-        registry = integration.CapabilityRegistry.from_declarations(
-            [
-                integration.CapabilityContract(
-                    capability_id=descriptor.capability_id,
-                    owner=integration.CapabilityOwner(
-                        application=descriptor.application,
-                        module=descriptor.owner_module,
-                    ),
-                    summary=descriptor.capability_summary,
-                )
-            ]
-        )
+        contract = descriptor.capability_contract
+        if contract is None:  # v3 parsing above makes this unreachable
+            raise ProductPortDescriptorError(
+                "the product descriptor carries no capability contract"
+            )
+        registry = integration.CapabilityRegistry.from_declarations([contract])
         with Session(self._engine) as db:
             integration.reconcile_product_port_descriptor_for_capability(
                 db,

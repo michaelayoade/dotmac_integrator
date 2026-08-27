@@ -20,8 +20,8 @@ different owners.**
 |---|---|---|---|
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
 | **2** | Reconcile every local binding for the capability, then pin the published cohort | module + this repository | a12 is registry-verified before the exact assembly pins resolve |
-| **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v2 descriptor and ProductObservation v1 agree before shadow begins |
-| **4** | Pin a16 and schedule its complete polling engine | module + this repository | immutable release oracle, re-derived bindings, refreshed lock and CI |
+| **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v3 contract descriptor and ProductObservation v1 wire agree before shadow begins |
+| **4** | Pin a16's polling engine, then a17's contract descriptor | module + this repository | immutable release oracles, re-derived bindings, refreshed lock and CI |
 
 Collapsing them means a red CI run cannot tell you which slice broke, and
 — worse — slice 2's fix would land on the same commit as the connector that
@@ -289,12 +289,14 @@ the settlement observation rather than inventing a new boundary.
 ## 3.3 The product contract now exists, and the assembly does not restate it
 
 Sub now declares `payments.settlement.observation.v1` through a billing-owned
-descriptor v2 and accepts the generic `dotmac.io/product-observation/v1`
-envelope. Integration a13 derives `source` from its durable installation and
-binding, carries that provenance in the request fingerprint and owns the generic
-document builder. The assembly selects v1 or v2 only from the authenticated
-descriptor schema version; it contains no settlement, product or provider
-branch.
+descriptor v3 and accepts the generic `dotmac.io/product-observation/v1`
+envelope. The descriptor carries the domain-owned capability contract and its
+dated grace independently from the delivery wire. Integration derives `source`
+from its durable installation and binding, carries that provenance in the
+request fingerprint and owns the generic document builder. The assembly selects
+the messaging or ProductObservation builder only from the authenticated
+`wire_schema_version`; it contains no descriptor-version, settlement, product
+or provider branch.
 
 Read-only shadow uses the same module-owned source resolver as the leased write
 path. This matters because otherwise the thin assembly would need its own join
@@ -327,10 +329,10 @@ The registry oracle now exists for `dotmac-integration 0.1.0a16`:
 | Tag | `dotmac-integration-v0.1.0a16` |
 | Peeled commit | `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e` |
 
-The assembly pins exactly `0.1.0a16`; it does not treat a version string in a
-manifest as publication evidence. The lock is generated with the repository's
-pinned Poetry 2.4.1 and the registry reader credential held only in process
-memory.
+At this slice the assembly pinned exactly `0.1.0a16`; slice 5 advances that pin
+to a17. Neither slice treats a version string in a manifest as publication
+evidence. Each lock is generated with the repository's pinned Poetry 2.4.1 and
+the registry reader credential held only in process memory.
 
 ## 4.2 The lineage moved; cross-lineage bindings did not
 
@@ -345,9 +347,10 @@ a16 advances the integration lineage through three immutable revisions:
 
 The manifest still requires exactly `module_database_roles.v1`,
 `idempotency_ledger.v1` and `platform_audit_log.v1`. The existing providers
-remain truthful, so the binding tuple is unchanged. Static tests name all three
-new revisions and the PostgreSQL composition test now expects
-`ig_0014_polling_evidence` as the applied integration head.
+remain truthful, so the binding tuple is unchanged. Slice 4's static tests named
+all three new revisions and its PostgreSQL composition test expected
+`ig_0014_polling_evidence` as the applied integration head; slice 5 advances
+that head expectation without changing these bindings.
 
 ## 4.3 The worker schedules; a16 decides and records
 
@@ -367,6 +370,46 @@ checkpoint version remains the sole race authority.
 The wake cadence and per-pass page size are deployment configuration. They do
 not decide when a failed job becomes eligible again; `due_polling_jobs` applies
 that floor from durable module state.
+
+# Slice 5 — Integration a17 and the product-owned capability contract
+
+**Status: published and adopted in this source; CI is the acceptance owner.
+This changes no connector activation or product authority.**
+
+## 5.1 Immutable release and exact composition
+
+| Coordinate | Immutable value |
+|---|---|
+| Release run | `33043793199` |
+| Tag | `dotmac-integration-v0.1.0a17` |
+| Peeled commit | `2cab76b442e6cc6c8ed81a409d943ba250351c3d` |
+
+The assembly pins exactly `0.1.0a17`. Its ordinary Poetry 2.4.1 lock refresh
+consumes the registry-verified wheel; neither the version declared in Starter
+source nor its release-record pull request substitutes for this oracle.
+
+## 5.2 One descriptor protocol, an independent product wire
+
+Sub's authenticated descriptor v3 carries two separate contracts:
+
+1. `capability_contract`, parsed by the module and installed unchanged as the
+   local registry declaration; and
+2. `wire_schema_version`, used by this assembly only to select the already
+   reviewed messaging or ProductObservation renderer.
+
+The assembly authors neither. A v1/v2 descriptor cannot satisfy the capability
+schema gate, so it is refused instead of receiving an assembly-invented schema
+or `SchemaGrace`. A product/provider/capability branch in wire selection remains
+forbidden.
+
+## 5.3 The lineage moved; cross-lineage bindings did not
+
+`ig_0015_descriptor_contract` persists the product wire version and exact
+capability-contract document on the immutable destination revision. The module
+still requires exactly `module_database_roles.v1`,
+`idempotency_ledger.v1` and `platform_audit_log.v1`; all three existing bindings
+remain truthful, and the composition gate now expects `ig_0015` as the applied
+integration head.
 
 # What no slice does
 

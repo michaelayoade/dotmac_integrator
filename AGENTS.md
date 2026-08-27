@@ -151,11 +151,13 @@ This is a **thin assembly**. The reusable behaviour lives in
     port is INSTALLED at startup (ADR-0009 shape) and the pump fails closed
     without one; it never marks a receipt done that it did not deliver.
 25. **The destination's wire contract is IMPLEMENTED here, never authored
-    here.** Product-port descriptor v1 selects the legacy message adapter
-    transcribed from `dotmac_sub`'s merged port; descriptor v2 selects the
-    provider-neutral `dotmac_integration.product_observation_document`, whose
-    typed observation body is declared by the destination product. Selection is
-    by protocol schema version only — never product, provider, connector or
+    here.** Product-port descriptor v3 carries an independent
+    `wire_schema_version`: `dotmac.io/integrator-observation-envelope/v1`
+    selects the legacy message adapter transcribed from `dotmac_sub`'s merged
+    port, while `dotmac.io/product-observation/v1` selects the provider-neutral
+    `dotmac_integration.product_observation_document`, whose typed observation
+    body is declared by the destination product. Selection is by WIRE schema
+    version only — never descriptor version, product, provider, connector or
     capability identity. A disagreement is a defect in this file, or a contract
     change that happens in the owning product first.
     Three consequences that are easy to get wrong and expensive to discover:
@@ -185,14 +187,16 @@ This is a **thin assembly**. The reusable behaviour lives in
 27. **The product owns one authenticated, versioned port descriptor; the Integrator
     reconciles it.** The destination binding id, capability declaration, paths,
     contract version, activation state and opaque scope come from the product's
-    descriptor, never from parallel assembly maps or provider input. V1 and V2
-    share one exact authenticated field set; unknown versions fail closed. The
-    assembly pins the expected digest, authenticates the GET without
-    following redirects, and invokes the module-owned reconciler only after the
-    read completes. The resulting immutable destination revision is the local
-    routing fact. Missing or changed evidence fails boot; an unreconciled
-    receipt is pre-network `UNAVAILABLE`. The Integrator never mints a product
-    capability declaration.
+    descriptor, never from parallel assembly maps or provider input. V3 carries
+    one exact authenticated field set, including the independent wire version
+    and the domain-owned `CapabilityContract`; legacy descriptors cannot satisfy
+    the schema gate and are refused by this assembly. The assembly pins the
+    expected digest, authenticates the GET without following redirects, parses
+    the product's contract through the module and invokes the module-owned
+    reconciler only after the read completes. The resulting immutable
+    destination revision is the local routing fact. Missing or changed evidence
+    fails boot; an unreconciled receipt is pre-network `UNAVAILABLE`. The
+    Integrator never mints a capability declaration, schema or `SchemaGrace`.
 28. **The destination credential reaches no log, no traceback and no metric
     label.** Held at startup like any other material (rule 11), resolved per
     call as a dict lookup so a rotation takes effect without a restart, and

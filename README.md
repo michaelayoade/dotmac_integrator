@@ -7,7 +7,7 @@ only what a deployment can own.
 ```
 dotmac-kernel  0.1.0a68  ──┐
                            ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a16┘        (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a17┘        (this repo)          (pinned, discovered)
 ```
 
 ## What this repository is allowed to contain
@@ -85,19 +85,21 @@ the release and adoption evidence:
 * **Settlement now has a product-owned port and a generic wire.** Paystack and
   Flutterwave are both released and verified. Sub declares
   `payments.settlement.observation.v1` through its billing acceptance port;
-  integration a13 projects engine-owned source provenance into ProductObservation
-  v1, and this assembly selects that protocol only from descriptor v2. The
+  integration a17 projects its domain-owned contract from descriptor v3 and
+  engine-owned source provenance into ProductObservation v1, and this assembly
+  selects that wire only from `wire_schema_version`. The
   remaining work is operational adoption: reconcile the authenticated descriptor,
   run Paystack shadow first, cut it over on zero unexplained drift, then repeat
   for Flutterwave v4. ERP remains the GL owner and receives only product-owned
   accounting consequences, never provider transport.
-* **Polling runs without an assembly-owned retry engine.** Integration a16 is
-  pinned from immutable release run `32929018760` and peeled tag
-  `dotmac-integration-v0.1.0a16` at
-  `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e`. The worker wakes on its deployment
-  cadence, reads one bounded page through `due_polling_jobs`, and delegates each
-  complete attempt to `poll_once`; selection, failure evidence, retry state and
-  backoff remain module-owned.
+* **Polling runs without an assembly-owned retry engine.** Integration a17 is
+  pinned from immutable release run `33043793199` and peeled tag
+  `dotmac-integration-v0.1.0a17` at
+  `2cab76b442e6cc6c8ed81a409d943ba250351c3d`. It retains a16's complete polling
+  engine: the worker wakes on its deployment cadence, reads one bounded page
+  through `due_polling_jobs`, and delegates each complete attempt to
+  `poll_once`; selection, failure evidence, retry state and backoff remain
+  module-owned.
 
 ### Runtime boundaries (SPI 1.3)
 
@@ -274,7 +276,7 @@ here would let an install months from now compose a combination nobody ran.
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
-| `dotmac-integration` | `0.1.0a16` | Published by release run `32929018760`; peeled tag `dotmac-integration-v0.1.0a16` resolves to `dcab4559b6dcc2c38737dd65ce6bb2f5ba59df0e`. Adds delivery evidence/result migrations plus module-owned polling selection, attempt evidence and backoff; lineage head `ig_0014`, with the three existing prerequisites unchanged. |
+| `dotmac-integration` | `0.1.0a17` | Published by release run `33043793199`; peeled tag `dotmac-integration-v0.1.0a17` resolves to `2cab76b442e6cc6c8ed81a409d943ba250351c3d`. Adds descriptor-v3 capability-contract persistence at lineage head `ig_0015` on top of a16's delivery/polling engine; the three existing prerequisites are unchanged. |
 | `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
 
 ### What a pin bump actually costs
@@ -334,7 +336,7 @@ and the answers are **proven, not believed**:
 - at deploy time, by `require_prerequisites` inside `ig_0007_idempotency_ledger`
   and `ig_0008_platform_audit_log`, whose bodies are those checks.
 
-`dotmac-integration 0.1.0a16` requires three effects, and all three are bound:
+`dotmac-integration 0.1.0a17` requires three effects, and all three are bound:
 
 | Effect | Provider revision | Why the module needs it |
 |---|---|---|
@@ -377,7 +379,7 @@ is therefore a deploy-time verified contract rather than request-time luck.
 
 `ig_0001_connector_cp` ships `depends_on = ("0001_initial_tenant_schema",)`: a
 physical edge naming a foreign revision, the exact thing the prerequisite
-vocabulary exists to replace. **It is still there at `0.1.0a16`, and it cannot be
+vocabulary exists to replace. **It is still there at `0.1.0a17`, and it cannot be
 repaired at any version.** The file shipped in a1, a2, a3 and a4; its bytes have
 run in databases the Starter does not own, and `alembic_version` records that a
 revision ran, never which version of it. a4 added `ig_0007` rather than editing
@@ -486,14 +488,15 @@ different layer.
 
 ### The client (`product_port.py`)
 
-The client is **implemented** here and **not authored** here. Descriptor v1
-keeps the legacy messaging contract transcribed from Sub. Descriptor v2 uses
-`dotmac_integration.product_observation_document`: the engine owns the generic
-envelope and durable source provenance, while the destination product owns and
-validates the typed `observation`. Selection is by descriptor protocol version
-only; no product, provider, connector or capability branch exists here. A
-disagreement is a defect here, or a contract change that happens in the owning
-product first.
+The client is **implemented** here and **not authored** here. Descriptor v3
+carries both the product-owned capability contract and an independent wire
+version. The messaging wire keeps the legacy contract transcribed from Sub;
+the generic wire uses `dotmac_integration.product_observation_document`: the
+engine owns the generic envelope and durable source provenance, while the
+destination product owns and validates the typed `observation`. Selection is
+by `wire_schema_version` only; no descriptor-version, product, provider,
+connector or capability branch exists here. A disagreement is a defect here,
+or a contract change that happens in the owning product first.
 
 Five decisions worth reading before touching it:
 
@@ -511,8 +514,9 @@ Five decisions worth reading before touching it:
   it from Sub's domain envelope. Unknown fields are still refused, so this does
   not become a general suppression mechanism.
 - **The product publishes one authenticated descriptor.** It owns the remote
-  binding id, capability declaration, port paths, contract version and opaque
-  stream scope. `ProductPortDescriptorReconciler` checks an operator-approved
+  binding id, capability contract (including any dated `SchemaGrace`), port
+  paths, contract version, wire version and opaque stream scope.
+  `ProductPortDescriptorReconciler` checks an operator-approved
   digest and idempotently appends the module's immutable projection. There is
   no parallel binding map or capability declaration in this assembly.
 - **Acceptance is mapped honestly.** `ACCEPTED` and `ALREADY_APPLIED` both mean
