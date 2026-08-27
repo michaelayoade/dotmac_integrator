@@ -196,6 +196,14 @@ OWNED_BY_THE_MODULE = (
     "set_binding_enabled",
     "validate_secret_refs",
     "record_delivery_outcome",
+    # a16 polling. The assembly schedules the public façade and owns none of
+    # its selector, attempt, evidence, classification or retry mechanics.
+    "due_polling_jobs",
+    "poll_once",
+    "classify_poll_failure",
+    "record_poll_failure",
+    "record_poll_success",
+    "poll_backoff_seconds",
     # SPI 1.3. The projection of the installed manifest set is the module's, and
     # an assembly-side one would be a second answer to "what did these
     # connectors declare" — computed from the same manifests, drifting the
@@ -214,6 +222,23 @@ def test_no_module_owned_function_is_redefined(name: str) -> None:
                     f"{path.name} defines {name!r}, which dotmac-integration "
                     "owns. Call it; do not restate it."
                 )
+
+
+def test_polling_uses_the_module_selector_and_complete_attempt() -> None:
+    code = _source_without_docstrings(SRC / "polling.py")
+    assert "integration.due_polling_jobs(" in code
+    assert "integration.poll_once(" in code
+    for private_path in (
+        "integration.prepare_poll(",
+        "integration.invoke_poll(",
+        "integration.record_poll_batch(",
+        "integration.record_poll_failure(",
+        "integration.record_poll_success(",
+    ):
+        assert private_path not in code, (
+            f"polling.py calls {private_path!r}; drive poll_once rather than "
+            "reassembling its phases or durable evidence path"
+        )
 
 
 # ── 5. No DDL ───────────────────────────────────────────────────────────────
@@ -257,8 +282,8 @@ def test_docstring_stripping_removes_prose_but_keeps_code() -> None:
     raw = sample.read_text(encoding="utf-8")
     stripped = _source_without_docstrings(sample)
 
-    assert "ExecutionPolicy" in raw, "fixture assumption broke"
-    assert "ExecutionPolicy" not in stripped, "prose survived stripping"
+    assert "failure classification" in raw, "fixture assumption broke"
+    assert "failure classification" not in stripped, "prose survived stripping"
     assert "class Worker" in stripped, "code did not survive stripping"
 
 
@@ -438,9 +463,11 @@ def test_shadow_source_resolver_guard_bites_on_a_local_join() -> None:
     assert "CapabilityBinding" in plausible
 
 
-def test_product_wire_selection_uses_only_the_descriptor_protocol_version() -> None:
+def test_product_wire_selection_uses_only_the_declared_wire_version() -> None:
     source = _function_source(SRC / "product_port.py", "build_product_document")
     assert "_PRODUCT_DOCUMENT_BUILDERS" in source
+    assert "wire_schema_version" in source
+    assert 'getattr(descriptor, "schema_version"' not in source
     for product_fact in ("application", "capability_id", "connector_key"):
         assert product_fact not in source
 

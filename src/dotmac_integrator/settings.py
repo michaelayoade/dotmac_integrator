@@ -67,9 +67,24 @@ class Settings(BaseSettings):
         default=True,
         description="Run the in-process pump. False for an API-only replica.",
     )
-    worker_poll_seconds: float = Field(default=5.0, gt=0)
+    worker_poll_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Wake cadence for connector polling and receipt delivery. The "
+            "module still owns retry eligibility and backoff."
+        ),
+    )
     worker_lease_sweep_seconds: float = Field(default=60.0, gt=0)
-    worker_batch_size: int = Field(default=20, ge=1)
+    worker_batch_size: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Maximum jobs or receipts attempted per worker pass. This is a "
+            "scheduler bound, not an attempt or retry limit; the module "
+            "refuses a poll page above its own absolute bound."
+        ),
+    )
 
     # ── Held secret material (ADR-0009) ─────────────────────────────────────
     # WHICH mechanisms may be dereferenced, and WHERE each is confined. Not

@@ -45,18 +45,19 @@ the same lesson; do not reintroduce it here.
 
 ## Three effects, because three are required — and two were RETIRED
 
-`dotmac-integration 0.1.0a13` declares the database roles, idempotency ledger and
+`dotmac-integration 0.1.0a17` declares the database roles, idempotency ledger and
 append-only platform audit log requirements. All three are bound below, and
 nothing else is.
 
-Re-derived at the a12 → a13 bump, which is required rather than a formality: a
+Re-derived again at the a16 → a17 bump, which is required rather than a formality: a
 release that changes `requires` changes what this assembly must assert about it.
-The answer this time is that NOTHING moved, and the evidence is specific rather
-than a shrug — a13 ships no new revision (`ig_0011_replay_retention` is still
-the lineage head), and its `manifest.requires` tuple is byte-identical to a12's.
-The release adds ProductObservation projection and source resolution, not a
-database effect. A no-op re-derivation is recorded because the alternative is a
-reader at the next bump not knowing whether this one was checked or skipped.
+The answer this time is that the bindings did not move, while the module lineage
+did: a17 adds `ig_0015_descriptor_contract` on top of a16's delivery and polling
+revisions, and its `manifest.requires` tuple remains the same three effects as
+a16. The new revision changes module-owned platform columns and a constraint;
+it introduces no new cross-lineage prerequisite. A no-op binding re-derivation
+is recorded because the alternative is a reader at the next bump not knowing
+whether this one was checked or skipped.
 
 Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
 Both were truthful — this deployment composes the whole kernel lineage, so kernel
@@ -86,10 +87,10 @@ append-only log as `platform_audit_log.v1`, and `ig_0008` requires it. The
 provider is kernel `0026`, the revision that completes the effect by removing
 UPDATE/DELETE and column-level escape grants from the online platform role.
 
-## The `ig_0001` literal edge — unrepaired through a13
+## The `ig_0001` literal edge — unrepaired through a17
 
 `ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
-at `0.1.0a13` — a physical edge naming a foreign revision, which is exactly what
+at `0.1.0a17` — a physical edge naming a foreign revision, which is exactly what
 the prerequisite vocabulary exists to replace. It cannot be repaired at any
 version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
 the Starter does not own, and `alembic_version` records that a revision ran,

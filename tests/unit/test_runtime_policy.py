@@ -18,6 +18,7 @@ Three claims, and the middle one is the reason this file exists at all.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import dotmac_integration as integration
@@ -213,6 +214,14 @@ def _install_registry(*capability_ids: str) -> None:
                     application="planted_app", module="planted_module"
                 ),
                 summary="planted",
+                schema_grace=integration.SchemaGrace(
+                    reason=(
+                        "synthetic coverage fixtures intentionally carry no "
+                        "payload contract"
+                    ),
+                    retire_after=date(2099, 12, 31),
+                    tracked_by="tests/unit/test_runtime_policy.py",
+                ),
             )
             for capability_id in capability_ids
         )

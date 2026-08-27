@@ -17,28 +17,33 @@ The fixture below is the missing half: a document in Sub's exact published
 shape with the digest Sub's own algorithm produces for it. If either side
 changes canonicalisation, this fails in CI, in the repository that changed.
 
-PROVENANCE — transcribed from `dotmac_sub` `origin/dev` `379a6ea68`:
+PROVENANCE — transcribed from `dotmac_sub` merged commit `6a446d255`:
 
 * `app/services/integrations/product_port_descriptor.py` — the `published`
   dict, its field order-independent digest (`json.dumps(sort_keys=True,
   separators=(",", ":"), default=str)` then SHA-256), and the constants
-  `DESCRIPTOR_SCHEMA_VERSION`, `APPLICATION`, `OWNER_MODULE`,
-  `CAPABILITY_SUMMARY`, `CONTRACT_VERSION`, `DESTINATION_SCOPE`.
+  `CONTRACT_DESCRIPTOR_SCHEMA_VERSION`, `MESSAGING_WIRE_SCHEMA_VERSION`,
+  `MESSAGING_CAPABILITY_CONTRACT`, `APPLICATION`, `OWNER_MODULE`,
+  `CAPABILITY_SUMMARY`, `CONTRACT_VERSION` and `DESTINATION_SCOPE`.
 * `app/services/integrations/connectors/integrator_http.py` —
   `INTEGRATOR_RECEIVE_CAPABILITY = "messaging.receive.v1"`.
 
-The ids and timestamps are fixed rather than generated: a golden digest is only
+The ids and contract dates are fixed rather than generated: a golden digest is only
 golden if the document that produced it cannot vary between runs.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 import pytest
 from dotmac_integration import (
+    CapabilityContract,
+    CapabilityOwner,
     LocalScope,
     ProductPortDescriptorSnapshot,
+    SchemaGrace,
     product_port_descriptor_digest,
 )
 
@@ -47,23 +52,43 @@ RECORDED_BINDING = UUID("6f1f2a1e-6b8a-4f3f-9a7c-1c2d3e4f5a6b")
 
 _DELIVERY_PATH = f"/api/v1/integration/observations/{RECORDED_BINDING}"
 
-#: Sub's `source_revision` for the recorded binding — itself a digest, over the
-#: binding and installation state that decided `activation_state`.
+#: Sub's v3 `source_revision` for the recorded binding — the v1 routing source
+#: plus the independently declared wire and capability contract.
 RECORDED_SOURCE_REVISION = (
-    "989d1f0b6de3bedab73db87aa8b2ae5f85f9bd90ad2a4587cfe821d41f53bbc0"
+    "570af1209e15c0b234acb792f90606bf68c47f5a0e2287d0771f3f5b7d60ac5b"
 )
 
 #: What Sub's `descriptor_digest(published)` returns for the descriptor below.
 #: Recorded, not computed here — computing it with the function under test is
 #: exactly the tautology this file exists to avoid.
 RECORDED_SUB_DESCRIPTOR_DIGEST = (
-    "e16e062bf4fa3de5aa8068b8b55158dfb26fb23bb78fdafd48c9f683e4e924da"
+    "06cce00810ae30369c126145ecba2b4411ba5fd873bc0ce9aeb2e6fb58118d4c"
+)
+
+RECORDED_SCHEMA_GRACE = SchemaGrace(
+    reason=(
+        "The shared messaging.receive.v1 id is still served by divergent "
+        "connector-normalized observation payloads; its successor contracts "
+        "and exact connector digest claims are not published yet."
+    ),
+    retire_after=date(2026, 9, 30),
+    tracked_by=("docs/INTEGRATOR_MESSAGING_RECEIVE_CUTOVER.md#capability-schema-grace"),
+)
+RECORDED_CAPABILITY_CONTRACT = CapabilityContract(
+    capability_id="messaging.receive.v1",
+    owner=CapabilityOwner(
+        application="sub",
+        module="communications.team_inbox_integrator_envelope",
+    ),
+    summary="Inbound provider message and delivery-state observations",
+    schema_grace=RECORDED_SCHEMA_GRACE,
 )
 
 
 def _recorded_descriptor(**overrides: object) -> ProductPortDescriptorSnapshot:
     fields: dict[str, object] = {
-        "schema_version": "dotmac.io/product-port-descriptor/v1",
+        "schema_version": "dotmac.io/product-port-descriptor/v3",
+        "wire_schema_version": "dotmac.io/integrator-observation-envelope/v1",
         "application": "sub",
         "owner_module": "communications.team_inbox_integrator_envelope",
         "capability_id": "messaging.receive.v1",
@@ -77,6 +102,7 @@ def _recorded_descriptor(**overrides: object) -> ProductPortDescriptorSnapshot:
         "destination_scope": LocalScope(kind="inbox", ref="support"),
         "activation_state": "configured_disabled",
         "source_revision": RECORDED_SOURCE_REVISION,
+        "capability_contract": RECORDED_CAPABILITY_CONTRACT,
         "descriptor_digest": RECORDED_SUB_DESCRIPTOR_DIGEST,
     }
     fields.update(overrides)
@@ -114,7 +140,8 @@ def test_the_recorded_descriptor_is_the_pre_activation_one() -> None:
         ("mirror_path", "/api/v1/integration/observations/elsewhere/mirror"),
         ("activation_state", "enabled"),
         ("source_revision", "f" * 64),
-        ("schema_version", "dotmac.io/product-port-descriptor/v2"),
+        ("schema_version", "dotmac.io/product-port-descriptor/v99"),
+        ("wire_schema_version", "dotmac.io/product-observation/v1"),
     ],
 )
 def test_every_covered_field_moves_the_digest(field: str, value: object) -> None:
@@ -136,6 +163,25 @@ def test_the_destination_scope_is_covered_too() -> None:
 
     changed = _recorded_descriptor(
         destination_scope=LocalScope(kind="queue", ref="fiber")
+    )
+
+    assert product_port_descriptor_digest(changed) != RECORDED_SUB_DESCRIPTOR_DIGEST
+
+
+def test_the_capability_contract_is_covered_too() -> None:
+    """The new nested v3 contract needs its own sensitivity case."""
+
+    changed = _recorded_descriptor(
+        capability_contract=CapabilityContract(
+            capability_id="messaging.receive.v1",
+            owner=RECORDED_CAPABILITY_CONTRACT.owner,
+            summary=RECORDED_CAPABILITY_CONTRACT.summary,
+            schema_grace=SchemaGrace(
+                reason=RECORDED_SCHEMA_GRACE.reason,
+                retire_after=date(2026, 10, 1),
+                tracked_by=RECORDED_SCHEMA_GRACE.tracked_by,
+            ),
+        )
     )
 
     assert product_port_descriptor_digest(changed) != RECORDED_SUB_DESCRIPTOR_DIGEST

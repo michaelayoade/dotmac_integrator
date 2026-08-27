@@ -76,7 +76,8 @@ class _Scope:
 
 
 class _ProductPort:
-    schema_version = "dotmac.io/product-port-descriptor/v1"
+    schema_version = "dotmac.io/product-port-descriptor/v3"
+    wire_schema_version = "dotmac.io/integrator-observation-envelope/v1"
     delivery_path = f"/api/v1/integration/observations/{REMOTE_BINDING}"
     mirror_path = f"{delivery_path}/mirror"
     activation_state = "enabled"

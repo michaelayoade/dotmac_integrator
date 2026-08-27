@@ -97,8 +97,8 @@ def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
 
     Asserted on the head of the `ig` branch rather than by scanning history,
     because `alembic_version` holds current heads and nothing else — the same
-    fact that makes an order canary the wrong instrument. `ig_0011` is the head
-    at a10, so that row is the right question to ask; its ancestry includes the
+    fact that makes an order canary the wrong instrument. `ig_0015` is the head
+    at a17, so that row is the right question to ask; its ancestry includes the
     prerequisite-verification revision.
     """
     engine = create_engine(migrated)
@@ -106,9 +106,9 @@ def test_the_upgrade_itself_verified_the_prerequisites(migrated: str) -> None:
         rows = conn.execute(text("SELECT version_num FROM alembic_version"))
         applied = {row[0] for row in rows}
     engine.dispose()
-    assert "ig_0011_replay_retention" in applied, (
+    assert "ig_0015_descriptor_contract" in applied, (
         f"alembic_version holds {sorted(applied)}. The `ig` head at "
-        "dotmac-integration 0.1.0a10 is ig_0011_replay_retention, whose ancestry "
+        "dotmac-integration 0.1.0a17 is ig_0015_descriptor_contract, whose ancestry "
         "includes ig_0008_platform_audit_log. If the head did not run, the "
         "deploy-time verification did not complete and `upgrade heads` applied "
         "one branch."

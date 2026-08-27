@@ -206,10 +206,15 @@ A polling cursor has not advanced. The danger is not a double call but a
 provider is now grows, and nothing polls it again.
 
 1. Check whether the poll is running at all.
-2. `mod_intg.polling_checkpoints.version` is an optimistic lock. Repeated
-   `CheckpointConflict` means two workers are racing one cursor; that is the
-   lock working, but it should not be a steady state.
-3. Rewinding a cursor to re-poll a missed window is safe **only** because the
+2. Read the checkpoint's `attempt_count`, `next_attempt_at`,
+   `last_failure_code`, `last_failure_at` and `last_success_at`. A future
+   `next_attempt_at` is module-owned backoff, not a stopped scheduler. Read
+   `mod_intg.polling_attempt_failures` for the append-only sequence; it stores a
+   closed failure code and bounded exception type, never provider text.
+3. `mod_intg.polling_checkpoints.version` is an optimistic lock. Repeated
+   `checkpoint_conflict` evidence means two workers are racing one cursor; that
+   is the lock working, but it should not be a steady state.
+4. Rewinding a cursor to re-poll a missed window is safe **only** because the
    inbox deduplicates on `(capability_binding_id, provider_event_id)`. Re-polled
    events that were already received return as duplicates rather than being
    processed twice.
