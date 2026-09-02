@@ -1,0 +1,423 @@
+# The Integrator's deployment descriptor — ProductDeploymentSpec.v1.
+#
+# Everything a deployment of this assembly needs is rendered from this file by
+# `dotmac-deploy render`. See the Starter's
+# docs/adr/0070-deployment-is-a-stateless-versioned-foundation.md.
+#
+# This repository is BOTH a qualifying extraction source and an adopter, which
+# is worth stating because the two pull in opposite directions. Its Dockerfile,
+# one-shot migration service, owner/online credential split and readiness
+# endpoint are what the foundation's image contract was ported FROM
+# (`docs/inventories/deployment-foundation-sources.md` § 4). What this adopter
+# fixes is the three things that were missing or contradictory, all recorded as
+# inventory defects D14, D15 and the § 7 gaps:
+#
+#   D14  `docker-compose.yml:18` reads `${INTEGRATOR_TAG:-latest}` while
+#        `.github/workflows/release-image.yml:192-198,230` states in terms that
+#        it deploys BY DIGEST. No digest knob existed anywhere, so the workflow's
+#        own stated contract was unimplementable with the file it deploys.
+#        Fixed below: `image.reference` is a digest and the schema refuses a tag.
+#
+#   D15  compose defaults `ENVIRONMENT: production`, which makes `METRICS_TOKEN`
+#        prod-fatal (`src/dotmac_integrator/settings.py:424-430`), and the same
+#        file never sets it — the shipped defaults refuse to boot. Fixed below:
+#        every required material is DECLARED, so a missing one is a render-time
+#        fact rather than a boot-time discovery.
+#
+#   §7   no deployment engine, no backup, no ingress, and no container stop
+#        budget anywhere in the fleet. Declared below.
+
+schema = "ProductDeploymentSpec.v1"
+product = "dotmac_integrator"
+environment = "production"
+
+[assembly]
+manifest_path = "deploy/product-manifest.json"
+# Placeholder shape. `dotmac-deploy` generates the manifest from the real
+# ProductAssemblySpec; the digest's VALUE is proven by `dotmac-deploy drift`
+# against a running deployment, which is the only place it can be.
+manifest_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[image]
+# D14. A digest, never `${INTEGRATOR_TAG:-latest}`. The release workflow already
+# builds once, audits, gates on approval and republishes the exact audited bytes
+# — this is the missing half that lets a deployment consume them.
+reference = "registry.dotmac.io/dotmac/integrator@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+source_revision = "84c0f020ca63333ab56c39fb96a0acc4630b2e01"
+
+[runtime_materials]
+# D15. Every name the `api` service's environment really requires, from
+# docker-compose.yml:45-61 and the prod-fatal list in settings.py's
+# `validate_settings`. METRICS_TOKEN is here because ENVIRONMENT=production
+# makes it fatal and the compose file never set it.
+names = [
+  "DATABASE_URL",
+  "DEPLOYMENT_ID",
+  "PLATFORM_ROOT_DOMAIN",
+  "JWT_SECRET",
+  "METRICS_TOKEN",
+  "SECRET_FILE_ROOT",
+  "SECRET_ENV_PREFIX",
+]
+
+# ── roles ───────────────────────────────────────────────────────────────────
+#
+# One process role. `migrate` is NOT a role: it is the migration, declared once
+# in [migration] and rendered as the one-shot service every runtime role waits
+# on. Declaring it twice is how the two drift.
+
+[[roles]]
+code = "api"
+# The REAL entry point. `assembly.py` exposes `create_app()` and NO module-level
+# `app`, so an earlier `dotmac_integrator.assembly:app` would have failed at
+# import — a descriptor naming a symbol that does not exist. Exec form with
+# literal values rather than the image's `sh -c` wrapper: the image contract
+# refuses a shell-form entry point, because `sh` does not forward SIGTERM and
+# the 30-second stop budget below would then do nothing.
+command = [
+  "uvicorn",
+  "--factory",
+  "dotmac_integrator.assembly:create_app",
+  "--host",
+  "0.0.0.0",
+  "--port",
+  "8080",
+]
+replicas = 1
+# `src/dotmac_integrator/assembly.py` and docker-compose.yml:78-80: long enough
+# for the lifespan to stop the sweep, let an in-flight operation finish and
+# dispose the pool. Docker's default of 10s cuts that off and the leases have to
+# be reclaimed by the next sweep instead. This is the ONLY stop budget declared
+# anywhere in the fleet today (inventory § 7).
+stop_grace_seconds = 30
+materials = [
+  "DATABASE_URL",
+  "DEPLOYMENT_ID",
+  "PLATFORM_ROOT_DOMAIN",
+  "JWT_SECRET",
+  "METRICS_TOKEN",
+  "SECRET_FILE_ROOT",
+  "SECRET_ENV_PREFIX",
+]
+
+[roles.resources]
+# New. The existing compose file declares no limit at all, so one leak takes
+# the host rather than the container.
+cpus = "2.0"
+memory = "1g"
+pids = 256
+
+[roles.security]
+# Ported unchanged from docker-compose.yml:81-84 and Dockerfile:76-80,96 —
+# this is the shape the foundation's contract was written from.
+user = "10001:10001"
+read_only_root = true
+no_new_privileges = true
+cap_drop = ["ALL"]
+tmpfs = ["/tmp"]
+
+# Two probes, two paths, and `assembly.py:185-192` already implements both
+# correctly. `/health/live` answers whether the process is alive and touches
+# nothing; `/health/ready` runs `SELECT 1` plus an `information_schema.schemata`
+# check and returns 503 until the schema is present — the state between a first
+# deploy's image landing and its migration finishing.
+[roles.health.live]
+path = "/health/live"
+port = 8080
+interval_seconds = 10
+timeout_seconds = 3
+retries = 3
+start_period_seconds = 10
+
+[roles.health.ready]
+path = "/health/ready"
+port = 8080
+interval_seconds = 10
+timeout_seconds = 5
+retries = 6
+start_period_seconds = 15
+
+# ── migration ───────────────────────────────────────────────────────────────
+
+[migration]
+# AGENTS.md rule 5: never the bare `alembic` CLI, which resolves
+# `version_locations` before `env.py` and would exit 0 having applied nothing.
+# Always `heads`, plural — two lineages are composed.
+command = ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
+owner_material = "MIGRATION_DATABASE_URL"
+
+# The two composed lineages at the current pins (pyproject.toml:26-27,
+# dotmac-kernel 0.1.0a68 and dotmac-integration 0.1.0a17):
+#
+#   0026_platform_audit_log       — the kernel lineage head at the pinned tag,
+#                                   re-derived from `dotmac-kernel-v0.1.0a68`:
+#                                   0026 is still the last revision in
+#                                   dotmac_kernel/migrations/versions, and the
+#                                   kernel pin did not move.
+#   ig_0015_descriptor_contract   — the integration lineage head at
+#                                   `dotmac-integration-v0.1.0a17`, re-derived
+#                                   by walking down_revision over the tag: the
+#                                   `ig` lineage is linear and nothing names
+#                                   ig_0015 as a parent.
+#
+# RE-DERIVED at the a13 → a17 bump rather than carried forward. The previous
+# value, ig_0011_replay_retention, was the head at a13 and is now four
+# revisions behind (ig_0012 delivery evidence, ig_0013 delivery result,
+# ig_0014 polling evidence, ig_0015 descriptor contract). Left stale it would
+# have been the exact defect this list exists to catch — `verify_heads` would
+# have compared the declared head against a database four revisions ahead and
+# called a correctly-migrated deployment a failure.
+#
+# This list is what makes a lineage that silently did not advance visible: a
+# partial `upgrade heads` still exits 0, so an exit code cannot see it. RE-DERIVE
+# THIS AT EVERY PIN BUMP — the same obligation rule 10 already places on the
+# prerequisite bindings, and for the same reason.
+expected_heads = ["0026_platform_audit_log", "ig_0015_descriptor_contract"]
+
+# The composed lineages are additive: `ig_0007` and `ig_0008` call
+# `require_prerequisites` before any DDL, and neither drops nor rewrites a
+# column the previous image reads. The previous image therefore remains able to
+# run against the schema in place, which is what `online` asserts.
+compatibility = "online"
+lock_timeout_seconds = 600
+lock_retries = 3
+# `require_prerequisites` verifies the real catalog before any DDL, so a STAMPED
+# provider fails rather than passing. Running it as an explicit preflight means
+# the refusal happens before the backup's value is spent.
+# `current` — not `check`, which does not exist: `migrate.py`'s action choices
+# are exactly upgrade|downgrade|current|heads. `current` is the right preflight
+# because it is READ-ONLY and it touches the database, so it proves the owner
+# credential connects and `alembic_version` is readable before the backup's
+# value is spent. `heads` would be offline and prove nothing about the target.
+preflight_command = ["python", "-m", "dotmac_integrator.migrate", "current"]
+# The same verb, used for a different purpose: preflight PROVES the owner
+# credential connects, `heads_command` READS what it connected to. Both are
+# `current` here and that is a coincidence of this product's CLI, not a rule —
+# which is exactly why neither is derived from the other.
+heads_command = ["python", "-m", "dotmac_integrator.migrate", "current"]
+
+# ── ingress ─────────────────────────────────────────────────────────────────
+#
+# NEW. This repository has no ingress configuration of any kind (inventory § 7),
+# and its runbook's deployment step is `docker compose pull && up -d --wait`
+# with no candidate handoff. The host below is the operator surface named by
+# PLATFORM_ROOT_DOMAIN; change it here, never in a rendered file.
+
+[ingress]
+host = "integrator.dotmac.io"
+redirect_http = true
+tls_policy = "modern"
+security_headers = true
+# Empty: nginx is the outermost edge here and ORIGINATES the forwarding headers
+# rather than trusting them. Add the proxy CIDRs if that ever stops being true —
+# behind a real proxy, originating the header discards the client's address.
+trusted_proxies = []
+
+[ingress.static]
+# The assembly serves no static assets and stores no uploads. Saying so
+# explicitly beats an omission a later reader has to interpret.
+static = "none"
+uploads = "none"
+
+[[ingress.routes]]
+path = "/operations"
+role = "api"
+port = 8080
+# `require_operator` on reads AND mutations; an operator surface is not a
+# high-throughput path and a generous body limit here buys nothing.
+max_body_bytes = 1048576
+read_timeout_seconds = 60
+send_timeout_seconds = 60
+
+[[ingress.routes]]
+# AGENTS.md rule 21: an inbound body is bounded AS IT IS READ, before buffering
+# and before any signature — `ingress.read_capped_body` refuses on byte
+# limit + 1. This proxy limit is the OUTER bound and is deliberately larger than
+# the application's, so a rejection is the application's decision (which knows
+# the binding's real limit) rather than the proxy's.
+path = "/ingress"
+role = "api"
+port = 8080
+max_body_bytes = 5242880
+read_timeout_seconds = 60
+send_timeout_seconds = 60
+
+[[ingress.routes]]
+path = "/health"
+role = "api"
+port = 8080
+max_body_bytes = 4096
+read_timeout_seconds = 10
+send_timeout_seconds = 10
+
+# ── backup ──────────────────────────────────────────────────────────────────
+#
+# NEW. This repository has no backup of any kind (inventory § 7), and it holds
+# the fleet's inbox, outbox, receipts, checkpoints and idempotency ledger — the
+# evidence that says whether a delivery happened. Losing it does not lose a
+# projection; it loses the answer to "did we already pay this out".
+
+[backup]
+[[backup.datasets]]
+code = "platform"
+kind = "postgres"
+material = "BACKUP_DATABASE_URL"
+retention_days = 30
+checksum = "sha256"
+encryption = "age"
+restore_proof_max_age_days = 30
+# `migration_heads` is included deliberately: a restore that produces the right
+# tables at the wrong schema version is not a usable recovery, and nothing else
+# in the verify set would notice.
+verify = ["schema", "row_counts", "migration_heads"]
+
+# ── telemetry ───────────────────────────────────────────────────────────────
+
+[telemetry]
+logs = true
+metrics = true
+traces = false
+# AGENTS.md rule 20: `/metrics` authenticates with `Authorization: Bearer
+# $METRICS_TOKEN`, compares with `secrets.compare_digest`, and answers 404
+# rather than 403 — a 403 is an oracle telling a prober the path exists.
+metrics_material = "METRICS_TOKEN"
+endpoint_material = "OTEL_EXPORTER_OTLP_ENDPOINT"
+# The process publishes facts on an authenticated scrape endpoint and ships
+# nothing itself. One authoritative path, so no line is stored twice.
+app_direct_shipping = false
+deployment_annotations = true
+scrape_interval_seconds = 30
+
+# ── product hooks ───────────────────────────────────────────────────────────
+
+# ── product hooks ───────────────────────────────────────────────────────────
+#
+# NONE, and that is a correction rather than a gap being left open.
+#
+# An earlier revision declared two: a `composition` preflight running
+# `dotmac_integrator.verify_composition` and a `runtime_policy` postflight
+# running `dotmac_integrator.report_runtime_policy`. **Neither module exists.**
+# The descriptor named commands nobody had written, so the deployment would have
+# failed at the first hook with an import error — and the preflight is a GATE,
+# so it would have failed before anything mutated, which is the only merciful
+# part of it.
+#
+# The behaviours are real and worth having; the entry points are not written.
+# `create_app` already refuses to boot on a misclassified surface, an omitted
+# egress declaration or a missing destination descriptor (rules 14, 27, 32), and
+# `GET /operations/runtime-policy` already reports capability coverage. Turning
+# those into two console commands is a small, separate change in THIS
+# repository, and the hooks return in the same change that adds them.
+#
+# Declaring a hook whose command does not exist is worse than declaring none: it
+# reads, in review, as coverage.
+
+# ── egress ──────────────────────────────────────────────────────────────────
+#
+# DELIBERATELY EMPTY, and that is a positive declaration rather than an
+# omission. Rule 32: no provider host may be written into generic assembly
+# source. The real egress set is PROJECTED at boot by
+# `dotmac_integration.derive_runtime_policy` from the INSTALLED connector
+# manifests, because a second allowlist here could be widened without installing
+# a reviewed connector release — which is exactly what `EgressDeclaration`
+# refuses by accepting no installation-provided hosts.
+#
+# So this list stays empty forever. Enforcing egress from a rendered file would
+# recreate the second allowlist the connector boundary exists to prevent.
+[egress]
+hosts = []
+
+# ── external dependencies ───────────────────────────────────────────────────
+
+[[external_dependencies]]
+code = "postgres"
+kind = "postgres"
+required_for = ["boot", "ready", "migrate", "backup"]
+material = "DATABASE_URL"
+
+[[external_dependencies]]
+# The read-only bind mount `file://` references are confined to. A missing mount
+# is not a degraded start: a broken secret MECHANISM refuses the boot (rule 11).
+code = "secret_material"
+kind = "other"
+required_for = ["boot"]
+material = "SECRET_FILE_ROOT"
+
+# ── product alerts ──────────────────────────────────────────────────────────
+#
+# DOMAIN alerts only. HTTP RED, container restarts, Postgres pool saturation,
+# TLS expiry, backup age and telemetry-pipeline gaps are the foundation's 64
+# and are not repeated here.
+#
+# Thresholds are placeholders in `deploy/alerts/thresholds.json`, never numbers
+# in this file and never numbers in the process — the rule
+# `deploy/alerts/ingress.rules.yml` already states in its own header.
+
+[[alerts]]
+code = "INTG_RECEIPT_UNDELIVERABLE"
+severity = "page"
+expression = "integrator_receipts_unavailable_total > 0"
+owner = "integrations"
+for_seconds = 900
+summary = "Receipts are failing pre-network because a destination is unreconciled"
+runbook = "#integrator-destination-unreconciled"
+recovery = "the destination descriptor reconciles and the counter stops rising"
+protects = "the at-most-once delivery invariant: an unreconciled destination is a pre-network UNAVAILABLE, never a receipt marked done"
+dedup_by = ["product", "environment", "installation"]
+
+[[alerts]]
+code = "INTG_IDENTITY_COLLISION"
+severity = "page"
+expression = "increase(integrator_identity_collision_total[30m]) > 0"
+owner = "integrations"
+for_seconds = 0
+summary = "Two producers disagree about what a provider said"
+runbook = "#integrator-identity-collision"
+recovery = "no further collisions for 30 minutes and the conflicting producers are reconciled"
+protects = "provider-event identity: a 409 ESCALATES to INDETERMINATE rather than reporting already_applied, because the owning service is saying two producers disagree"
+dedup_by = ["product", "environment", "capability"]
+
+[[alerts]]
+code = "INTG_BINDING_DIGEST_UNKNOWN"
+severity = "ticket"
+expression = "integrator_binding_manifest_digest_unknown > 0"
+owner = "integrations"
+for_seconds = 1800
+summary = "An installation is pinned to a connector manifest digest nothing publishes"
+runbook = "#integrator-manifest-digest-unknown"
+recovery = "the binding is re-enabled against a published digest, or the connector version is restored"
+protects = "AGENTS.md rule 34: an installation adopts by manifest digest, so a published version's manifest is frozen; an unknown pin means one version named two contracts"
+dedup_by = ["product", "environment", "installation"]
+
+[[alerts]]
+code = "INTG_SCHEMA_GRACE_EXPIRING"
+severity = "ticket"
+expression = "(integrator_schema_grace_retire_after_timestamp - time()) / 86400 < 14"
+owner = "integrations"
+for_seconds = 3600
+summary = "A capability contract's ungated schema window is closing"
+runbook = "#integrator-schema-grace"
+recovery = "the contract publishes its schemas, or the grace is renewed with a stated reason"
+protects = "ADR-0024 § 12: a contract that has published nothing yet must SAY so, and the window closes rather than lapsing into silence"
+dedup_by = ["product", "environment", "capability"]
+
+[[alerts]]
+code = "INTG_SHADOW_PORT_SETTLING"
+severity = "page"
+expression = "integrator_shadow_mode_settled_total > 0"
+owner = "integrations"
+for_seconds = 0
+summary = "A MIRROR-mode deployment settled a receipt, which it must never do"
+runbook = "#integrator-shadow-settled"
+recovery = "manual: the shadow run is stopped and the affected receipts are audited"
+protects = "AGENTS.md rule 26: a shadow run that marked receipts processed would look exactly like a completed cutover while losing every event"
+dedup_by = ["product", "environment"]
+
+# ── rollout ─────────────────────────────────────────────────────────────────
+
+[rollout]
+# Long enough to see a lifespan failure that only appears once the sweep starts,
+# which a shorter window reports as a successful deployment followed by an
+# unrelated incident.
+stability_window_seconds = 120
+rollback_images_retained = 3

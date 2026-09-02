@@ -1,0 +1,109 @@
+name: Deployment conformance
+
+# Calls the Starter-owned reusable gate, pinned by immutable commit. A copied
+# recipe is a fork with good intentions — `dotmac_starter_mt:scripts/deploy.sh`
+# is the proof, a hand-port of Sub's engine that dropped the deployment lock,
+# the digest and evidence gates, the dirty-tree refusal and the warm candidate,
+# every one of which the source added after an incident.
+#
+# THE PIN. `55750e10` is `fix(deploy): complete non-root image inspection
+# (#488)`, the newest commit on Starter's PROTECTED `main` that touches
+# `.github/workflows/deployment-conformance.yml`. It was verified to be an
+# ancestor of `origin/main`, not merely to exist.
+#
+# It REPLACES `47d0cdbda20883db98e449232e0c38f9e9e0ea82`, which the previous
+# revision of this file carried with its own warning that the pin "IS NOT YET
+# VALID ON A REMOTE". That warning was accurate and is now discharged: 47d0cdbd
+# is a real commit object but it is NOT an ancestor of Starter's `main`, so
+# GitHub would have refused to resolve the `uses:` reference and this job could
+# never have run. A pin to a branch or a tag is still not an admissible
+# substitute (Governance ADR 0006: a tag is mutable, and the point of the pin is
+# that CI executes the revision that was reviewed).
+#
+# The pin and the version below are THE SAME COMMIT, which is worth stating
+# because it is the strongest pairing available and it was verified rather than
+# arranged: `git rev-list -n1 dotmac-deployment-foundation-v0.2.0a2` is
+# 55750e104df3dd94b6f9f70bf8c8db53986394c7. The gate this job calls and the
+# facility release it installs were reviewed as ONE revision, so there is no
+# window in which the workflow expects a CLI surface the pinned wheel does not
+# have — the failure a separately-chosen pin and version can silently have.
+# Re-check the pairing whenever either value moves; they are not required to
+# stay equal, but a divergence should be a decision rather than a surprise.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  deployment:
+    uses: michaelayoade/dotmac_starter_mt/.github/workflows/deployment-conformance.yml@55750e104df3dd94b6f9f70bf8c8db53986394c7
+    with:
+      descriptor: deploy/product.toml
+      rendered-dir: deploy/rendered
+      thresholds: deploy/alerts/thresholds.json
+
+      # The EXACT released version, and released is the operative word. Starter's
+      # `docs/inventories/declared-publication-baseline.json` states the oracle
+      # in terms: "The oracle is a git tag", written only after `verify-registry`
+      # has installed the exact version from the private index.
+      #
+      # `dotmac-deployment-foundation` tags: v0.1.0a1, v0.2.0a1, v0.2.0a2.
+      # 0.2.0a2 is the newest, and is what this pins.
+      #
+      # It is deliberately NOT 0.3.0a3, which the Starter tree declares. That
+      # version is recorded in the same baseline as "BUILT ONCE, DELIBERATELY
+      # UNPUBLISHED, AWAITING LANE 3" — not tagged, on no index, and blocked on
+      # the Platform CP authorization issuer. Pinning it would make this gate
+      # unresolvable, which is the failure mode the previous `0.1.0a1`
+      # placeholder had for the same underlying reason.
+      #
+      # 0.2.0a2 was checked to actually carry what this descriptor and this job
+      # need, rather than assumed from the version ordering: `spec.py` parses
+      # `expected_heads`, `preflight_command`, `heads_command`,
+      # `stop_grace_seconds`, `source_revision` and
+      # `restore_proof_max_age_days`; `BackupDataset.VERIFICATIONS` is exactly
+      # ("schema", "row_counts", "migration_heads"), which is what `[[backup.datasets]]`
+      # declares; the CLI has `render --check` and `--thresholds`; and
+      # `conformance.check_no_placeholder_digests` — the function the input
+      # below toggles — exists at that tag.
+      foundation-version: "0.2.0a2"
+
+      # OFF, and this is the one input here that weakens a check, so it states
+      # its premise rather than its intent.
+      #
+      # `image.reference` and `assembly.manifest_digest` are both the all-zeros
+      # placeholder. They are placeholders because no image for this revision
+      # has been built: `release-image.yml` produces the digest, and it runs on
+      # merged `main`, which has not happened. A real digest cannot be written
+      # before the artifact it names exists, and inventing one would be worse
+      # than declaring none.
+      #
+      # This removes ONLY findings from `check_no_placeholder_digests`. Every
+      # other conformance finding — credential separation, dependency-free
+      # liveness, digest-pinning SHAPE, duplicate log shipping, security
+      # exceptions, and the byte-for-byte `render --check` — still fails the
+      # job. The reusable workflow documents exactly this case: "for a
+      # deliberately-not-yet-real reference descriptor".
+      #
+      # TURN THIS BACK ON in the same change that writes the real image digest.
+      # It must never be off for a release gate.
+      require-real-digests: false
+
+    secrets:
+      # REQUIRED by the reusable workflow (`workflow_call.secrets`,
+      # `required: true`) and absent from the previous revision of this file,
+      # which is a second reason that revision could not have run. The
+      # foundation is published ONLY to the private registry.dotmac.io index,
+      # so the gate has no other way to install the version pinned above.
+      #
+      # `ci-reader` — a READ-only identity holding no publish scope. Canonical
+      # source `secret/dotmac/forgejo/ci-reader-token` in OpenBao. The publish
+      # token never appears here, and Starter's
+      # `test_deployment_release_lane.py` walks the parsed YAML of the reusable
+      # workflow for every string value to keep it that way.
+      FORGEJO_READ_TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
