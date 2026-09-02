@@ -101,5 +101,23 @@ python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 
+# `dotmac-deployment-foundation` is a BUILD-TIME gate, not a runtime dependency,
+# and it is deliberately absent from `[tool.poetry.dependencies]` above: the
+# conformance job installs the pinned release from the private index and runs it
+# there, while `make check` runs without it. So mypy cannot see the package, and
+# `tests/architecture/test_deployment_descriptor.py` already handles that at
+# runtime — it imports inside a `try` and skips the module unless
+# `DOTMAC_DEPLOYMENT_FOUNDATION_REQUIRED=1` turns the miss into a failure.
+#
+# Scoped to this one distribution rather than set globally. A blanket
+# `ignore_missing_imports` would also silence a genuinely mistyped or genuinely
+# missing import of a package this assembly really does depend on, which is the
+# class of defect strict mode is here to catch.
+[[tool.mypy.overrides]]
+# BOTH patterns: `foo.*` matches submodules but not `foo` itself, and the
+# module-level availability probe imports the bare top-level name.
+module = ["dotmac_deployment_foundation", "dotmac_deployment_foundation.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
