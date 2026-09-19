@@ -1,0 +1,36 @@
+{
+  "capability_id": "invoices.accounting_sync.observation.v1",
+  "contract_version": 1,
+  "event_type": "invoices.accounting_sync.observation.v1",
+  "observation": {
+    "capability_id": "invoices.accounting_sync.observation.v1",
+    "contract_version": "invoice-accounting-sync.v2",
+    "digest_version": 1,
+    "disposition": "blocked",
+    "issues": [
+      {
+        "actual_amount": "10000.00",
+        "code": "discount_allocation_undefined"
+      }
+    ],
+    "projection_digest": "0dfecf2e1f96a2d1a63eb8e5e9f78f0aefbf661ab2c424b841b5bb2eda85aa7c",
+    "source_account_id": "22222222-2222-2222-2222-222222222222",
+    "source_currency": "NGN",
+    "source_due_at": "2026-02-14T10:30:00Z",
+    "source_invoice_id": "11111111-1111-1111-1111-111111111111",
+    "source_issued_at": "2026-01-15T10:30:00Z",
+    "source_kind": "native",
+    "source_total_amount": "147000.00",
+    "source_updated_at": "2026-01-15T10:30:00Z"
+  },
+  "provider_event_id": "sub_accounting:11111111-1111-1111-1111-111111111111:2026-01-15T10:30:00Z",
+  "schema_version": "dotmac.io/product-observation/v1",
+  "scope": {
+    "kind": "organization",
+    "ref": "shared-fixture-org"
+  },
+  "source": {
+    "connector_key": "sub_accounting",
+    "installation_id": "cccccccc-3333-4333-8333-333333333333"
+  }
+}
