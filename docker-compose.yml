@@ -17,15 +17,22 @@ name: ${COMPOSE_PROJECT_NAME:-integrator}
 
 x-image: &image ${INTEGRATOR_IMAGE:-registry.dotmac.io/dotmac/integrator}:${INTEGRATOR_TAG:-latest}
 
+x-traccar-secret: &traccar-secret
+  # The connector’s service_email and service_password files are materialized
+  # by the host secret agent and mounted read-only into the Integrator only.
+  type: bind
+  source: ${TRACCAR_SECRET_FILE_ROOT_HOST:?TRACCAR_SECRET_FILE_ROOT_HOST must be set}
+  target: ${SECRET_FILE_ROOT:-/run/secrets}/traccar
+  read_only: true
 x-secrets: &secret-material
   # Material is dereferenced ONCE, at startup, from a read-only mount
   # (ADR-0009). `file://` references in a configuration revision are confined
   # to SECRET_FILE_ROOT, so this directory is the whole filesystem surface a
   # connector's configuration can name.
-  - type: bind
-    source: ${SECRET_FILE_ROOT_HOST:-./secrets}
-    target: ${SECRET_FILE_ROOT:-/run/secrets}
-    read_only: true
+  type: bind
+  source: ${SECRET_FILE_ROOT_HOST:-./secrets}
+  target: ${SECRET_FILE_ROOT:-/run/secrets}
+  read_only: true
 
 services:
   migrate:
@@ -59,7 +66,9 @@ services:
       WORKER_ENABLED: ${WORKER_ENABLED:-true}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_POOL_MAX_OVERFLOW: ${DB_POOL_MAX_OVERFLOW:-5}
-    volumes: *secret-material
+    volumes:
+      - *secret-material
+      - *traccar-secret
     ports:
       # Loopback-bound by default. A published port on 0.0.0.0 is reachable
       # regardless of the host firewall, and this is a control plane.
@@ -82,8 +91,13 @@ services:
     tmpfs: ["/tmp"]
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    networks: [integrator]
+    networks:
+      - integrator
+      - dotmac_traccar_api
 
 networks:
   integrator:
     name: ${COMPOSE_NETWORK:-integrator}
+  dotmac_traccar_api:
+    name: ${TRACCAR_API_NETWORK:-dotmac_traccar_api}
+    external: true
