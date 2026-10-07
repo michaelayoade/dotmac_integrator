@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
+from typing import cast
+from uuid import UUID, uuid4
 
 import dotmac_integration as integration
+import pytest
+from sqlalchemy.engine import Engine
 
 from dotmac_integrator import query
 
 
 def test_dispatcher_closes_preparation_session_before_provider_invocation(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = {"session_open": False}
     prepared = SimpleNamespace(capability_id="fleet.tracking.position.latest.v1")
     contract = SimpleNamespace(owner=SimpleNamespace(application="dotmac_erp"))
     capabilities = SimpleNamespace(get=lambda capability_id: contract)
-    connectors = object()
+    connectors = cast(integration.ConnectorRegistry, object())
 
     class FakeSession:
         def __init__(self, engine: object) -> None:
@@ -28,7 +31,12 @@ def test_dispatcher_closes_preparation_session_before_provider_invocation(
         def __exit__(self, *args: object) -> None:
             state["session_open"] = False
 
-    def prepare(db, binding_id, payload, **kwargs):
+    def prepare(
+        db: Engine,
+        binding_id: UUID,
+        payload: dict[str, object],
+        **kwargs: object,
+    ) -> SimpleNamespace:
         assert state["session_open"] is True
         assert kwargs == {
             "registry": connectors,
@@ -36,7 +44,7 @@ def test_dispatcher_closes_preparation_session_before_provider_invocation(
         }
         return prepared
 
-    def execute(value, **kwargs):
+    def execute(value: object, **kwargs: object) -> integration.QueryResult:
         assert value is prepared
         assert state["session_open"] is False
         assert kwargs["registry"] is connectors
@@ -47,12 +55,12 @@ def test_dispatcher_closes_preparation_session_before_provider_invocation(
         )
 
     monkeypatch.setattr(query, "Session", FakeSession)
-    monkeypatch.setattr(query.integration, "capability_registry", lambda: capabilities)
-    monkeypatch.setattr(query.integration, "prepare_query", prepare)
-    monkeypatch.setattr(query.integration, "execute_prepared_query", execute)
+    monkeypatch.setattr(integration, "capability_registry", lambda: capabilities)
+    monkeypatch.setattr(integration, "prepare_query", prepare)
+    monkeypatch.setattr(integration, "execute_prepared_query", execute)
 
     result = query.IntegrationQueryDispatcher(connectors).dispatch(
-        engine=object(),
+        engine=cast(Engine, object()),
         application="dotmac_erp",
         capability_binding_id=uuid4(),
         payload={"provider_device_ref": "device-1"},
@@ -62,15 +70,18 @@ def test_dispatcher_closes_preparation_session_before_provider_invocation(
     assert result.observation == {"latitude": 9.0, "longitude": 7.0}
 
 
-def test_dispatcher_normalizes_every_internal_exception(monkeypatch) -> None:
+def test_dispatcher_normalizes_every_internal_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
-        query.integration,
+        integration,
         "capability_registry",
         lambda: (_ for _ in ()).throw(RuntimeError("provider secret")),
     )
 
-    result = query.IntegrationQueryDispatcher(object()).dispatch(
-        engine=object(),
+    registry = cast(integration.ConnectorRegistry, object())
+    result = query.IntegrationQueryDispatcher(registry).dispatch(
+        engine=cast(Engine, object()),
         application="dotmac_erp",
         capability_binding_id=uuid4(),
         payload={"provider_device_ref": "device-1"},

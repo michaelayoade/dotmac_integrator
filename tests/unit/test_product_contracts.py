@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 
 import dotmac_integration as integration
 import pytest
@@ -15,10 +16,26 @@ class RecordingTransport:
         self.document = document
         self.headers: dict[str, str] = {}
 
-    def get(self, url: str, *, headers: dict[str, str], timeout: float) -> HttpAnswer:
+    def post(
+        self,
+        url: str,
+        *,
+        body: bytes,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> HttpAnswer:
+        raise AssertionError("POST is not expected during contract reconciliation")
+
+    def get(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> HttpAnswer:
         assert url == "https://erp.example/internal/query-contracts"
         assert timeout == 3.0
-        self.headers = headers
+        self.headers = dict(headers)
         return HttpAnswer(status=200, body=json.dumps(self.document).encode())
 
 

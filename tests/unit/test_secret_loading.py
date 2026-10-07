@@ -18,10 +18,11 @@ on during an incident.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.engine import Engine
 
 from dotmac_integrator import secret_loading
 from dotmac_integrator.secret_loading import (
@@ -178,7 +179,7 @@ def test_product_caller_keys_are_included_in_the_startup_held_set(
     monkeypatch.setattr(secret_loading, "install_secret_source", lambda source: ())
 
     secret_loading.install_secrets(
-        object(),
+        cast(Engine, object()),
         _settings(
             product_query_enabled=True,
             product_query_callers=(caller,),
@@ -210,7 +211,7 @@ def test_product_contract_registry_key_is_held_at_startup(
     monkeypatch.setattr(secret_loading, "install_secret_source", lambda source: ())
 
     secret_loading.install_secrets(
-        object(),
+        cast(Engine, object()),
         _settings(
             product_contract_registry_enabled=True,
             product_contract_registry_api_key_ref=reference,

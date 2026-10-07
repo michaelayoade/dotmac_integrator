@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from dotmac_integrator import assembly
+from dotmac_integrator import assembly, query, runtime_policy, telemetry
 from dotmac_integrator.product_auth import ProductPrincipal, require_product_query
 from dotmac_integrator.query import ProductQueryRequest, ProductQueryResponse
 from dotmac_integrator.settings import ProductQueryCaller, Settings
@@ -97,7 +97,7 @@ def test_product_query_route_passes_only_binding_application_and_payload(
     dispatcher = RecordingDispatcher()
     binding_id = uuid4()
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     app = assembly.create_app(_settings(binding_id), query_dispatcher=dispatcher)
     app.dependency_overrides[require_product_query] = lambda: _principal(binding_id)
@@ -136,7 +136,7 @@ def test_a_product_cannot_query_an_unapproved_binding(
     allowed = uuid4()
     requested = uuid4()
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     app = assembly.create_app(_settings(allowed), query_dispatcher=dispatcher)
     app.dependency_overrides[require_product_query] = lambda: _principal(allowed)
@@ -161,10 +161,10 @@ def test_route_records_one_bounded_outcome_and_duration(
     counters = RecordingQueryCounters()
     clock = iter((10.0, 10.125))
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
-    monkeypatch.setattr(assembly.telemetry, "query_counters", counters)
-    monkeypatch.setattr(assembly.telemetry, "monotonic_seconds", clock.__next__)
+    monkeypatch.setattr(telemetry, "query_counters", counters)
+    monkeypatch.setattr(telemetry, "monotonic_seconds", clock.__next__)
     app = assembly.create_app(
         _settings(binding_id), query_dispatcher=RecordingDispatcher()
     )
@@ -190,10 +190,10 @@ def test_unexpected_dispatcher_exception_is_normalized_without_leakage(
     counters = RecordingQueryCounters()
     clock = iter((20.0, 20.5))
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
-    monkeypatch.setattr(assembly.telemetry, "query_counters", counters)
-    monkeypatch.setattr(assembly.telemetry, "monotonic_seconds", clock.__next__)
+    monkeypatch.setattr(telemetry, "query_counters", counters)
+    monkeypatch.setattr(telemetry, "monotonic_seconds", clock.__next__)
     app = assembly.create_app(
         _settings(binding_id), query_dispatcher=RaisingDispatcher()
     )
@@ -239,7 +239,7 @@ def test_provider_failure_has_fixed_http_and_response_envelope(
         ProductQueryResponse.model_validate({"status": status})
     )
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     app = assembly.create_app(_settings(binding_id), query_dispatcher=dispatcher)
     app.dependency_overrides[require_product_query] = lambda: _principal(binding_id)
@@ -285,7 +285,7 @@ def test_product_query_surface_is_absent_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     app = assembly.create_app(build_settings())
     paths = {getattr(route, "path", "") for route in app.routes}
@@ -298,7 +298,7 @@ def test_product_route_has_its_own_audited_surface_class(
 ) -> None:
     binding_id = uuid4()
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     app = assembly.create_app(
         _settings(binding_id), query_dispatcher=RecordingDispatcher()
@@ -325,13 +325,11 @@ def test_enabling_product_queries_builds_the_real_dispatcher_by_default(
 ) -> None:
     binding_id = uuid4()
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
 
     dispatcher = RecordingDispatcher()
-    monkeypatch.setattr(
-        assembly.query, "IntegrationQueryDispatcher", lambda: dispatcher
-    )
+    monkeypatch.setattr(query, "IntegrationQueryDispatcher", lambda: dispatcher)
 
     app = assembly.create_app(_settings(binding_id))
 
