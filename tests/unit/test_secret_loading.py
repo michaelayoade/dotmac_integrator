@@ -18,9 +18,12 @@ on during an incident.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import pytest
 
+from dotmac_integrator import secret_loading
 from dotmac_integrator.secret_loading import (
     EnvDereferencer,
     FileDereferencer,
@@ -28,7 +31,7 @@ from dotmac_integrator.secret_loading import (
     SecretStoreUnavailable,
     build_dereferencers,
 )
-from dotmac_integrator.settings import Settings
+from dotmac_integrator.settings import ProductQueryCaller, Settings
 
 PREFIX = "INTEGRATOR_SECRET_"
 
@@ -145,3 +148,73 @@ def test_the_default_schemes_are_the_two_that_need_no_network() -> None:
 
 def test_a_deployment_may_narrow_to_one_scheme() -> None:
     assert sorted(build_dereferencers(_settings(secret_schemes="file"))) == ["file"]
+
+
+def test_product_caller_keys_are_included_in_the_startup_held_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = "file:///run/secrets/product-query/erp"
+    captured: dict[str, Any] = {}
+
+    class RecordingSource:
+        def __init__(
+            self,
+            engine: Any,
+            dereferencers: object,
+            *,
+            extra_references: object,
+        ) -> None:
+            del engine, dereferencers
+            captured["references"] = tuple(extra_references)  # type: ignore[arg-type]
+
+    caller = ProductQueryCaller(
+        application="dotmac_erp",
+        api_key_ref=reference,
+        scopes=("integration:query",),
+        binding_ids=(uuid4(),),
+    )
+    monkeypatch.setattr(secret_loading, "StoredReferenceSource", RecordingSource)
+    monkeypatch.setattr(secret_loading, "build_dereferencers", lambda settings: {})
+    monkeypatch.setattr(secret_loading, "install_secret_source", lambda source: ())
+
+    secret_loading.install_secrets(
+        object(),
+        _settings(
+            product_query_enabled=True,
+            product_query_callers=(caller,),
+        ),
+    )
+
+    assert captured["references"] == (reference,)
+
+
+def test_product_contract_registry_key_is_held_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference = "file:///run/secrets/product-contracts/erp"
+    captured: dict[str, Any] = {}
+
+    class RecordingSource:
+        def __init__(
+            self,
+            engine: Any,
+            dereferencers: object,
+            *,
+            extra_references: object,
+        ) -> None:
+            del engine, dereferencers
+            captured["references"] = tuple(extra_references)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(secret_loading, "StoredReferenceSource", RecordingSource)
+    monkeypatch.setattr(secret_loading, "build_dereferencers", lambda settings: {})
+    monkeypatch.setattr(secret_loading, "install_secret_source", lambda source: ())
+
+    secret_loading.install_secrets(
+        object(),
+        _settings(
+            product_contract_registry_enabled=True,
+            product_contract_registry_api_key_ref=reference,
+        ),
+    )
+
+    assert captured["references"] == (reference,)

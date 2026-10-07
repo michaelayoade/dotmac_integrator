@@ -9,14 +9,30 @@ source is worse than one that did not start, because nothing pages anyone.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
+from pydantic import ValidationError
 
 from dotmac_integrator.settings import (
     OPERATOR_AUTH_MECHANISMS,
+    ProductQueryCaller,
     Settings,
     validate_settings,
 )
 from tests.support import UNREACHABLE_DSN, build_settings
+
+PRODUCT_BINDING_ID = UUID("11111111-1111-1111-1111-111111111111")
+
+
+def _product_caller(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "application": "dotmac_erp",
+        "api_key_ref": "file:///run/secrets/product-query/erp",
+        "scopes": ("integration:query",),
+        "binding_ids": (PRODUCT_BINDING_ID,),
+    }
+    return {**base, **overrides}
 
 
 def _production(**overrides: object) -> Settings:
@@ -86,6 +102,90 @@ def test_an_unimplemented_operator_mechanism_is_fatal_outside_production_too() -
 def test_the_implemented_mechanism_passes_everywhere() -> None:
     assert OPERATOR_AUTH_MECHANISMS == ("platform_admin",)
     assert validate_settings(build_settings()) == []
+
+
+def test_product_query_surface_is_disabled_by_default() -> None:
+    settings = build_settings()
+
+    assert settings.product_query_enabled is False
+    assert settings.product_query_callers == ()
+    assert validate_settings(settings) == []
+
+
+def test_enabled_product_query_surface_requires_a_caller() -> None:
+    problems = validate_settings(build_settings(product_query_enabled=True))
+
+    assert any("PRODUCT_QUERY_CALLERS" in problem for problem in problems)
+    assert any("PRODUCT_CONTRACT_REGISTRY_ENABLED" in problem for problem in problems)
+
+
+def test_enabled_product_contract_registry_requires_exact_pinned_transport() -> None:
+    problems = validate_settings(build_settings(product_contract_registry_enabled=True))
+
+    assert any("PRODUCT_CONTRACT_REGISTRY_URL" in problem for problem in problems)
+    assert any("EXPECTED_DIGEST" in problem for problem in problems)
+    assert any("API_KEY_REF" in problem for problem in problems)
+
+
+def test_configured_product_contract_registry_passes_validation() -> None:
+    settings = build_settings(
+        product_contract_registry_enabled=True,
+        product_contract_registry_url="https://erp.example/internal/query-contracts",
+        product_contract_registry_expected_digest="a" * 64,
+        product_contract_registry_api_key_ref=(
+            "file:///run/secrets/product-contracts/erp"
+        ),
+    )
+
+    assert validate_settings(settings) == []
+
+
+@pytest.mark.parametrize(
+    ("callers", "expected"),
+    [
+        (
+            (
+                _product_caller(),
+                _product_caller(api_key_ref="env://INTEGRATOR_SECRET_ERP_2"),
+            ),
+            "applications must be unique",
+        ),
+        (
+            (
+                _product_caller(),
+                _product_caller(application="dotmac_billing"),
+            ),
+            "references must be unique",
+        ),
+        ((_product_caller(api_key_ref="bao://secret/erp"),), "env:// or file://"),
+        ((_product_caller(scopes=("integration:*",)),), "exact integration:query"),
+        (
+            (_product_caller(binding_ids=(PRODUCT_BINDING_ID, PRODUCT_BINDING_ID)),),
+            "binding_ids must be unique",
+        ),
+    ],
+)
+def test_product_query_caller_configuration_refuses_ambiguous_authority(
+    callers: tuple[dict[str, object], ...], expected: str
+) -> None:
+    settings = build_settings(
+        product_query_enabled=True,
+        product_query_callers=callers,
+    )
+
+    problems = validate_settings(settings)
+
+    assert any(expected in problem for problem in problems), problems
+
+
+def test_product_query_caller_requires_at_least_one_binding() -> None:
+    with pytest.raises(ValidationError):
+        ProductQueryCaller(
+            application="dotmac_erp",
+            api_key_ref="file:///run/secrets/product-query/erp",
+            scopes=("integration:query",),
+            binding_ids=(),
+        )
 
 
 def _configured_product_port(**overrides: object) -> Settings:

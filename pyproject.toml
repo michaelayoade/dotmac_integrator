@@ -24,7 +24,7 @@ python = ">=3.11,<3.14"
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
 dotmac-kernel = "0.1.0a68"
-dotmac-integration = "0.1.0a17"
+dotmac-integration = "0.1.0a18"
 
 # ── Connectors ──────────────────────────────────────────────────────────────
 # Separately released distributions, each contributing exactly ONE connector key
@@ -47,6 +47,7 @@ dotmac-connector-mono = "0.1.0a1"
 dotmac-connector-remita = "0.1.0a1"
 dotmac-connector-paystack = "0.1.0a2"
 dotmac-connector-flutterwave = "0.1.0a2"
+dotmac-connector-traccar = "0.1.0a1"
 
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.32" }

@@ -48,19 +48,22 @@ late" is a deployment's decision and putting it here would fork it.
 from __future__ import annotations
 
 import dataclasses
+import math
 import secrets
 import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, get_args
 
 import dotmac_integration as integration
 import sqlalchemy as sa
 from fastapi import HTTPException, Request
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
+
+from dotmac_integrator import query
 
 __all__ = [
     "CHALLENGE_OUTCOMES",
@@ -69,6 +72,7 @@ __all__ = [
     "HEALTH_SIGNALS",
     "INGRESS_CODES",
     "PRODUCT_ACCEPTANCES",
+    "QUERY_OUTCOMES",
     "RECEIPT_STATES",
     "REDACTION_MARKER",
     "REFUSAL_REASONS",
@@ -76,13 +80,16 @@ __all__ = [
     "VERIFICATION_KEY_POSITIONS",
     "IngressCounters",
     "MetricFamily",
+    "QueryCounters",
     "ScrapeGuard",
     "Sample",
     "UndeclaredLabel",
     "collect",
     "counters",
+    "monotonic_seconds",
     "now_epoch",
     "render",
+    "query_counters",
     "scrape",
     "scrape_is_authorized",
     "snapshot",
@@ -161,6 +168,11 @@ VERIFICATION_KEY_POSITIONS: Final[tuple[str, ...]] = ("first", "later")
 #: provider's equivalent). `refused` is the interesting one — a challenge we
 #: declined means someone is pointing a webhook at this deployment.
 CHALLENGE_OUTCOMES: Final[tuple[str, ...]] = ("served", "refused")
+
+#: Every result the versioned product query contract permits. Derived from the
+#: response type so a new outcome cannot silently be returned without first
+#: entering the reviewed, bounded metrics vocabulary.
+QUERY_OUTCOMES: Final[tuple[str, ...]] = tuple(get_args(query.ProductQueryStatus))
 
 
 #: Delivery and receipt lifecycle states, read from the MODULE's own CHECK
@@ -325,6 +337,28 @@ FAMILIES: Final[tuple[MetricFamily, ...]] = (
         "product's real latency — invisible otherwise, and eventually work "
         "done twice.",
         "counter",
+    ),
+    # Synchronous product queries.
+    MetricFamily(
+        "integrator_product_queries_total",
+        "Synchronous product queries by normalized outcome.",
+        "counter",
+        label="outcome",
+        allowed=QUERY_OUTCOMES,
+    ),
+    MetricFamily(
+        "integrator_product_query_duration_seconds_sum",
+        "Cumulative synchronous product query duration by normalized outcome.",
+        "counter",
+        label="outcome",
+        allowed=QUERY_OUTCOMES,
+    ),
+    MetricFamily(
+        "integrator_product_query_duration_seconds_count",
+        "Observed synchronous product query durations by normalized outcome.",
+        "counter",
+        label="outcome",
+        allowed=QUERY_OUTCOMES,
     ),
     # ── The worker itself ───────────────────────────────────────────────────
     MetricFamily(
@@ -530,6 +564,56 @@ class IngressCounters:
 counters: Final[IngressCounters] = IngressCounters()
 
 
+class QueryCounters:
+    """Process-local query counts and durations over one closed label set."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = dict.fromkeys(QUERY_OUTCOMES, 0)
+        self._duration_counts: dict[str, int] = dict.fromkeys(QUERY_OUTCOMES, 0)
+        self._duration_sums: dict[str, float] = dict.fromkeys(QUERY_OUTCOMES, 0.0)
+
+    def record(self, outcome: str, duration_seconds: float) -> None:
+        key = IngressCounters._checked(outcome, QUERY_OUTCOMES, "query outcome")
+        if not math.isfinite(duration_seconds) or duration_seconds < 0:
+            raise ValueError("query duration must be finite and non-negative")
+        with self._lock:
+            self._counts[key] += 1
+            self._duration_counts[key] += 1
+            self._duration_sums[key] += duration_seconds
+
+    def samples(self) -> list[Sample]:
+        with self._lock:
+            counts = dict(self._counts)
+            duration_counts = dict(self._duration_counts)
+            duration_sums = dict(self._duration_sums)
+        return [
+            *(
+                Sample("integrator_product_queries_total", count, outcome)
+                for outcome, count in counts.items()
+            ),
+            *(
+                Sample(
+                    "integrator_product_query_duration_seconds_sum",
+                    duration,
+                    outcome,
+                )
+                for outcome, duration in duration_sums.items()
+            ),
+            *(
+                Sample(
+                    "integrator_product_query_duration_seconds_count",
+                    count,
+                    outcome,
+                )
+                for outcome, count in duration_counts.items()
+            ),
+        ]
+
+
+query_counters: Final[QueryCounters] = QueryCounters()
+
+
 # ── Collection ──────────────────────────────────────────────────────────────
 
 
@@ -704,6 +788,7 @@ def collect(engine: Engine, worker: Any | None = None) -> list[Sample]:
     with Session(engine) as db:
         samples = snapshot(db)
     samples.extend(counters.samples())
+    samples.extend(query_counters.samples())
     if worker is not None:
         samples.append(
             Sample("integrator_worker_running", 1.0 if worker.running else 0.0)
@@ -778,6 +863,11 @@ def scrape(engine: Engine, worker: Any | None = None) -> str:
 def now_epoch() -> float:
     """Wall-clock seconds, isolated so the worker can be tested without sleeping."""
     return time.time()
+
+
+def monotonic_seconds() -> float:
+    """Monotonic seconds for measuring one in-process query dispatch."""
+    return time.perf_counter()
 
 
 #: Hosts a scrape may come from when no token is configured. The fail-closed

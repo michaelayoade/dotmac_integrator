@@ -25,9 +25,12 @@ from dotmac_integrator import telemetry
 from dotmac_integrator.settings import Settings, validate_settings
 from dotmac_integrator.telemetry import (
     DELIVERY_STATES,
+    QUERY_OUTCOMES,
     RECEIPT_STATES,
     IngressCounters,
+    QueryCounters,
     Sample,
+    UndeclaredLabel,
     render,
     snapshot,
 )
@@ -460,3 +463,38 @@ def test_the_sweep_failure_counter_is_exported() -> None:
     counters = IngressCounters()
     counters.record_sweep_failure()
     assert "integrator_worker_sweep_failures_total 1" in render(counters.samples())
+
+
+def test_query_metrics_count_one_duration_per_normalized_outcome() -> None:
+    counters = QueryCounters()
+    counters.record("ok", 0.25)
+    counters.record("ok", 0.75)
+    counters.record("timeout", 1.5)
+
+    output = render(counters.samples())
+
+    assert 'integrator_product_queries_total{outcome="ok"} 2' in output
+    assert 'integrator_product_query_duration_seconds_sum{outcome="ok"} 1' in output
+    assert 'integrator_product_query_duration_seconds_count{outcome="ok"} 2' in output
+    assert 'integrator_product_queries_total{outcome="timeout"} 1' in output
+    for outcome in QUERY_OUTCOMES:
+        assert f'outcome="{outcome}"' in output
+
+
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "device.latest_position",
+        "11111111-1111-1111-1111-111111111111",
+        "file:///run/secrets/product-query/erp",
+    ],
+)
+def test_query_metrics_refuse_every_undeclared_label(unsafe_label: str) -> None:
+    with pytest.raises(UndeclaredLabel):
+        QueryCounters().record(unsafe_label, 0.1)
+
+
+@pytest.mark.parametrize("duration", [-0.1, float("inf"), float("nan")])
+def test_query_metrics_refuse_invalid_durations(duration: float) -> None:
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        QueryCounters().record("ok", duration)

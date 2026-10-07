@@ -416,6 +416,27 @@ url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
 reference = "forgejo"
 
 [[package]]
+name = "dotmac-connector-traccar"
+version = "0.1.0a1"
+description = "Dotmac Integrator request connector for Traccar fleet telemetry"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_traccar-0.1.0a1-py3-none-any.whl", hash = "sha256:d0396d6d5901ac7a555347db8a7df531eed09461c04bd964a2b1ba5d9275aa3a"},
+    {file = "dotmac_connector_traccar-0.1.0a1.tar.gz", hash = "sha256:44df7468c6c7fb47d0f948abf9be9d396ca6d97552dfd9f282cc885710d5a084"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a18"
+httpx = ">=0.27,<1.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
 name = "dotmac-connector-whatsapp"
 version = "0.1.0a2"
 description = "Ingress-only Meta WhatsApp Cloud API connector for Dotmac Integrator"
@@ -437,14 +458,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a17"
+version = "0.1.0a18"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a17-py3-none-any.whl", hash = "sha256:0f6a4ffcb7c74a59e0d81ca17346433cdbec9d2381ecca8a989a7e9d57ec691a"},
-    {file = "dotmac_integration-0.1.0a17.tar.gz", hash = "sha256:1f62043a33c0b1d17b3d5ef5ae41f58270f56b4913e7c3b1f859449616760427"},
+    {file = "dotmac_integration-0.1.0a18-py3-none-any.whl", hash = "sha256:e38be076a0a2f768a181e6489257f24a3c1b99ec5f374727d1320dbd0684a6a6"},
+    {file = "dotmac_integration-0.1.0a18.tar.gz", hash = "sha256:66243fac2606b9b7c610ebcdac14436684d039648a6d93d06a95e8d8ec04deae"},
 ]
 
 [package.dependencies]
@@ -2294,4 +2315,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "dc572cc59320ba7d3de325368e932e9683e7805c30566de182948a3621195e60"
+content-hash = "11198536abc437f29435d92ea265a3a486268f9b2b8b02b1ed2b9785b8747385"

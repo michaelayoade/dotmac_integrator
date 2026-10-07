@@ -12,8 +12,9 @@ threads to run. It may not say what a connector is allowed to do.
 from __future__ import annotations
 
 from functools import lru_cache
+from uuid import UUID
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The owner DSN's default. Named because `validate_settings` has to tell "still
@@ -24,6 +25,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _DEFAULT_MIGRATION_DATABASE_URL = (
     "postgresql+psycopg://app_admin@localhost:5432/integrator"
 )
+
+
+class ProductQueryCaller(BaseModel):
+    """Non-secret caller identity, held-key reference and granted scopes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    application: str = Field(min_length=1, pattern=r"^[a-z0-9_.-]+$")
+    api_key_ref: str = Field(min_length=1)
+    scopes: tuple[str, ...] = Field(min_length=1)
+    binding_ids: tuple[UUID, ...] = Field(min_length=1)
 
 
 class Settings(BaseSettings):
@@ -112,6 +124,13 @@ class Settings(BaseSettings):
         min_length=1,
         description="`file://` references are confined to this directory.",
     )
+    product_query_enabled: bool = False
+    product_query_callers: tuple[ProductQueryCaller, ...] = ()
+    product_contract_registry_enabled: bool = False
+    product_contract_registry_url: str = ""
+    product_contract_registry_expected_digest: str = ""
+    product_contract_registry_api_key_ref: str = ""
+    product_contract_registry_timeout_seconds: float = Field(default=15.0, gt=0)
 
     # ── Operator authentication ─────────────────────────────────────────────
     operator_auth_mechanism: str = Field(
@@ -369,6 +388,58 @@ def validate_settings(settings: Settings) -> list[str]:
     of them, a boot wants to refuse on the first. Empty means acceptable.
     """
     problems: list[str] = []
+    callers = settings.product_query_callers
+    if settings.product_query_enabled and not callers:
+        problems.append("PRODUCT_QUERY_ENABLED requires PRODUCT_QUERY_CALLERS")
+    if (
+        settings.product_query_enabled
+        and not settings.product_contract_registry_enabled
+    ):
+        problems.append(
+            "PRODUCT_QUERY_ENABLED requires PRODUCT_CONTRACT_REGISTRY_ENABLED"
+        )
+    if len({c.application for c in callers}) != len(callers):
+        problems.append("product query caller applications must be unique")
+    if len({c.api_key_ref for c in callers}) != len(callers):
+        problems.append("product query caller references must be unique")
+    for caller in callers:
+        if not caller.api_key_ref.startswith(("env://", "file://")):
+            problems.append("product query api_key_ref must be env:// or file://")
+        if "integration:query" not in caller.scopes or any(
+            "*" in scope for scope in caller.scopes
+        ):
+            problems.append(
+                "product query caller requires exact integration:query scope"
+            )
+        if len(set(caller.binding_ids)) != len(caller.binding_ids):
+            problems.append("product query caller binding_ids must be unique")
+    if settings.product_contract_registry_enabled:
+        required_registry = {
+            "PRODUCT_CONTRACT_REGISTRY_URL": settings.product_contract_registry_url,
+            "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST": (
+                settings.product_contract_registry_expected_digest
+            ),
+            "PRODUCT_CONTRACT_REGISTRY_API_KEY_REF": (
+                settings.product_contract_registry_api_key_ref
+            ),
+        }
+        for name, value in required_registry.items():
+            if not value.strip():
+                problems.append(
+                    f"PRODUCT_CONTRACT_REGISTRY_ENABLED is on and {name} is empty"
+                )
+        reference = settings.product_contract_registry_api_key_ref.strip()
+        if reference and not reference.startswith(("env://", "file://")):
+            problems.append(
+                "PRODUCT_CONTRACT_REGISTRY_API_KEY_REF must be env:// or file://"
+            )
+        digest = settings.product_contract_registry_expected_digest.strip()
+        if digest and (
+            len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+        ):
+            problems.append(
+                "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST must be 64 lowercase hex"
+            )
 
     # Unconditional: a deployment whose operator surface has no working auth
     # mechanism is not a development convenience, it is an open control plane.
@@ -435,6 +506,14 @@ def validate_settings(settings: Settings) -> list[str]:
             "message content and the request carries the destination "
             "credential, neither of which may cross a production network in "
             "the clear"
+        )
+    if (
+        settings.product_contract_registry_enabled
+        and settings.product_contract_registry_url.startswith("http://")
+    ):
+        problems.append(
+            "PRODUCT_CONTRACT_REGISTRY_URL is http://; the request carries a "
+            "replayable product descriptor credential"
         )
     if settings.metrics_enabled and not settings.metrics_token:
         # Fatal rather than degraded-to-loopback. A production replica binds a
