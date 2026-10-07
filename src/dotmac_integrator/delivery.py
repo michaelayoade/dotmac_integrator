@@ -104,7 +104,9 @@ _PORT: Any | None = None
 _REGISTRY: Any | None = None
 
 
-def install_product_port(client: Any, *, registry: Any) -> None:
+def install_product_port(
+    client: Any, *, registry: Any, install_registry: bool = True
+) -> None:
     """Install the client and the capability registry this deployment routes by.
 
     Both, together, because they are useless apart: `ReceiptClaims.claim`
@@ -136,7 +138,8 @@ def install_product_port(client: Any, *, registry: Any) -> None:
             "direction, because the destination exposes a shadow port that "
             "records nothing and a client for it must never settle a receipt"
         )
-    integration.install_capability_registry(registry)
+    if install_registry:
+        integration.install_capability_registry(registry)
     _PORT = client
     _REGISTRY = registry
 

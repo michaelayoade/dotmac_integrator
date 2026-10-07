@@ -398,9 +398,13 @@ def install_secrets(engine: Engine, settings: Settings) -> SecretLoadReport:
     without the material it was configured to hold looks healthy and refuses
     every enablement, which is a harder failure to read than not starting.
     """
-    assembly_owned = (
+    assembly_owned = list(
         (settings.product_port_api_key_ref,) if settings.product_port_enabled else ()
     )
+    if settings.product_query_enabled:
+        assembly_owned.extend(c.api_key_ref for c in settings.product_query_callers)
+    if settings.product_contract_registry_enabled:
+        assembly_owned.append(settings.product_contract_registry_api_key_ref)
     source = StoredReferenceSource(
         engine, build_dereferencers(settings), extra_references=assembly_owned
     )

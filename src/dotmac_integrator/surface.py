@@ -30,6 +30,9 @@ prove the auditor bites.
 `SCRAPE`     `METRICS_PATH`  A monitoring system. Read-only, and
                              authenticated by a scrape token that is neither
                              an operator credential nor a provider signature.
+`PRODUCT`    `/product/**`   A separately authenticated product machine.
+                             Must carry the product guard and must never carry
+                             the human operator guard.
 ============================ ===============================================
 
 ## Why `/metrics` is a fourth class and not a probe
@@ -71,6 +74,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from dotmac_integrator.operator_auth import OperationReason, require_operator
+from dotmac_integrator.product_auth import require_product_query
 from dotmac_integrator.telemetry import ScrapeGuard
 
 __all__ = [
@@ -94,6 +98,7 @@ class RouteClass(StrEnum):
     OPERATOR = "operator"
     INGRESS = "ingress"
     SCRAPE = "scrape"
+    PRODUCT = "product"
 
 
 #: Prefix → class. Derived, not a second list of routes to keep in sync with
@@ -103,6 +108,7 @@ _PREFIXES: tuple[tuple[str, RouteClass], ...] = (
     ("/health/", RouteClass.PROBE),
     ("/operations/", RouteClass.OPERATOR),
     ("/ingress/", RouteClass.INGRESS),
+    ("/product/", RouteClass.PRODUCT),
 )
 
 
@@ -191,6 +197,7 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         methods = {method.upper() for method in route.methods or set()}
         mutating = bool(methods & MUTATING_METHODS)
         guarded = require_operator in _dependency_calls(route)
+        product_guarded = require_product_query in _dependency_calls(route)
 
         if route_class is RouteClass.OPERATOR:
             if not guarded:
@@ -219,6 +226,17 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
                 "provider holds no operator credential; sharing the guard ends "
                 "with the operator guard loosened until both fit through it"
             )
+        elif route_class is RouteClass.PRODUCT:
+            if guarded:
+                violations.append(
+                    f"{path} is a product route carrying the operator guard. "
+                    "A product machine holds no human operator identity"
+                )
+            if not product_guarded:
+                violations.append(
+                    f"{path} is a product route with no "
+                    "`require_product_query` dependency"
+                )
         elif route_class is RouteClass.SCRAPE:
             if guarded:
                 violations.append(

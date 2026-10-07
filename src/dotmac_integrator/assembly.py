@@ -60,7 +60,7 @@ from typing import Any
 import dotmac_integration as integration
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
 from dotmac_kernel.modules import ModuleRegistry
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -70,7 +70,9 @@ from dotmac_integrator import (
     health,
     ingress,
     operations,
+    product_contracts,
     product_port,
+    query,
     runtime_policy,
     secret_loading,
     telemetry,
@@ -83,10 +85,21 @@ from dotmac_integrator.operator_auth import (
     OperationReason,
     Operator,
 )
+from dotmac_integrator.product_auth import ProductAuthenticator, ProductQueryPrincipal
 from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
 from dotmac_integrator.worker import Worker
+
+_PRODUCT_QUERY_STATUS_CODES: dict[query.ProductQueryStatus, int] = {
+    "ok": 200,
+    "not_found": 404,
+    "invalid_query": 422,
+    "provider_unavailable": 503,
+    "timeout": 504,
+    "unauthorized_provider_session": 502,
+    "malformed_provider_response": 502,
+}
 
 
 def build_engine(settings: Settings) -> Engine:
@@ -105,7 +118,11 @@ def build_engine(settings: Settings) -> Engine:
     )
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    query_dispatcher: query.QueryDispatcher | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
 
     # BEFORE anything can log. The ingress endpoint key is a bearer credential
@@ -123,6 +140,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "refusing to start with unsafe configuration:\n  - "
             + "\n  - ".join(problems)
         )
+    if settings.product_query_enabled and query_dispatcher is None:
+        query_dispatcher = query.IntegrationQueryDispatcher()
 
     # The kernel's audit writer refuses an uninstalled vocabulary. This custom
     # API-only assembly does not call ``dotmac_kernel.app_factory.create_app``,
@@ -148,16 +167,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # deployment can authenticate with is in memory from this line onward,
         # so no store outage can reach a dispatch or an enablement.
         report = secret_loading.install_secrets(engine, settings)
+        registries: list[integration.CapabilityRegistry] = []
+        port_client: object | None = None
         if settings.product_port_enabled:
             # Installed BEFORE the worker starts, so the pump never observes a
             # half-composed deployment — and AFTER the material is held, so an
             # unresolvable destination credential refuses the boot here rather
             # than failing every delivery later with a 401 that reads as the
             # destination's problem.
-            client, registry = product_port.build_from_settings(
+            port_client, registry = product_port.build_from_settings(
                 settings, engine=engine, held_references=report.held
             )
-            delivery.install_product_port(client, registry=registry)
+            registries.append(registry)
+        if settings.product_contract_registry_enabled:
+            registries.append(
+                product_contracts.build_from_settings(
+                    settings, held_references=report.held
+                )
+            )
+        if registries:
+            registry = integration.CapabilityRegistry.from_declarations(
+                contract for declared in registries for contract in declared.contracts
+            )
+            manifests = [plugin.manifest for plugin in integration.discover().plugins]
+            integration.require_no_orphans(registry, manifests)
+            integration.install_capability_registry(registry)
+            if port_client is not None:
+                delivery.install_product_port(
+                    port_client, registry=registry, install_registry=False
+                )
         await worker.start()
         try:
             yield
@@ -176,6 +214,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.settings = settings
     app.state.worker = worker
+    app.state.product_query_authenticator = ProductAuthenticator(
+        settings.product_query_callers
+    )
+
+    if settings.product_query_enabled:
+        assert query_dispatcher is not None
+
+        @app.post("/product/v1/queries", tags=["product-integration"])
+        def product_query(
+            body: query.ProductQueryRequest,
+            principal: ProductQueryPrincipal,
+        ) -> JSONResponse:
+            if body.capability_binding_id not in principal.binding_ids:
+                raise HTTPException(403, "product query not authorized")
+            started = telemetry.monotonic_seconds()
+            outcome: query.ProductQueryStatus = "provider_unavailable"
+            try:
+                result = query_dispatcher.dispatch(
+                    engine=engine,
+                    application=principal.application,
+                    capability_binding_id=body.capability_binding_id,
+                    payload=body.payload,
+                )
+                outcome = result.status
+            except Exception:  # noqa: BLE001 - normalized boundary by design
+                # The provider/module exception is deliberately neither logged
+                # nor serialized here: either can contain provider material.
+                # The normalized result and bounded metric are sufficient for
+                # this assembly; connector diagnostics stay with their owner.
+                result = query.ProductQueryResponse(status="provider_unavailable")
+            finally:
+                telemetry.query_counters.record(
+                    outcome, max(0.0, telemetry.monotonic_seconds() - started)
+                )
+            return JSONResponse(
+                result.model_dump(mode="json"),
+                status_code=_PRODUCT_QUERY_STATUS_CODES[result.status],
+            )
 
     # ── Probes ──────────────────────────────────────────────────────────────
     # Unauthenticated by class (`surface.RouteClass.PROBE`). An orchestrator
