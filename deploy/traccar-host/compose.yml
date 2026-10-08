@@ -1,0 +1,108 @@
+name: dotmac-integrator-traccar
+
+# Host-local Traccar profile. The image is produced from this repository's
+# exact lock (dotmac-integration 0.1.0a18 + dotmac-connector-traccar 0.1.0a1)
+# and must be supplied by immutable digest. This file never builds or pulls a
+# mutable tag on the production host.
+x-image: &image ${INTEGRATOR_TRACCAR_IMAGE:?Set INTEGRATOR_TRACCAR_IMAGE to an immutable image@sha256 digest}
+
+x-runtime-security: &runtime-security
+  user: "10001:10001"
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+services:
+  integrator-traccar-migrate:
+    profiles: ["traccar"]
+    image: *image
+    command: ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
+    environment:
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?Integrator owner DSN is required}
+    networks: [integrator_runtime]
+    restart: "no"
+    <<: *runtime-security
+
+  integrator-traccar-api:
+    profiles: ["traccar"]
+    image: *image
+    command:
+      - uvicorn
+      - --factory
+      - dotmac_integrator.assembly:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    depends_on:
+      integrator-traccar-migrate:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: production
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:-integrator-traccar-production}
+      DATABASE_URL: ${DATABASE_URL:?Integrator online platform DSN is required}
+      PLATFORM_ROOT_DOMAIN: ${PLATFORM_ROOT_DOMAIN:?Integrator operator host is required}
+      JWT_SECRET: ${JWT_SECRET:?Integrator operator signing secret is required}
+      METRICS_TOKEN: ${METRICS_TOKEN:?Integrator scrape credential is required}
+      OPERATOR_AUTH_MECHANISM: platform_admin
+      SECRET_SCHEMES: file
+      SECRET_FILE_ROOT: /run/secrets
+      PRODUCT_PORT_ENABLED: "false"
+      INGRESS_ENABLED: "false"
+      PRODUCT_QUERY_ENABLED: "true"
+      PRODUCT_QUERY_CALLERS: ${PRODUCT_QUERY_CALLERS:?ERP caller and binding allow-list JSON is required}
+      PRODUCT_CONTRACT_REGISTRY_ENABLED: "true"
+      PRODUCT_CONTRACT_REGISTRY_URL: ${PRODUCT_CONTRACT_REGISTRY_URL:?ERP contract registry URL is required}
+      PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST: ${PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST:?Approved ERP contract registry digest is required}
+      PRODUCT_CONTRACT_REGISTRY_API_KEY_REF: file:///run/secrets/erp_contract_registry_api_key
+      PRODUCT_CONTRACT_REGISTRY_TIMEOUT_SECONDS: ${PRODUCT_CONTRACT_REGISTRY_TIMEOUT_SECONDS:-15}
+      WORKER_ENABLED: "true"
+    secrets:
+      - source: traccar_service_email
+        target: traccar/service_email
+        mode: 0400
+      - source: traccar_service_password
+        target: traccar/service_password
+        mode: 0400
+      - source: erp_contract_registry_api_key
+        target: erp_contract_registry_api_key
+        mode: 0400
+    ports:
+      - name: integrator-contract-loopback
+        target: 8080
+        published: ${INTEGRATOR_TRACCAR_PORT:-8083}
+        host_ip: 127.0.0.1
+        protocol: tcp
+        app_protocol: http
+    networks:
+      - integrator_runtime
+      - traccar_api
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health/ready',timeout=5).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    stop_grace_period: 30s
+    restart: unless-stopped
+    <<: *runtime-security
+
+secrets:
+  traccar_service_email:
+    file: ${TRACCAR_SERVICE_EMAIL_FILE:?Host file containing only the Traccar service email is required}
+  traccar_service_password:
+    file: ${TRACCAR_SERVICE_PASSWORD_FILE:?Host file containing only the Traccar service password is required}
+  erp_contract_registry_api_key:
+    file: ${ERP_CONTRACT_REGISTRY_API_KEY_FILE:?Host file containing only the registry API key is required}
+
+networks:
+  integrator_runtime:
+    name: ${INTEGRATOR_RUNTIME_NETWORK:-dotmac_integrator_traccar_runtime}
+  traccar_api:
+    name: ${TRACCAR_API_NETWORK:-dotmac_traccar_api}
+    external: true
