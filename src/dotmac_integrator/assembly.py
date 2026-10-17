@@ -168,17 +168,16 @@ def create_app(
         # so no store outage can reach a dispatch or an enablement.
         report = secret_loading.install_secrets(engine, settings)
         registries: list[integration.CapabilityRegistry] = []
-        port_client: object | None = None
-        if settings.product_port_enabled:
-            # Installed BEFORE the worker starts, so the pump never observes a
-            # half-composed deployment — and AFTER the material is held, so an
-            # unresolvable destination credential refuses the boot here rather
-            # than failing every delivery later with a 401 that reads as the
-            # destination's problem.
-            port_client, registry = product_port.build_from_settings(
+        reconciler: product_port.ProductPortDescriptorReconciler | None = None
+        prepared: product_port.PreparedProductPort | None = None
+        if settings.product_port_enabled or settings.product_port_prepare_only:
+            # Authenticate and pin the real owner BEFORE destination DB writes.
+            # Prepare-only intentionally needs no existing local binding.
+            reconciler = product_port.reconciler_from_settings(
                 settings, engine=engine, held_references=report.held
             )
-            registries.append(registry)
+            prepared = reconciler.prepare_owner()
+            registries.append(prepared.registry)
         if settings.product_contract_registry_enabled:
             registries.append(
                 product_contracts.build_from_settings(
@@ -189,10 +188,12 @@ def create_app(
             registry = integration.CapabilityRegistry.from_declarations(
                 contract for declared in registries for contract in declared.contracts
             )
-            manifests = [plugin.manifest for plugin in integration.discover().plugins]
-            integration.require_no_orphans(registry, manifests)
+            # Coverage verdicts remain on /operations/runtime-policy (rule 33).
+            # An installed connector is never an authority to mint an owner.
             integration.install_capability_registry(registry)
-            if port_client is not None:
+            if settings.product_port_enabled:
+                assert reconciler is not None and prepared is not None
+                port_client, _ = reconciler.reconcile(prepared, registry=registry)
                 delivery.install_product_port(
                     port_client, registry=registry, install_registry=False
                 )

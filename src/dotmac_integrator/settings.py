@@ -12,6 +12,7 @@ threads to run. It may not say what a connector is allowed to do.
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -207,6 +208,13 @@ class Settings(BaseSettings):
             "closed and say so, never deliver nowhere and mark receipts done."
         ),
     )
+    product_port_prepare_only: bool = Field(
+        default=False,
+        description=(
+            "Authenticate and install the destination owner's contract only. "
+            "Requires WORKER_ENABLED=false; creates no destination revision or client."
+        ),
+    )
     product_port_mode: str = Field(
         default="mirror",
         description=(
@@ -326,16 +334,51 @@ def _product_port_problems(settings: Settings) -> list[str]:
     a product problem; refusing at boot names the missing knob while somebody is
     watching.
     """
-    if settings.product_port_mode not in PRODUCT_PORT_MODES:
+    if (
+        not settings.product_port_prepare_only
+        and settings.product_port_mode not in PRODUCT_PORT_MODES
+    ):
         return [
             f"PRODUCT_PORT_MODE={settings.product_port_mode!r} is not one of "
             f"{list(PRODUCT_PORT_MODES)}. 'mirror' records nothing and produces "
             "parity evidence; 'write' records"
         ]
-    if not settings.product_port_enabled:
+    if not (settings.product_port_enabled or settings.product_port_prepare_only):
         return []
 
     problems: list[str] = []
+    if settings.product_port_enabled and settings.product_port_prepare_only:
+        problems.append(
+            "PRODUCT_PORT_ENABLED and PRODUCT_PORT_PREPARE_ONLY are mutually exclusive"
+        )
+    if settings.product_port_prepare_only and settings.worker_enabled:
+        problems.append("PRODUCT_PORT_PREPARE_ONLY requires WORKER_ENABLED=false")
+    try:
+        parsed = urlsplit(settings.product_port_descriptor_url.strip())
+    except ValueError:
+        problems.append("PRODUCT_PORT_DESCRIPTOR_URL is not a valid URL")
+        parsed = urlsplit("")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        problems.append(
+            "PRODUCT_PORT_DESCRIPTOR_URL must be an http(s) URL without "
+            "credentials, query, or fragment"
+        )
+    if settings.environment == "production" and parsed.scheme != "https":
+        # Reuse the normalized URL parsed above: the actual reader strips the
+        # URL too, and URL schemes are case-insensitive. Check before holding
+        # the destination credential or attempting any network request.
+        problems.append(
+            "PRODUCT_PORT_DESCRIPTOR_URL must use https:// in production; "
+            "message content and the destination credential may not cross "
+            "a production network in the clear"
+        )
     required = {
         "PRODUCT_PORT_DESCRIPTOR_URL": settings.product_port_descriptor_url,
         "PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST": (
@@ -346,10 +389,11 @@ def _product_port_problems(settings: Settings) -> list[str]:
     for name, value in required.items():
         if not value.strip():
             problems.append(
-                f"PRODUCT_PORT_ENABLED is on and {name} is empty; a port that "
+                f"Product-port preparation is configured and {name} is empty; "
+                "a port that "
                 "cannot address the destination would fail every receipt"
             )
-    if settings.product_port_mode == "mirror":
+    if settings.product_port_enabled and settings.product_port_mode == "mirror":
         revision = settings.product_port_shadow_revision
         if not revision.strip():
             problems.append(
@@ -363,7 +407,10 @@ def _product_port_problems(settings: Settings) -> list[str]:
                 "whitespace"
             )
     reference = settings.product_port_api_key_ref.strip()
-    if reference and not reference.startswith(("env://", "file://")):
+    if reference and (
+        not reference.startswith(("env://", "file://"))
+        or not reference.partition("://")[2]
+    ):
         problems.append(
             "PRODUCT_PORT_API_KEY_REF must be an `env://` or `file://` "
             "reference. It is dereferenced once at startup and held; a literal "
@@ -429,7 +476,10 @@ def validate_settings(settings: Settings) -> list[str]:
                     f"PRODUCT_CONTRACT_REGISTRY_ENABLED is on and {name} is empty"
                 )
         reference = settings.product_contract_registry_api_key_ref.strip()
-        if reference and not reference.startswith(("env://", "file://")):
+        if reference and (
+            not reference.startswith(("env://", "file://"))
+            or not reference.partition("://")[2]
+        ):
             problems.append(
                 "PRODUCT_CONTRACT_REGISTRY_API_KEY_REF must be env:// or file://"
             )
@@ -493,19 +543,6 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append(
             "SECRET_FILE_ROOT is under /tmp, which is world-writable on most "
             "hosts; mount secret material somewhere only this process can read"
-        )
-    if (
-        settings.product_port_enabled
-        and settings.product_port_descriptor_url.startswith("http://")
-    ):
-        # The envelope carries a customer's message body and the request carries
-        # the machine credential. Over plaintext both are readable by every hop,
-        # and the credential is replayable afterwards.
-        problems.append(
-            "PRODUCT_PORT_DESCRIPTOR_URL is http://; the observation envelope carries "
-            "message content and the request carries the destination "
-            "credential, neither of which may cross a production network in "
-            "the clear"
         )
     if (
         settings.product_contract_registry_enabled

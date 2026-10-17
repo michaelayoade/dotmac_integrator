@@ -399,7 +399,9 @@ def install_secrets(engine: Engine, settings: Settings) -> SecretLoadReport:
     every enablement, which is a harder failure to read than not starting.
     """
     assembly_owned = list(
-        (settings.product_port_api_key_ref,) if settings.product_port_enabled else ()
+        (settings.product_port_api_key_ref,)
+        if settings.product_port_enabled or settings.product_port_prepare_only
+        else ()
     )
     if settings.product_query_enabled:
         assembly_owned.extend(c.api_key_ref for c in settings.product_query_callers)

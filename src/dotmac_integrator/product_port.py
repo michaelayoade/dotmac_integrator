@@ -135,6 +135,8 @@ __all__ = [
     "ObservationPortClient",
     "ProductPortDescriptorError",
     "ProductPortDescriptorReconciler",
+    "PreparedProductPort",
+    "reconciler_from_settings",
     "ProductPortMode",
     "ShadowClientCannotWrite",
     "Transport",
@@ -1149,6 +1151,14 @@ _DESCRIPTOR_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedProductPort:
+    """Authenticated, pinned owner declaration; no local binding or client."""
+
+    descriptor: integration.ProductPortDescriptorSnapshot
+    registry: integration.CapabilityRegistry
+
+
 class ProductPortDescriptorReconciler:
     """Read the product owner, then idempotently repair the local projection.
 
@@ -1193,6 +1203,7 @@ class ProductPortDescriptorReconciler:
         self._timeout = timeout_seconds
         self._transport: Transport = transport or UrllibTransport()
         self._base_url = f"{parsed.scheme}://{parsed.netloc}"
+        self._prepared: PreparedProductPort | None = None
 
     def _read(self) -> integration.ProductPortDescriptorSnapshot:
         key = resolve_secrets({PRODUCT_PORT_SECRET_NAME: self._api_key_ref})[
@@ -1307,16 +1318,48 @@ class ProductPortDescriptorReconciler:
             )
         return snapshot
 
-    def reconcile(
-        self,
-    ) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
+    def prepare_owner(self) -> PreparedProductPort:
+        """Read and pin the real owner without querying local bindings."""
         descriptor = self._read()
         contract = descriptor.capability_contract
         if contract is None:  # v3 parsing above makes this unreachable
             raise ProductPortDescriptorError(
                 "the product descriptor carries no capability contract"
             )
-        registry = integration.CapabilityRegistry.from_declarations([contract])
+        self._prepared = PreparedProductPort(
+            descriptor, integration.CapabilityRegistry.from_declarations([contract])
+        )
+        return self._prepared
+
+    def reconcile(
+        self,
+        prepared: PreparedProductPort | None = None,
+        *,
+        registry: integration.CapabilityRegistry | None = None,
+    ) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
+        """Project only after the complete canonical owner registry is installed.
+
+        Standalone callers must install the owning registry first too. The
+        module enforces agreement with that installed owner inside its existing
+        reconcile operation; a supplied registry cannot weaken that precondition.
+        """
+        prepared = prepared or self.prepare_owner()
+        if prepared is not self._prepared:
+            raise ProductPortDescriptorError(
+                "reconciliation requires this reader's authenticated preparation"
+            )
+        descriptor = prepared.descriptor
+        supplied = registry or prepared.registry
+        installed = integration.capability_registry()
+        owner = installed.get(descriptor.capability_id)
+        if (
+            supplied.get(descriptor.capability_id) != owner
+            or descriptor.capability_contract != owner
+        ):
+            raise ProductPortDescriptorError(
+                "the prepared contract differs from the installed canonical owner"
+            )
+        registry = installed
         with Session(self._engine) as db:
             integration.reconcile_product_port_descriptor_for_capability(
                 db,
@@ -1338,10 +1381,10 @@ class ProductPortDescriptorReconciler:
         )
 
 
-def build_from_settings(
+def reconciler_from_settings(
     settings: Any, *, engine: Engine, held_references: tuple[str, ...]
-) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
-    """The client and the registry this deployment routes by, from configuration.
+) -> ProductPortDescriptorReconciler:
+    """Construct the reader; preparation precedes any destination transaction.
 
     `held_references` is what `install_secrets` actually resolved, and an
     unresolved credential REFUSES THE BOOT here. That is deliberately stricter
@@ -1360,12 +1403,31 @@ def build_from_settings(
             "port with no credential fails every delivery with a refusal that "
             "looks like the destination's problem"
         )
-    reconciler = ProductPortDescriptorReconciler(
+    return ProductPortDescriptorReconciler(
         engine=engine,
         descriptor_url=settings.product_port_descriptor_url.strip(),
         expected_digest=settings.product_port_descriptor_expected_digest.strip(),
         api_key_ref=reference,
-        mode=ProductPortMode(settings.product_port_mode),
+        mode=(
+            ProductPortMode.MIRROR
+            if settings.product_port_prepare_only
+            else ProductPortMode(settings.product_port_mode)
+        ),
         timeout_seconds=settings.product_port_timeout_seconds,
     )
-    return reconciler.reconcile()
+
+
+def build_from_settings(
+    settings: Any, *, engine: Engine, held_references: tuple[str, ...]
+) -> tuple[ObservationPortClient, integration.CapabilityRegistry]:
+    """Active-only helper; canonical owning registry must already be installed.
+
+    Startup composition uses the separate preparation and reconciliation phases.
+    """
+    if settings.product_port_prepare_only:
+        raise ProductPortDescriptorError(
+            "prepare-only configuration cannot build a delivery client"
+        )
+    return reconciler_from_settings(
+        settings, engine=engine, held_references=held_references
+    ).reconcile()
