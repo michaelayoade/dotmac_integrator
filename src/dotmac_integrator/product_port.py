@@ -951,12 +951,10 @@ class ObservationPortClient:
     ) -> HttpAnswer:
         """Send it. The only frame that holds the credential.
 
-        The idempotency key is presented as a header even though the destination
-        does not read one: its dedup is the content-derived
-        `(binding, provider_event_id)` receipt identity, which is likewise stable
-        across attempts, so at-most-once holds either way. Sending it anyway
-        means an operator correlating a retry storm across two deployments has
-        the engine's own key in both access logs.
+        The idempotency key is always presented as a header. Destinations may
+        use it for their own at-most-once owner (ERP does), while an older port
+        may deduplicate on its content-derived receipt identity (Sub does).
+        Both receive the same stable key across retries.
         """
         key = resolve_secrets({PRODUCT_PORT_SECRET_NAME: self._api_key_ref})[
             PRODUCT_PORT_SECRET_NAME

@@ -1,0 +1,235 @@
+{
+  "activation_state": "configured_disabled",
+  "application": "erp",
+  "capability_contract": {
+    "command_schema": null,
+    "contract_digest": "f69ffd1e486a298bfdff5ab6a4b1a30a6962075b30d91400ef6ca4247609ac74",
+    "deprecation": null,
+    "observation_schema": {
+      "$defs": {
+        "InvoiceAccountingSyncIssue": {
+          "additionalProperties": false,
+          "description": "One piece of blocked-disposition evidence.\n\nOnly ``code`` is guaranteed present. Sub's real\n``InvoiceAccountingSyncIssueRead`` (and the connector's ``map_item``,\nwhich forwards it) declares ``source_line_id``/``expected_amount``/\n``actual_amount`` as genuinely optional \u2014 a header-level issue such as\nan unallocated discount has no specific line and no expected amount,\nonly an actual one. The connector OMITS an absent optional field from\nthe wire payload rather than sending it as explicit ``null``; a present\nfield that fails to parse is still rejected at the connector before it\nis ever sent. These are typed ``| None`` here both because the wire\npayload can genuinely omit them and to match ERP's own\n``InvoiceSyncIssueEvidence`` persistence shape (that dataclass is frozen\nfor this task). Confirmed against the connector's real, shared-fixture\ncontract test (dotmac_connector_sub_accounting,\n``tests/test_shared_fixture_contract.py``) \u2014 a prior version of this\ndocstring incorrectly claimed all four fields are always populated.",
+          "properties": {
+            "actual_amount": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Actual Amount"
+            },
+            "code": {
+              "$ref": "#/$defs/InvoiceSyncIssueCode"
+            },
+            "expected_amount": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expected Amount"
+            },
+            "source_line_id": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Source Line Id"
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "title": "InvoiceAccountingSyncIssue",
+          "type": "object"
+        },
+        "InvoiceSyncDisposition": {
+          "enum": [
+            "ready",
+            "blocked",
+            "not_applicable"
+          ],
+          "title": "InvoiceSyncDisposition",
+          "type": "string"
+        },
+        "InvoiceSyncIssueCode": {
+          "enum": [
+            "no_active_lines",
+            "line_amount_mismatch",
+            "missing_tax_rate_reference",
+            "tax_snapshot_missing",
+            "header_subtotal_mismatch",
+            "taxed_header_without_line_tax",
+            "header_tax_mismatch",
+            "header_total_mismatch",
+            "legacy_header_totals_missing",
+            "discount_allocation_undefined"
+          ],
+          "title": "InvoiceSyncIssueCode",
+          "type": "string"
+        },
+        "InvoiceSyncSourceKind": {
+          "enum": [
+            "native",
+            "splynx_legacy"
+          ],
+          "title": "InvoiceSyncSourceKind",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "ERP's explicitly published inner contract \u2014 Sub's invoice-accounting-sync\nfeed item, exactly as ``dotmac_connector_sub_accounting.mapping.map_item``\nproduces it. See the module docstring for the ``contract_version`` naming\ncollision with the outer envelope, and for the five discarded fields.",
+      "properties": {
+        "capability_id": {
+          "const": "invoices.accounting_sync.observation.v1",
+          "enum": [
+            "invoices.accounting_sync.observation.v1"
+          ],
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "contract_version": {
+          "const": "invoice-accounting-sync.v2",
+          "enum": [
+            "invoice-accounting-sync.v2"
+          ],
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "digest_version": {
+          "title": "Digest Version",
+          "type": "integer"
+        },
+        "disposition": {
+          "$ref": "#/$defs/InvoiceSyncDisposition"
+        },
+        "issues": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InvoiceAccountingSyncIssue"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "projection_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Projection Digest",
+          "type": "string"
+        },
+        "source_account_id": {
+          "format": "uuid",
+          "title": "Source Account Id",
+          "type": "string"
+        },
+        "source_currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Source Currency",
+          "type": "string"
+        },
+        "source_due_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Due At"
+        },
+        "source_invoice_id": {
+          "format": "uuid",
+          "title": "Source Invoice Id",
+          "type": "string"
+        },
+        "source_issued_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Issued At"
+        },
+        "source_kind": {
+          "$ref": "#/$defs/InvoiceSyncSourceKind"
+        },
+        "source_total_amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Source Total Amount"
+        },
+        "source_updated_at": {
+          "format": "date-time",
+          "title": "Source Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_id",
+        "contract_version",
+        "source_invoice_id",
+        "source_account_id",
+        "source_updated_at",
+        "source_kind",
+        "disposition",
+        "source_total_amount",
+        "source_currency",
+        "digest_version",
+        "projection_digest"
+      ],
+      "title": "InvoiceAccountingSyncObservation",
+      "type": "object"
+    },
+    "result_schema": null,
+    "schema_grace": null
+  },
+  "capability_id": "invoices.accounting_sync.observation.v1",
+  "capability_summary": "Records Self-Care invoice-accounting-sync observations as durable canonical evidence; never posts to the general ledger.",
+  "contract_version": 1,
+  "delivery_path": "/api/v1/integration/observations/bbbbbbbb-2222-4222-8222-222222222222",
+  "descriptor_digest": "6aaeb7657b4b497c110c4ce8aecb04c4ef0e9c550aadf67d8d656f3e0023bcc6",
+  "destination_binding_id": "bbbbbbbb-2222-4222-8222-222222222222",
+  "destination_scope": {
+    "kind": "organization",
+    "ref": "shared-fixture-org"
+  },
+  "mirror_path": "/api/v1/integration/observations/bbbbbbbb-2222-4222-8222-222222222222/mirror",
+  "owner_module": "app.services.dotmac_sub.integrator_observations",
+  "schema_version": "dotmac.io/product-port-descriptor/v3",
+  "source_revision": "f2b89a8123daab13de806f25673f0e36e3726ba2f592ce34a3d1836efe1a63ef",
+  "wire_schema_version": "dotmac.io/product-observation/v1"
+}

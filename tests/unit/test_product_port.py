@@ -25,6 +25,7 @@ import hmac
 import json
 from collections.abc import Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -55,6 +56,16 @@ REMOTE_BINDING = UUID("22222222-2222-4222-8222-222222222222")
 SOURCE = integration.ProductObservationSource(
     installation_id=UUID("55555555-5555-4555-8555-555555555555"),
     connector_key="synthetic_connector",
+)
+INVOICE_WIRE_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "shared_invoice_product_observation_v1.json"
+)
+ERP_DESCRIPTOR_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "erp_invoice_product_port_descriptor_v3.json"
 )
 
 
@@ -136,6 +147,32 @@ class _GenericDestination:
     contract_version = 1
     destination_revision_id = uuid4()
     product_port: object | None = _GenericProductPort()
+
+
+class _InvoiceScope:
+    kind = "organization"
+    ref = "shared-fixture-org"
+
+
+class _InvoiceProductPort:
+    wire_schema_version = "dotmac.io/product-observation/v1"
+    activation_state = "enabled"
+    delivery_path = (
+        "/api/v1/integration/observations/" "bbbbbbbb-2222-4222-8222-222222222222"
+    )
+    mirror_path = f"{delivery_path}/mirror"
+
+
+class _InvoiceDestination:
+    capability_binding_id = UUID("bbbbbbbb-2222-4222-8222-222222222222")
+    capability_id = "invoices.accounting_sync.observation.v1"
+    application = "erp"
+    scope = _InvoiceScope()
+    contract_version = 1
+    destination_revision_id = UUID("aaaaaaaa-1111-4111-8111-111111111111")
+
+    def __init__(self, product_port: object | None = None) -> None:
+        self.product_port = product_port or _InvoiceProductPort()
 
 
 class _RecordingTransport:
@@ -282,6 +319,132 @@ def test_the_generic_wire_uses_the_modules_product_observation() -> None:
         "kind": "payment_provider_events",
         "ref": "verified",
     }
+
+
+def _invoice_fixture_request(
+    product_port: object | None = None,
+) -> tuple[dict[str, Any], integration.ProductRequest]:
+    """Use the connector/core-generated Sub invoice wire oracle, not a retyped map.
+
+    The fixture is byte-identical to the companion connector test fixture at
+    SHA-256 dec305d41b87d34563198faf4fd110f5884da3314ca8afa33770d014262ec038.
+    """
+
+    assert hashlib.sha256(INVOICE_WIRE_FIXTURE.read_bytes()).hexdigest() == (
+        "dec305d41b87d34563198faf4fd110f5884da3314ca8afa33770d014262ec038"
+    )
+    document = cast(dict[str, Any], json.loads(INVOICE_WIRE_FIXTURE.read_text()))
+    claim = integration.ReceiptClaim(
+        receipt_id=UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+        attempt=1,
+        leased_until=datetime.now(UTC) + timedelta(minutes=5),
+        destination=_InvoiceDestination(product_port),
+        source=integration.ProductObservationSource(
+            installation_id=UUID("cccccccc-3333-4333-8333-333333333333"),
+            connector_key="sub_accounting",
+        ),
+        provider_event_id=str(document["provider_event_id"]),
+        event_type=str(document["event_type"]),
+        observation=cast(dict[str, object], document["observation"]),
+        correlation_id="invoice-fixture-correlation",
+    )
+    return document, integration.build_product_request(claim)
+
+
+def test_erp_published_v3_descriptor_accepts_the_real_invoice_mirror_wire() -> None:
+    """Read ERP's generated descriptor, not a fabricated port object.
+
+    The fixture is generated from ERP's
+    ``invoice_accounting_sync_product_port_descriptor`` for the shared test
+    binding/scope (SHA-256
+    98fedb2a7721dbb2c0b1b0f15554dfedfe35ee41bcd83db017ccdda7fe04cc49).
+    A v2 descriptor or wrong contract digest fails before any POST.
+    """
+    assert hashlib.sha256(ERP_DESCRIPTOR_FIXTURE.read_bytes()).hexdigest() == (
+        "98fedb2a7721dbb2c0b1b0f15554dfedfe35ee41bcd83db017ccdda7fe04cc49"
+    )
+    published = cast(dict[str, Any], json.loads(ERP_DESCRIPTOR_FIXTURE.read_text()))
+    transport = _RecordingTransport(_answer(200, published))
+    reconciler = ProductPortDescriptorReconciler(
+        engine=create_engine("sqlite://"),
+        descriptor_url=(
+            "https://erp.example/api/v1/integration/observations/"
+            "bbbbbbbb-2222-4222-8222-222222222222/descriptor"
+        ),
+        expected_digest=published["descriptor_digest"],
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+    descriptor = reconciler._read()
+    document, request = _invoice_fixture_request(descriptor)
+    assert descriptor.capability_contract is not None
+    descriptor.capability_contract.require_observation(document["observation"])
+    assert descriptor.capability_contract.contract_digest == (
+        "f69ffd1e486a298bfdff5ab6a4b1a30a6962075b30d91400ef6ca4247609ac74"
+    )
+
+    transport._answers.append(_answer(200, {"verdict": "missing", "agrees": False}))
+    client = ObservationPortClient(
+        application="erp",
+        base_url="https://erp.example",
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+    verdict = client.mirror(request)
+    assert transport.calls[1]["body"] == document
+    assert transport.calls[1]["headers"]["Idempotency-Key"] == request.idempotency_key
+    assert verdict.verdict == "missing"
+
+
+def test_real_invoice_fixture_crosses_the_actual_http_product_port() -> None:
+    document, request = _invoice_fixture_request()
+    transport = _RecordingTransport(_ok())
+    client = ObservationPortClient(
+        application="erp",
+        base_url="https://erp.example",
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.WRITE,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+
+    outcome = client.deliver(request)
+
+    assert build_product_document(request) == document
+    assert transport.calls[0]["body"] == document
+    assert transport.calls[0]["headers"]["Idempotency-Key"] == request.idempotency_key
+    assert transport.calls[0]["headers"]["X-Api-Key"] == API_KEY
+    assert transport.calls[0]["url"].endswith(_InvoiceProductPort.delivery_path)
+    assert outcome.acceptance is integration.ProductAcceptance.ACCEPTED
+
+
+def test_real_invoice_fixture_mirror_verdict_is_not_a_false_success() -> None:
+    document, request = _invoice_fixture_request()
+    transport = _RecordingTransport(
+        _answer(
+            200,
+            {"verdict": "blocked", "agrees": False, "blocking_reasons": ["validation"]},
+        )
+    )
+    client = ObservationPortClient(
+        application="erp",
+        base_url="https://erp.example",
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+
+    verdict = client.mirror(request)
+
+    assert transport.calls[0]["body"] == document
+    assert transport.calls[0]["url"].endswith(_InvoiceProductPort.mirror_path)
+    assert verdict.verdict == "blocked"
+    assert verdict.agrees is False
 
 
 def test_the_generic_wire_sends_the_same_write_and_mirror_document() -> None:

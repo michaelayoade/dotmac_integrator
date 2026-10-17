@@ -131,6 +131,39 @@ The port is **off** on a fresh deployment and the default mode is `mirror`.
 Both defaults are deliberate: a deployment misconfigured into the write port
 records facts nobody agreed to record, and there is no un-recording it.
 
+### Isolated ERP instance for invoice observations
+
+The Sub messaging destination and the ERP invoice-accounting destination run
+as **separate Integrator deployments**, not as two workers sharing one receipt
+database. This assembly installs one product-port client and one registry per
+process; its worker scans that installation's receipts. Sharing the database
+between two single-destination deployments would let either worker claim a
+receipt addressed to the other product.
+
+The ERP instance uses the same image and Compose definition, with distinct
+`COMPOSE_PROJECT_NAME`, `COMPOSE_NETWORK`, published port, `DEPLOYMENT_ID`,
+`DATABASE_URL`, `MIGRATION_DATABASE_URL`, secret-file root, and operator surface
+host. Its database roles and receipt tables are separate from Sub's instance.
+Its connector installation and product descriptor name only the ERP invoice
+capability; the Sub messaging connector/bindings remain in Sub's instance.
+`docker-compose.yml` passes the `PRODUCT_PORT_*` knobs into the API container,
+but their shipped values still leave the port disabled and in mirror mode.
+`deploy/erp-invoice.env.example` provides the distinct, non-secret ERP
+topology values. It deliberately leaves both DSNs, the operator host, and
+JWT material blank: supply them through the deployment environment, and
+check the rendered Compose project, network, mount, port and DSNs against
+the Sub deployment before any run. Never put real credentials in this file.
+ERP publishes its v3 descriptor at
+`GET /api/v1/integration/observations/{binding}/descriptor` (no `/v3` path
+suffix); pin that descriptor's digest in the isolated instance only after
+reviewing the exact binding, scope, wire version and capability contract.
+
+This is a code/configuration topology, **not** a deployment or binding
+authorization. Keep ERP's descriptor `configured_disabled`; a named staging
+target, exact image digest, destination credential reference, descriptor
+digest review, and separate approval are required before enabling even mirror
+traffic. No production host is selected by this document.
+
 Bring it up in three moves, not one. Each has a different failure and a
 different owner.
 
