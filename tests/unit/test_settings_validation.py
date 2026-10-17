@@ -301,3 +301,122 @@ def test_a_migration_dsn_that_was_SET_to_localhost_is_still_refused() -> None:
     problems = validate_settings(settings)
 
     assert any("MIGRATION_DATABASE_URL" in problem for problem in problems)
+
+
+def _prepare_only(**overrides: object) -> Settings:
+    return _configured_product_port(
+        **{
+            "product_port_enabled": False,
+            "product_port_prepare_only": True,
+            "worker_enabled": False,
+            "product_port_mode": "unused-during-preparation",
+            "product_port_shadow_revision": "",
+            **overrides,
+        }
+    )
+
+
+def test_prepare_only_accepts_pinned_owner_without_delivery_configuration() -> None:
+    assert validate_settings(_prepare_only()) == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "product_port_descriptor_url",
+        "product_port_descriptor_expected_digest",
+        "product_port_api_key_ref",
+    ],
+)
+def test_prepare_only_requires_complete_authenticated_configuration(field: str) -> None:
+    assert validate_settings(_prepare_only(**{field: ""}))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"product_port_enabled": True},
+        {"worker_enabled": True},
+        {"product_port_api_key_ref": "literal-material"},
+        {"product_port_api_key_ref": "env://"},
+        {"product_port_descriptor_expected_digest": "A" * 64},
+        {"product_port_descriptor_url": "https://user:pass@example.test/descriptor"},
+        {
+            "product_port_descriptor_url": "https://example.test/descriptor?token=synthetic"
+        },
+    ],
+)
+def test_prepare_only_refuses_unsafe_configuration(
+    overrides: dict[str, object],
+) -> None:
+    assert validate_settings(_prepare_only(**overrides))
+
+
+@pytest.mark.parametrize("prepare_only", [False, True])
+@pytest.mark.parametrize(
+    "descriptor_url",
+    [
+        "http://destination.example/descriptor",
+        " http://destination.example/descriptor",
+        "HTTP://destination.example/descriptor",
+        " HTTP://destination.example/descriptor ",
+    ],
+)
+def test_production_port_refuses_normalized_plaintext_scheme(
+    prepare_only: bool,
+    descriptor_url: str,
+) -> None:
+    settings = _production(
+        product_port_enabled=not prepare_only,
+        product_port_prepare_only=prepare_only,
+        worker_enabled=False,
+        product_port_descriptor_url=descriptor_url,
+        product_port_descriptor_expected_digest="a" * 64,
+        product_port_api_key_ref="env://INTEGRATOR_SECRET_DESTINATION",
+        product_port_shadow_revision="synthetic-revision",
+    )
+    assert any(
+        "PRODUCT_PORT_DESCRIPTOR_URL must use https://" in problem
+        for problem in validate_settings(settings)
+    )
+
+
+@pytest.mark.parametrize("prepare_only", [False, True])
+@pytest.mark.parametrize(
+    "descriptor_url",
+    [
+        "https://destination.example/descriptor",
+        " HTTPS://destination.example/descriptor ",
+    ],
+)
+def test_production_port_accepts_normalized_https_scheme(
+    prepare_only: bool,
+    descriptor_url: str,
+) -> None:
+    settings = _production(
+        product_port_enabled=not prepare_only,
+        product_port_prepare_only=prepare_only,
+        worker_enabled=False,
+        product_port_descriptor_url=descriptor_url,
+        product_port_descriptor_expected_digest="a" * 64,
+        product_port_api_key_ref="env://INTEGRATOR_SECRET_DESTINATION",
+        product_port_shadow_revision="synthetic-revision",
+    )
+    assert validate_settings(settings) == []
+
+
+@pytest.mark.parametrize("prepare_only", [False, True])
+def test_development_port_keeps_plaintext_descriptor_support(
+    prepare_only: bool,
+) -> None:
+    assert (
+        validate_settings(
+            _configured_product_port(
+                product_port_enabled=not prepare_only,
+                product_port_prepare_only=prepare_only,
+                worker_enabled=False,
+                product_port_descriptor_url=" HTTP://destination.example/descriptor ",
+            )
+        )
+        == []
+    )

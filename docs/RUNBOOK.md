@@ -406,3 +406,46 @@ those leases are held by workers that no longer exist. Run
 `POST /operations/leases/release-expired` — it only touches leases that have
 already expired, so it is safe to run twice, and it does not reset the attempt
 count because the attempt genuinely happened.
+
+
+### Prepare a destination owner before creating its first binding
+
+`PRODUCT_PORT_PREPARE_ONLY` defaults to `false`. It is mutually exclusive with
+`PRODUCT_PORT_ENABLED` and requires `WORKER_ENABLED=false`. Configure the same
+`PRODUCT_PORT_DESCRIPTOR_URL`, approved lowercase SHA-256
+`PRODUCT_PORT_DESCRIPTOR_EXPECTED_DIGEST`, and held `PRODUCT_PORT_API_KEY_REF`
+used by the active port. Existing secret confinement and startup loading apply;
+never put a credential value in configuration. Production requires HTTPS.
+Preparation requires neither a delivery mode nor a shadow revision.
+
+In this API-only phase the host-specific `prepare_owner` reader method
+authenticates the exact v3 descriptor and checks
+both embedded and operator-approved digests. It parses the actual product-owned
+contract, combines it with any explicitly configured product-contract registry,
+and installs the canonical owning registry. It opens no destination transaction,
+creates no destination revision or delivery client, and needs no existing local
+binding ID. The descriptor's destination binding UUID belongs to the destination,
+not the Integrator database. Operator routes can then create the actual local
+binding in its disabled state under that installed owner.
+
+Restart with `PRODUCT_PORT_PREPARE_ONLY=false`, `PRODUCT_PORT_ENABLED=true`, and
+the intended delivery configuration after the disabled binding exists. Startup
+refetches and checks the descriptor pin, installs all real owner contracts, then
+invokes the module's existing destination reconciler in one local transaction,
+installs the port, and starts the configured worker. Standalone
+`build_from_settings` / reconciler callers must also install the canonical owner
+registry before reconciliation; a supplied registry cannot replace that authority.
+Mirror mode still requires its immutable shadow revision and cannot settle receipts.
+
+This corrects the prior DB-before-owner bootstrap order. Startup no longer raises
+an orphan-capability coverage verdict: AGENTS.md rule 33 reserves that report for
+`GET /operations/runtime-policy`. Connector discovery does not declare domain
+ownership, and unknown binding capabilities still fail closed in the module.
+The separate product-contract registry retains its own exact schema constraints;
+it is not an implicit fallback for an absent destination owner.
+
+Preparation is configuration bootstrap only. It does not establish source custody,
+prove an Academy feed, activate a destination, authorize writes, or complete the
+Learning-to-ERP handoff. Source authority, custody generation, receiver qualification,
+and explicit module enablement remain separate prerequisites. Hosted CI owns
+`make check` acceptance; local AST/Ruff checks are not runtime evidence.

@@ -219,3 +219,32 @@ def test_product_contract_registry_key_is_held_at_startup(
     )
 
     assert captured["references"] == (reference,)
+
+
+@pytest.mark.parametrize("prepare_only", [False, True])
+def test_product_port_preparation_holds_the_same_destination_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    prepare_only: bool,
+) -> None:
+    reference = "env://INTEGRATOR_SECRET_SYNTHETIC_DESTINATION"
+    captured: dict[str, object] = {}
+
+    class RecordingSource:
+        def __init__(
+            self, engine: Any, dereferencers: object, *, extra_references: object
+        ) -> None:
+            del engine, dereferencers
+            captured["references"] = tuple(extra_references)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(secret_loading, "StoredReferenceSource", RecordingSource)
+    monkeypatch.setattr(secret_loading, "build_dereferencers", lambda settings: {})
+    monkeypatch.setattr(secret_loading, "install_secret_source", lambda source: ())
+    secret_loading.install_secrets(
+        cast(Engine, object()),
+        _settings(
+            product_port_enabled=not prepare_only,
+            product_port_prepare_only=prepare_only,
+            product_port_api_key_ref=reference,
+        ),
+    )
+    assert captured["references"] == (reference,)

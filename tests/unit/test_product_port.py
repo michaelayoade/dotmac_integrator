@@ -1134,9 +1134,20 @@ def test_the_named_reconciler_reads_before_opening_the_local_transaction(
         transport=transport,
     )
 
-    client, registry = reconciler.reconcile()
+    prepared = reconciler.prepare_owner()
 
-    assert events == ["authenticated-product-read", "local-reconcile"]
+    def installed_owner() -> integration.CapabilityRegistry:
+        events.append("installed-owner")
+        return prepared.registry
+
+    monkeypatch.setattr(integration, "capability_registry", installed_owner)
+    client, registry = reconciler.reconcile(prepared, registry=prepared.registry)
+
+    assert events == [
+        "authenticated-product-read",
+        "installed-owner",
+        "local-reconcile",
+    ]
     assert client.application == "sub"
     contract = registry.get("messaging.receive.v1")
     assert contract.owner.application == "sub"
@@ -1275,3 +1286,107 @@ def test_a_base_url_without_a_scheme_is_refused_at_construction() -> None:
             timeout_seconds=5.0,
             transport=_RecordingTransport(),
         )
+
+
+def test_authenticated_preparation_has_no_destination_write_or_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _descriptor_document()
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("owner preparation touched destination DB or delivery client")
+
+    monkeypatch.setattr(product_port, "Session", forbidden)
+    monkeypatch.setattr(product_port, "ObservationPortClient", forbidden)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=cast(Any, object()),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+    prepared = reconciler.prepare_owner()
+    assert prepared.descriptor.destination_binding_id == REMOTE_BINDING
+    assert prepared.registry.get("messaging.receive.v1").owner.application == "sub"
+    assert not hasattr(prepared, "deliver")
+
+
+def test_preparation_pin_refusal_precedes_any_database_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("pin refusal touched destination DB")
+
+    monkeypatch.setattr(product_port, "Session", forbidden)
+    reconciler = ProductPortDescriptorReconciler(
+        engine=cast(Any, object()),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest="c" * 64,
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5,
+        transport=_RecordingTransport(_answer(200, _descriptor_document())),
+    )
+    with pytest.raises(ProductPortDescriptorError, match="operator-approved pin"):
+        reconciler.prepare_owner()
+
+
+def test_reconciliation_requires_installed_owner_before_any_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _descriptor_document()
+    reconciler = ProductPortDescriptorReconciler(
+        engine=cast(Any, object()),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+    prepared = reconciler.prepare_owner()
+
+    def missing_owner() -> Any:
+        raise integration.CapabilityRegistryNotInstalled()
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("absent canonical owner reached a local session")
+
+    monkeypatch.setattr(integration, "capability_registry", missing_owner)
+    monkeypatch.setattr(product_port, "Session", forbidden)
+    with pytest.raises(integration.CapabilityRegistryNotInstalled):
+        reconciler.reconcile(prepared, registry=prepared.registry)
+
+
+def test_standalone_supplied_registry_cannot_replace_canonical_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _descriptor_document()
+    reconciler = ProductPortDescriptorReconciler(
+        engine=cast(Any, object()),
+        descriptor_url="https://destination.example/descriptor",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref=API_KEY_REF,
+        mode=ProductPortMode.MIRROR,
+        timeout_seconds=5,
+        transport=_RecordingTransport(_answer(200, document)),
+    )
+    prepared = reconciler.prepare_owner()
+    contract = prepared.registry.get("messaging.receive.v1")
+    from dataclasses import replace
+
+    different = integration.CapabilityRegistry.from_declarations(
+        [
+            replace(contract, summary="different authenticated owner contract"),
+        ]
+    )
+    monkeypatch.setattr(integration, "capability_registry", lambda: different)
+    monkeypatch.setattr(
+        product_port,
+        "Session",
+        lambda *args: pytest.fail("owner disagreement reached a session"),
+    )
+    with pytest.raises(ProductPortDescriptorError, match="canonical owner"):
+        reconciler.reconcile(prepared, registry=prepared.registry)
