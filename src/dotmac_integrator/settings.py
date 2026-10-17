@@ -367,7 +367,8 @@ def _product_port_problems(settings: Settings) -> list[str]:
         or parsed.fragment
     ):
         problems.append(
-            "PRODUCT_PORT_DESCRIPTOR_URL must be an http(s) URL without credentials, query, or fragment"
+            "PRODUCT_PORT_DESCRIPTOR_URL must be an http(s) URL without "
+            "credentials, query, or fragment"
         )
     if settings.environment == "production" and parsed.scheme != "https":
         # Reuse the normalized URL parsed above: the actual reader strips the
@@ -388,7 +389,8 @@ def _product_port_problems(settings: Settings) -> list[str]:
     for name, value in required.items():
         if not value.strip():
             problems.append(
-                f"Product-port preparation is configured and {name} is empty; a port that "
+                f"Product-port preparation is configured and {name} is empty; "
+                "a port that "
                 "cannot address the destination would fail every receipt"
             )
     if settings.product_port_enabled and settings.product_port_mode == "mirror":

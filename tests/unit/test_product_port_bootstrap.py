@@ -56,7 +56,8 @@ def test_startup_installs_combined_owner_before_destination_writes() -> None:
     _require_owner_before_destination(source)
     bad = source.replace(
         "integration.install_capability_registry(registry)",
-        "reconciler.reconcile(prepared, registry=registry)\n            integration.install_capability_registry(registry)",
+        "reconciler.reconcile(prepared, registry=registry)\n"
+        "            integration.install_capability_registry(registry)",
     )
     with pytest.raises(AssertionError):
         _require_owner_before_destination(bad)
@@ -74,17 +75,34 @@ def test_real_lifespan_prepares_owner_before_active_reconcile(
     import dotmac_integration as integration
     from fastapi.testclient import TestClient
 
-    from dotmac_integrator import assembly
+    from dotmac_integrator import (
+        assembly,
+        delivery,
+        product_contracts,
+        product_port,
+        runtime_policy,
+        secret_loading,
+    )
     from tests.support import build_settings
     from tests.unit.test_product_port import _descriptor_document
 
     document = _descriptor_document()
+    contract_document = document["capability_contract"]
+    capability_id = document["capability_id"]
+    application = document["application"]
+    owner_module = document["owner_module"]
+    summary = document["capability_summary"]
+    assert isinstance(contract_document, dict)
+    assert isinstance(capability_id, str)
+    assert isinstance(application, str)
+    assert isinstance(owner_module, str)
+    assert isinstance(summary, str)
     contract = integration.capability_contract_from_document(
-        document["capability_contract"],
-        capability_id=document["capability_id"],
-        application=document["application"],
-        owner_module=document["owner_module"],
-        summary=document["capability_summary"],
+        contract_document,
+        capability_id=capability_id,
+        application=application,
+        owner_module=owner_module,
+        summary=summary,
     )
     port_registry = integration.CapabilityRegistry.from_declarations([contract])
     extra_registry = integration.CapabilityRegistry.from_declarations(
@@ -135,20 +153,20 @@ def test_real_lifespan_prepares_owner_before_active_reconcile(
     monkeypatch.setattr(assembly, "build_engine", lambda settings: Engine())
     monkeypatch.setattr(assembly, "Worker", Worker)
     monkeypatch.setattr(
-        assembly.runtime_policy, "require_declared_runtime_boundaries", lambda: None
+        runtime_policy, "require_declared_runtime_boundaries", lambda: None
     )
     monkeypatch.setattr(
-        assembly.secret_loading,
+        secret_loading,
         "install_secrets",
         lambda *args: SimpleNamespace(held=("env://INTEGRATOR_SECRET_SYNTHETIC",)),
     )
     monkeypatch.setattr(
-        assembly.product_port,
+        product_port,
         "reconciler_from_settings",
         lambda *args, **kwargs: Reconciler(),
     )
     monkeypatch.setattr(
-        assembly.product_contracts,
+        product_contracts,
         "build_from_settings",
         lambda *args, **kwargs: extra_registry,
     )
@@ -158,7 +176,7 @@ def test_real_lifespan_prepares_owner_before_active_reconcile(
         "require_no_orphans",
         lambda *args: pytest.fail("coverage is reported, not a startup gate"),
     )
-    monkeypatch.setattr(assembly.delivery, "install_product_port", install_port)
+    monkeypatch.setattr(delivery, "install_product_port", install_port)
     app = assembly.create_app(
         build_settings(
             worker_enabled=False,
