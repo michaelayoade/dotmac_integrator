@@ -52,19 +52,33 @@ class ProductAuthenticator:
         )
 
 
-def require_product_query(
-    request: Request,
-    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+def _require(
+    request: Request, x_api_key: str | None, *, scope: str
 ) -> ProductPrincipal:
     authenticator = cast(
         ProductAuthenticator, request.app.state.product_query_authenticator
     )
     try:
-        return authenticator.authenticate(
-            x_api_key or "", required_scope="integration:query"
-        )
+        return authenticator.authenticate(x_api_key or "", required_scope=scope)
     except ProductAuthenticationFailed as exc:
         raise HTTPException(401, "product authentication failed") from exc
 
 
+def require_product_query(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+) -> ProductPrincipal:
+    return _require(request, x_api_key, scope="integration:query")
+
+
+def require_product_provision(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+) -> ProductPrincipal:
+    return _require(request, x_api_key, scope="integration:provision")
+
+
 ProductQueryPrincipal = Annotated[ProductPrincipal, Depends(require_product_query)]
+ProductProvisionPrincipal = Annotated[
+    ProductPrincipal, Depends(require_product_provision)
+]

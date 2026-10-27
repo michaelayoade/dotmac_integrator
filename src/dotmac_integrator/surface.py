@@ -74,7 +74,10 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from dotmac_integrator.operator_auth import OperationReason, require_operator
-from dotmac_integrator.product_auth import require_product_query
+from dotmac_integrator.product_auth import (
+    require_product_provision,
+    require_product_query,
+)
 from dotmac_integrator.telemetry import ScrapeGuard
 
 __all__ = [
@@ -197,7 +200,10 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         methods = {method.upper() for method in route.methods or set()}
         mutating = bool(methods & MUTATING_METHODS)
         guarded = require_operator in _dependency_calls(route)
-        product_guarded = require_product_query in _dependency_calls(route)
+        calls = _dependency_calls(route)
+        product_guarded = (
+            require_product_query in calls or require_product_provision in calls
+        )
 
         if route_class is RouteClass.OPERATOR:
             if not guarded:
@@ -234,8 +240,8 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
                 )
             if not product_guarded:
                 violations.append(
-                    f"{path} is a product route with no "
-                    "`require_product_query` dependency"
+                    f"{path} is a product route with no product guard "
+                    "(`require_product_query` or `require_product_provision`)"
                 )
         elif route_class is RouteClass.SCRAPE:
             if guarded:

@@ -155,6 +155,43 @@ def test_bundle_refuses_shape_order_version_and_count_drift(
         _reconciler(document).reconcile()
 
 
+def test_expected_count_is_deployment_policy_not_wire_law(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = copy.deepcopy(_document())
+    rows = document["contracts"]
+    assert isinstance(rows, list)
+    rows.pop()  # three contracts, as Sub's network registry publishes
+    document["descriptor_digest"] = product_contracts.descriptor_digest(document)
+    monkeypatch.setattr(
+        product_contracts,
+        "resolve_secrets",
+        lambda refs: {product_contracts.SECRET_NAME: "held-machine-key"},
+    )
+    reconciler = product_contracts.ProductContractRegistryReconciler(
+        descriptor_url="https://erp.example/internal/query-contracts",
+        expected_digest=str(document["descriptor_digest"]),
+        api_key_ref="file:///run/secrets/product-contracts/erp",
+        timeout_seconds=3.0,
+        transport=RecordingTransport(document),
+        expected_count=3,
+    )
+
+    assert len(reconciler.reconcile().declared_ids) == 3
+    with pytest.raises(
+        product_contracts.ProductContractRegistryError, match="exactly 3"
+    ):
+        reconciler_wrong = product_contracts.ProductContractRegistryReconciler(
+            descriptor_url="https://erp.example/internal/query-contracts",
+            expected_digest=str(_document()["descriptor_digest"]),
+            api_key_ref="file:///run/secrets/product-contracts/erp",
+            timeout_seconds=3.0,
+            transport=RecordingTransport(_document()),
+            expected_count=3,
+        )
+        reconciler_wrong.reconcile()
+
+
 def test_operator_pin_is_independent_of_published_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

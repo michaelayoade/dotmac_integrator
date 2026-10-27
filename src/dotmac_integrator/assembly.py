@@ -72,6 +72,7 @@ from dotmac_integrator import (
     operations,
     product_contracts,
     product_port,
+    provision_api,
     query,
     runtime_policy,
     secret_loading,
@@ -85,7 +86,11 @@ from dotmac_integrator.operator_auth import (
     OperationReason,
     Operator,
 )
-from dotmac_integrator.product_auth import ProductAuthenticator, ProductQueryPrincipal
+from dotmac_integrator.product_auth import (
+    ProductAuthenticator,
+    ProductProvisionPrincipal,
+    ProductQueryPrincipal,
+)
 from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
@@ -142,6 +147,11 @@ def create_app(
         )
     if settings.product_query_enabled and query_dispatcher is None:
         query_dispatcher = query.IntegrationQueryDispatcher()
+    provision_dispatcher = (
+        provision_api.IntegrationProvisionDispatcher()
+        if settings.product_provision_enabled
+        else None
+    )
 
     # The kernel's audit writer refuses an uninstalled vocabulary. This custom
     # API-only assembly does not call ``dotmac_kernel.app_factory.create_app``,
@@ -252,6 +262,90 @@ def create_app(
             return JSONResponse(
                 result.model_dump(mode="json"),
                 status_code=_PRODUCT_QUERY_STATUS_CODES[result.status],
+            )
+
+    if settings.product_provision_enabled:
+        assert provision_dispatcher is not None
+
+        @app.post("/product/v1/provisions", tags=["product-integration"])
+        def product_provision_submit(
+            body: provision_api.ProvisionSubmitRequest,
+            principal: ProductProvisionPrincipal,
+        ) -> JSONResponse:
+            if body.capability_binding_id not in principal.binding_ids:
+                raise HTTPException(403, "product provision not authorized")
+            result = provision_dispatcher.submit(
+                engine=engine,
+                application=principal.application,
+                request=body,
+            )
+            codes = {
+                "accepted": 202,
+                "conflict": 409,
+                "refused": 422,
+                "unavailable": 503,
+            }
+            return JSONResponse(
+                result.model_dump(mode="json"), status_code=codes[result.status]
+            )
+
+        @app.post(
+            "/product/v1/provisions/{operation_id}/cancel",
+            tags=["product-integration"],
+        )
+        def product_provision_cancel(
+            operation_id: str,
+            body: provision_api.ProvisionCancelRequest,
+            principal: ProductProvisionPrincipal,
+        ) -> JSONResponse:
+            from uuid import UUID
+
+            try:
+                parsed = UUID(operation_id)
+            except ValueError:
+                raise HTTPException(404, "provision operation not found") from None
+            result = provision_dispatcher.cancel(
+                engine=engine,
+                application=principal.application,
+                operation_id=parsed,
+                binding_ids=principal.binding_ids,
+                reason=body.reason,
+            )
+            codes = {
+                "accepted": 202,
+                "conflict": 409,
+                "refused": 404,
+                "unavailable": 503,
+            }
+            return JSONResponse(
+                result.model_dump(mode="json"), status_code=codes[result.status]
+            )
+
+        @app.get("/product/v1/provisions/{operation_id}", tags=["product-integration"])
+        def product_provision_get(
+            operation_id: str,
+            principal: ProductProvisionPrincipal,
+        ) -> JSONResponse:
+            from uuid import UUID
+
+            try:
+                parsed = UUID(operation_id)
+            except ValueError:
+                raise HTTPException(404, "provision operation not found") from None
+            result = provision_dispatcher.get(
+                engine=engine,
+                application=principal.application,
+                operation_id=parsed,
+                binding_ids=principal.binding_ids,
+            )
+            codes = {
+                "accepted": 200,
+                "conflict": 409,
+                "refused": 404,
+                "unavailable": 503,
+            }
+            return JSONResponse(
+                result.model_dump(mode="json"), status_code=codes[result.status]
             )
 
     # ── Probes ──────────────────────────────────────────────────────────────

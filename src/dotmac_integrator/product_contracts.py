@@ -62,7 +62,17 @@ class ProductContractRegistryReconciler:
         api_key_ref: str,
         timeout_seconds: float,
         transport: Transport | None = None,
+        expected_count: int = 4,
     ) -> None:
+        # The exact count is deployment policy, not wire law: ERP publishes
+        # four query contracts today, Sub publishes three network command
+        # contracts. The digest pin remains the authoritative gate; the
+        # count turns a truncated or padded document into a nameable error.
+        if expected_count < 1:
+            raise ProductContractRegistryError(
+                "PRODUCT_CONTRACT_REGISTRY_EXPECTED_COUNT must be at least 1"
+            )
+        self._expected_count = expected_count
         parsed = urlsplit(descriptor_url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -139,9 +149,10 @@ class ProductContractRegistryReconciler:
                 "the product capability registry differs from the operator-approved pin"
             )
         rows = document["contracts"]
-        if not isinstance(rows, list) or len(rows) != 4:
+        if not isinstance(rows, list) or len(rows) != self._expected_count:
             raise ProductContractRegistryError(
-                "the product capability registry must contain exactly four contracts"
+                "the product capability registry must contain exactly "
+                f"{self._expected_count} contracts"
             )
         contracts: list[integration.CapabilityContract] = []
         identifiers: list[str] = []
@@ -214,4 +225,5 @@ def build_from_settings(
         expected_digest=settings.product_contract_registry_expected_digest.strip(),
         api_key_ref=reference,
         timeout_seconds=settings.product_contract_registry_timeout_seconds,
+        expected_count=settings.product_contract_registry_expected_count,
     ).reconcile()

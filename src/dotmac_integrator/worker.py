@@ -51,7 +51,7 @@ import logging
 
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import delivery, operations, polling, telemetry
+from dotmac_integrator import delivery, operations, polling, provisioning, telemetry
 from dotmac_integrator.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,7 @@ class Worker:
         self._task: asyncio.Task[None] | None = None
         self._delivery_task: asyncio.Task[None] | None = None
         self._polling_task: asyncio.Task[None] | None = None
+        self._provision_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         #: Unix time of the last COMPLETED sweep. `None` until one finishes —
         #: seeding it at construction would make a worker that has never run
@@ -90,6 +91,10 @@ class Worker:
     def polling(self) -> bool:
         return self._polling_task is not None and not self._polling_task.done()
 
+    @property
+    def provisioning(self) -> bool:
+        return self._provision_task is not None and not self._provision_task.done()
+
     async def start(self) -> None:
         if not self._settings.worker_enabled:
             logger.info("worker disabled by configuration; API-only replica")
@@ -102,6 +107,14 @@ class Worker:
         )
         self._polling_task = asyncio.create_task(
             self._poll_forever(), name="connector-polling"
+        )
+        self._provision_task = asyncio.create_task(
+            self._provision_forever(), name="connector-provisioning"
+        )
+        logger.info(
+            "connector provisioning started; waking every %ss in pages of %s",
+            self._settings.worker_provision_seconds,
+            self._settings.worker_batch_size,
         )
         logger.info(
             "connector polling started; waking every %ss in pages of %s",
@@ -135,7 +148,7 @@ class Worker:
 
     async def stop(self) -> None:
         self._stopping.set()
-        for name in ("_delivery_task", "_polling_task", "_task"):
+        for name in ("_delivery_task", "_provision_task", "_polling_task", "_task"):
             task = getattr(self, name)
             if task is None:
                 continue
@@ -190,6 +203,23 @@ class Worker:
                 logger.error("connector polling pass failed before completion")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    async def _provision_forever(self) -> None:
+        interval = self._settings.worker_provision_seconds
+        while not self._stopping.is_set():
+            try:
+                await asyncio.to_thread(self._provision_once)
+            except Exception:
+                logger.error("connector provisioning pass failed before completion")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    def _provision_once(self) -> None:
+        counted = provisioning.provision_due_operations(
+            self._engine, self._settings.worker_batch_size
+        )
+        if counted["selected"]:
+            logger.info("connector provisioning pass: %s", sorted(counted.items()))
 
     def _poll_once(self) -> None:
         counted = polling.poll_due_jobs(self._engine, self._settings.worker_batch_size)
