@@ -55,14 +55,18 @@ def test_one_pass_drives_each_operation_to_exhaustion(
         lambda db, *, limit: operation_ids,
     )
 
-    def prepare(db: object, operation: SimpleNamespace, *, registry: object):
+    def prepare(
+        db: object, operation: SimpleNamespace, *, registry: object
+    ) -> SimpleNamespace | None:
         calls.append("prepare")
         if units_left[operation.id] == 0:
             return None
         units_left[operation.id] -= 1
         return SimpleNamespace(operation_id=operation.id)
 
-    def invoke(prepared: object, *, registry: object, resolve_secrets: object):
+    def invoke(
+        prepared: object, *, registry: object, resolve_secrets: object
+    ) -> SimpleNamespace:
         calls.append("invoke")
         assert registry is registry
         assert resolve_secrets is resolve_secrets
@@ -100,10 +104,14 @@ def test_a_lost_claim_and_a_failure_are_isolated_per_operation(
         lambda db, *, limit: operation_ids,
     )
 
-    def prepare(db: object, operation: SimpleNamespace, *, registry: object):
+    def prepare(
+        db: object, operation: SimpleNamespace, *, registry: object
+    ) -> SimpleNamespace:
         return SimpleNamespace(operation_id=operation.id)
 
-    def invoke(prepared: object, *, registry: object, resolve_secrets: object):
+    def invoke(
+        prepared: object, *, registry: object, resolve_secrets: object
+    ) -> SimpleNamespace:
         return SimpleNamespace(status="ok")
 
     def settle(db: object, *, prepared: SimpleNamespace, result: object) -> None:
