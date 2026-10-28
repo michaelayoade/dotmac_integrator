@@ -53,8 +53,8 @@ def integration_versions() -> Path:
     """The `ig` lineage shipped by `dotmac-integration`.
 
     Computed rather than requested from the module: the verified `0.1.0a20`
-    wheel has no `versions_dir()` helper. This assembly still requires the
-    reviewed lock refresh and hosted installed-wheel/composition gates.
+    wheel has no `versions_dir()` helper. The committed lock is reviewed; fresh
+    full hosted CI must still prove this installed-wheel composition.
     If a later release adds one, prefer it here: a package describing its own
     layout beats an assembly inferring it.
     """

@@ -146,7 +146,7 @@ start_period_seconds = 15
 command = ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
 owner_material = "MIGRATION_DATABASE_URL"
 
-# The candidate composed lineages for kernel 0.1.0a98 and integration 0.1.0a20:
+# The composed lineages for kernel 0.1.0a98 and integration 0.1.0a20:
 #
 #   0028_machine_attribution — kernel head derived from the a98 tag.
 #   ig_0017_provisioning     — integration head verified in the released a20 wheel.
@@ -156,9 +156,9 @@ owner_material = "MIGRATION_DATABASE_URL"
 # ig_0016 and ig_0017. The existing cross-lineage providers at 0001, 0018 and
 # 0026 remain unchanged: provider effects and current heads are different facts.
 # Integration a20 publication and its App record are verified (see readiness).
-# Connector a1 artifact verification succeeded; its App record #941 is pending.
-# This assembly remains a candidate until that record merges with green Starter
-# main, the lock is reviewed, and hosted installed-wheel/composition gates pass.
+# Connector a1 artifacts and the committed lock passed independent review.
+# Acceptance requires App record #941 merged, green recorded Starter main and
+# fresh full Integrator hosted CI, including installed-wheel/composition gates.
 #
 # This list is what makes a lineage that silently did not advance visible: a
 # partial `upgrade heads` still exits 0, so an exit code cannot see it. RE-DERIVE

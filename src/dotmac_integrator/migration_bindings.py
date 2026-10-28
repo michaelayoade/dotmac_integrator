@@ -58,8 +58,9 @@ The kernel a98 composition retains their providers at `0001`, `0018` and
 `conflict_savepoint` API used by the provisioning runtime and meets a20's
 kernel floor, confirmed by the released wheel METADATA. Integration publication
 and its App record are verified. Connector a1 is artifact-verified; this
-assembly still awaits its App record #941 merge and green Starter main, the
-reviewed lock refresh and hosted static/live-catalog proofs.
+assembly has an independently reviewed committed lock. Acceptance requires
+App record #941 merged, green recorded Starter main and fresh full Integrator
+hosted CI, including static/live-catalog proofs.
 
 Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
 Both were truthful — this deployment composes the whole kernel lineage, so kernel

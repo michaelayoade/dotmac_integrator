@@ -80,10 +80,11 @@ thresholds live in the deployment, never in the process.
 
 `migration.expected_heads` names the head of each composed lineage —
 `0028_machine_attribution` (kernel `0.1.0a98`) and `ig_0017_provisioning`
-(`dotmac-integration 0.1.0a20`) in the candidate composition. These expectations
+(`dotmac-integration 0.1.0a20`) in this composition. These expectations
 are derived from the kernel tag and the verified a20 wheel. Connector a1 is
-also artifact-verified; its App record #941 merge and green Starter main, a
-reviewed lock refresh and hosted composition remain required before acceptance.
+also artifact-verified, and the committed lock is independently reviewed.
+Acceptance requires its App record #941 merged, green recorded Starter main
+and fresh full Integrator hosted CI, including composition.
 A release that changes either lineage changes
 what this file must assert about it, exactly as rule 10 already requires of the
 prerequisite bindings. A partial `upgrade heads` still exits 0, so this list is

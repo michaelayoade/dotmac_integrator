@@ -455,12 +455,12 @@ CI is the acceptance owner. What must go green, and what each gate asserts:
       This is the gate that caught § 1.3, and it runs only in the database job.
 
 
-# 2026-10-28 — Provisioning composition candidate
+# 2026-10-28 — Provisioning composition and reviewed lock
 
-**Status: Integrator composition remains a local candidate. Integration a20
-and FreeRADIUS a1 artifacts are verified published. Connector App record #941
-is pending; the release freeze remains open until its merge and green Starter
-main. The committed lock is unchanged, and Integrator hosted acceptance is pending.**
+**Status: integration a20 and FreeRADIUS a1 artifacts are verified, and the
+committed lock passed independent review. Acceptance requires connector App
+record #941 merged, green recorded Starter main and fresh full Integrator
+hosted CI.**
 
 Integration a20 release evidence:
 
@@ -475,9 +475,9 @@ FreeRADIUS a1 artifact evidence:
 - [Release run `40758463088`](https://github.com/michaelayoade/dotmac_starter_mt/actions/runs/40758463088): all three jobs succeeded; registry verification exercised the a20 floor and current conformance.
 - Source `e9c1be690cfd58c64ae75a07a9a58d46d18743ba`; annotated tag `dotmac-connector-freeradius-v0.1.0a1`, object `e69b63ec20eb56256c5c138e4725bb213613d361`, peels to that source.
 - Wheel SHA-256 `a3e91c334d023d080995fc578ade0ec90afc51850a08266135ee99f61117caad`; dependencies are integration `>=0.1.0a20`, httpx `>=0.27,<1.0`, SQLAlchemy `>=2.0,<3.0`.
-- App release record [#941](https://github.com/michaelayoade/dotmac_starter_mt/pull/941), head `ed20cfc7620adb667e7bd6dd4bedc2e79c6b1eb0`, has pending CI. Its merge and green Starter main remain gates; artifact verification does not close the freeze.
+- App release record [#941](https://github.com/michaelayoade/dotmac_starter_mt/pull/941), head `ed20cfc7620adb667e7bd6dd4bedc2e79c6b1eb0`, requires merge and green recorded Starter main before acceptance; artifact verification does not close the freeze.
 
-The proposed exact pins are kernel `0.1.0a98`, integration `0.1.0a20`, and
+The reviewed exact pins are kernel `0.1.0a98`, integration `0.1.0a20`, and
 connector `dotmac-connector-freeradius 0.1.0a1`. Kernel a98 satisfies the
 integration floor and provides the `conflict_savepoint` API used by the
 provisioning runtime. Installing the connector grants no binding, activation,
@@ -491,18 +491,19 @@ and no cross-lineage requirement. The verified wheel exposes no
 `versions_dir()` helper, so the existing installed-package locator remains.
 These findings do not replace installed-wheel and live-catalog hosted proofs.
 
-Before this candidate can be accepted:
+The committed lock was generated with ordinary `poetry lock` under Poetry
+2.4.1 by [generation run `40761648391`](https://github.com/michaelayoade/dotmac_integrator/actions/runs/40761648391), artifact `12847984435`.
+The temporary generation job is removed in this change. Its output is historical
+generation evidence, not merge-acceptance evidence.
 
-1. Integration a20 and connector a1 artifacts are verified above. Await
-   connector App record #941 merge and green Starter main to close the freeze.
-2. Dispatch the temporary, unqualified `lock-proposal` job on
-   `feat/provision-runtime-20261027` only after both wheels are available.
-   Its artifact is a proposed ordinary Poetry 2.4.1 lock refresh, not validation
-   of the committed source or permission to merge.
-3. Review the lock diff and commit the accepted lock, remove that temporary
-   generation job, and run fresh normal hosted CI against the complete change.
-   Exact pins, installed-wheel discovery, unchanged prerequisite bindings and
-   live PostgreSQL composition must all pass.
+- Artifact ZIP SHA-256: `4e301ef236e8263aebcdc8eacf4a3d7bf727cbacc6cec44d2573eb3243806522`.
+- Committed lock SHA-256: `4aa3a9dc332dd125f6e0e9a31e3e8589390a330433673f6851e22f5eb679985d`.
+- Independent review found exactly three package-record changes: kernel a68 → a98, integration a18 → a20, and FreeRADIUS a1 added. All third-party and other package records are unchanged; wheel and sdist hashes for both new releases match retained bytes, and all Dotmac exact pins agree.
+
+Acceptance requires App record #941 merged with green recorded Starter main
+and fresh full Integrator hosted CI against this committed lock. Exact pins,
+installed-wheel discovery, unchanged prerequisite bindings, PostgreSQL
+composition and deployment conformance must all pass.
 
 Live-data shadow, an assembly-bound single-use secret fetch, enumeration and
 cutover retirement of `TEST_RADIUS_*` logins, and the single-writer flip with
@@ -510,7 +511,7 @@ incumbent retirement remain gates of the separately authorized
 `network-suite-v1` product cutover.
 
 
-The SPI 1.7 adoption candidate also extends the generic runtime-policy report
+The SPI 1.7 adoption also extends the generic runtime-policy report
 with per-connector `fleet_port_ranges` (`protocol`, `first_port`, `last_port`)
 and explicit `fleet_denies_all`. These are module-projected manifest ceilings,
 independent of the existing static-host egress fields. They expose no configured
