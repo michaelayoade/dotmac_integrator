@@ -1,7 +1,7 @@
 name: dotmac-integrator-traccar
 
 # Host-local Traccar profile. The image is produced from this repository's
-# exact lock (dotmac-integration 0.1.0a18 + dotmac-connector-traccar 0.1.0a1)
+# exact lock (dotmac-integration 0.1.0a20 + dotmac-connector-traccar 0.1.0a1)
 # and must be supplied by immutable digest. This file never builds or pulls a
 # mutable tag on the production host.
 x-image: &image ${INTEGRATOR_TRACCAR_IMAGE:?Set INTEGRATOR_TRACCAR_IMAGE to an immutable image@sha256 digest}

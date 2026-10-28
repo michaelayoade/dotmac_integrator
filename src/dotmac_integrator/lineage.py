@@ -52,10 +52,11 @@ def kernel_versions() -> Path:
 def integration_versions() -> Path:
     """The `ig` lineage shipped by `dotmac-integration`.
 
-    Computed rather than requested from the module: `dotmac-integration 0.1.0a17`
-    still ships no `versions_dir()` helper of its own — re-checked at each pin
-    bump rather than assumed. If a later release adds one, prefer it here: a
-    package describing its own layout beats an assembly inferring it.
+    Computed rather than requested from the module: the verified `0.1.0a20`
+    wheel has no `versions_dir()` helper. This assembly still requires the
+    reviewed lock refresh and hosted installed-wheel/composition gates.
+    If a later release adds one, prefer it here: a package describing its own
+    layout beats an assembly inferring it.
     """
     return _versions(dotmac_integration.migrations, "dotmac-integration")
 

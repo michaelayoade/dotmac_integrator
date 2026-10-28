@@ -99,12 +99,12 @@ def test_profile_exposes_only_loopback_integrator_contract() -> None:
 def test_profile_uses_the_exact_released_module_and_connector() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["tool"]["poetry"]["dependencies"]
-    assert dependencies["dotmac-integration"] == "0.1.0a18"
+    assert dependencies["dotmac-integration"] == "0.1.0a20"
     assert dependencies["dotmac-connector-traccar"] == "0.1.0a1"
 
     lock = tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))
     versions = {package["name"]: package["version"] for package in lock["package"]}
-    assert versions["dotmac-integration"] == "0.1.0a18"
+    assert versions["dotmac-integration"] == "0.1.0a20"
     assert versions["dotmac-connector-traccar"] == "0.1.0a1"
 
 
