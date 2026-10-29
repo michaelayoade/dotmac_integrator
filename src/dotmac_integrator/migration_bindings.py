@@ -45,19 +45,22 @@ the same lesson; do not reintroduce it here.
 
 ## Three effects, because three are required — and two were RETIRED
 
-`dotmac-integration 0.1.0a17` declares the database roles, idempotency ledger and
-append-only platform audit log requirements. All three are bound below, and
-nothing else is.
+The verified `dotmac-integration 0.1.0a20` wheel retains the database roles,
+idempotency ledger and append-only platform audit log requirements. All three
+are bound below, and nothing else is.
 
-Re-derived again at the a16 → a17 bump, which is required rather than a formality: a
-release that changes `requires` changes what this assembly must assert about it.
-The answer this time is that the bindings did not move, while the module lineage
-did: a17 adds `ig_0015_descriptor_contract` on top of a16's delivery and polling
-revisions, and its `manifest.requires` tuple remains the same three effects as
-a16. The new revision changes module-owned platform columns and a constraint;
-it introduces no new cross-lineage prerequisite. A no-op binding re-derivation
-is recorded because the alternative is a reader at the next bump not knowing
-whether this one was checked or skipped.
+Re-derived for the a18 → a20 pin preparation against the verified wheel:
+`ig_0017_provisioning` adds module-owned provisioning state, with no new
+cross-lineage effects. The manifest still requires exactly
+`module_database_roles.v1`, `idempotency_ledger.v1` and `platform_audit_log.v1`.
+The kernel a98 composition retains their providers at `0001`, `0018` and
+`0026`, so the binding tuple does not move. Kernel a98 also supplies the
+`conflict_savepoint` API used by the provisioning runtime and meets a20's
+kernel floor, confirmed by the released wheel METADATA. Integration publication
+and its App record are verified. Connector a1 is artifact-verified; this
+assembly has an independently reviewed committed lock. Acceptance requires
+App record #941 merged, green recorded Starter main and fresh full Integrator
+hosted CI, including static/live-catalog proofs.
 
 Under a3 this file also bound `tenant_scope_catalog.v1` and `outbox_relay.v1`.
 Both were truthful — this deployment composes the whole kernel lineage, so kernel
@@ -87,10 +90,10 @@ append-only log as `platform_audit_log.v1`, and `ig_0008` requires it. The
 provider is kernel `0026`, the revision that completes the effect by removing
 UPDATE/DELETE and column-level escape grants from the online platform role.
 
-## The `ig_0001` literal edge — unrepaired through a17
+## The `ig_0001` literal edge — retained in released a20
 
 `ig_0001_connector_cp` still ships `depends_on = ("0001_initial_tenant_schema",)`
-at `0.1.0a17` — a physical edge naming a foreign revision, which is exactly what
+in `0.1.0a20` — a physical edge naming a foreign revision, which is exactly what
 the prerequisite vocabulary exists to replace. It cannot be repaired at any
 version: the file shipped in a1, a2, a3 and a4, its bytes have run in databases
 the Starter does not own, and `alembic_version` records that a revision ran,

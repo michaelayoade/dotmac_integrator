@@ -453,3 +453,78 @@ CI is the acceptance owner. What must go green, and what each gate asserts:
 - [ ] `test_the_operator_surface_end_to_end.py` (composition, PostgreSQL) — the
       authoring flow in a2's SPI 1.3 shape, and the retired 1.2 shape refused.
       This is the gate that caught § 1.3, and it runs only in the database job.
+
+
+# 2026-10-28 — Provisioning composition and reviewed lock
+
+**Status: integration a20 and FreeRADIUS a1 artifacts are verified, and the
+committed lock passed independent review. Acceptance requires connector App
+record #941 merged, green recorded Starter main and fresh full Integrator
+hosted CI.**
+
+Integration a20 release evidence:
+
+- [Release run `40716733852`](https://github.com/michaelayoade/dotmac_starter_mt/actions/runs/40716733852), source `7a9bfbef6a24070bea97b4490d7e6074de714552`.
+- Annotated tag `dotmac-integration-v0.1.0a20`, object `ca6d6a91f22319f15e9d031022c703f678d3b464`.
+- Retained wheel SHA-256 `2a00ee6023d93d12c1132da4358b8e5230de2eebf844880ef084665561f610b9`; METADATA confirms kernel floor `>=0.1.0a98`, and all 17 migrations were verified.
+- App release record [#936](https://github.com/michaelayoade/dotmac_starter_mt/pull/936) merged at `ff600b83f0bdf5b2ad339ebf4098e3acc345a4d7`; all three push workflows are green.
+
+
+FreeRADIUS a1 artifact evidence:
+
+- [Release run `40758463088`](https://github.com/michaelayoade/dotmac_starter_mt/actions/runs/40758463088): all three jobs succeeded; registry verification exercised the a20 floor and current conformance.
+- Source `e9c1be690cfd58c64ae75a07a9a58d46d18743ba`; annotated tag `dotmac-connector-freeradius-v0.1.0a1`, object `e69b63ec20eb56256c5c138e4725bb213613d361`, peels to that source.
+- Wheel SHA-256 `a3e91c334d023d080995fc578ade0ec90afc51850a08266135ee99f61117caad`; dependencies are integration `>=0.1.0a20`, httpx `>=0.27,<1.0`, SQLAlchemy `>=2.0,<3.0`.
+- App release record [#941](https://github.com/michaelayoade/dotmac_starter_mt/pull/941), head `ed20cfc7620adb667e7bd6dd4bedc2e79c6b1eb0`, requires merge and green recorded Starter main before acceptance; artifact verification does not close the freeze.
+
+The reviewed exact pins are kernel `0.1.0a98`, integration `0.1.0a20`, and
+connector `dotmac-connector-freeradius 0.1.0a1`. Kernel a98 satisfies the
+integration floor and provides the `conflict_savepoint` API used by the
+provisioning runtime. Installing the connector grants no binding, activation,
+secret-fetch authority or single-writer cutover.
+
+Re-derivation against the verified a20 wheel finds the same three prerequisites:
+`module_database_roles.v1`, `idempotency_ledger.v1` and
+`platform_audit_log.v1`. Their existing kernel providers (`0001`, `0018`,
+`0026`) remain unchanged; `ig_0017_provisioning` adds module-owned state
+and no cross-lineage requirement. The verified wheel exposes no
+`versions_dir()` helper, so the existing installed-package locator remains.
+These findings do not replace installed-wheel and live-catalog hosted proofs.
+
+The committed lock was generated with ordinary `poetry lock` under Poetry
+2.4.1 by [generation run `40761648391`](https://github.com/michaelayoade/dotmac_integrator/actions/runs/40761648391), artifact `12847984435`.
+The temporary generation job is removed in this change. Its output is historical
+generation evidence, not merge-acceptance evidence.
+
+- Artifact ZIP SHA-256: `4e301ef236e8263aebcdc8eacf4a3d7bf727cbacc6cec44d2573eb3243806522`.
+- Committed lock SHA-256: `4aa3a9dc332dd125f6e0e9a31e3e8589390a330433673f6851e22f5eb679985d`.
+- Independent review found exactly three package-record changes: kernel a68 → a98, integration a18 → a20, and FreeRADIUS a1 added. All third-party and other package records are unchanged; wheel and sdist hashes for both new releases match retained bytes, and all Dotmac exact pins agree.
+
+Acceptance requires App record #941 merged with green recorded Starter main
+and fresh full Integrator hosted CI against this committed lock. Exact pins,
+installed-wheel discovery, unchanged prerequisite bindings, PostgreSQL
+composition and deployment conformance must all pass.
+
+Live-data shadow, an assembly-bound single-use secret fetch, enumeration and
+cutover retirement of `TEST_RADIUS_*` logins, and the single-writer flip with
+incumbent retirement remain gates of the separately authorized
+`network-suite-v1` product cutover.
+
+
+The SPI 1.7 adoption also extends the generic runtime-policy report
+with per-connector `fleet_port_ranges` (`protocol`, `first_port`, `last_port`)
+and explicit `fleet_denies_all`. These are module-projected manifest ceilings,
+independent of the existing static-host egress fields. They expose no configured
+installation CIDRs, effective narrowing or activation authority. Empty declared
+ceilings and pre-1.7 manifests project fleet deny-all; the module refuses a
+SPI >=1.7 manifest that omits its fleet declaration.
+
+Hosted report canaries cover a nonempty declaration, explicit empty declaration,
+older omission and the module-owned SPI 1.7 omission refusal. Bound-target
+validation remains owned by the module, whose
+`test_integration_spi_network_targets.py::test_require_network_target_matches_and_refuses`
+proves refusal before I/O. A full bound-installation target report would need a
+separate module/public-query and assembly reporting change; it remains outside
+this supply-pin compatibility patch and must be addressed before activation
+where operational target evidence is required. This report makes no live-parity
+or network-enforcement claim.

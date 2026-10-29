@@ -5,10 +5,14 @@ The independently deployed **connector control plane**. It composes
 only what a deployment can own.
 
 ```
-dotmac-kernel  0.1.0a68  ──┐
+dotmac-kernel  0.1.0a98  ──┐
                            ├──►  dotmac_integrator  ──►  connector distributions
-dotmac-integration 0.1.0a17┘        (this repo)          (pinned, discovered)
+dotmac-integration 0.1.0a20┘        (this repo)          (pinned, discovered)
 ```
+
+Integration a20 and FreeRADIUS a1 artifacts and the committed lock are verified.
+Acceptance requires connector App record #941 merged, green recorded Starter
+main and fresh full Integrator hosted CI. See `docs/UPGRADE-READINESS.md` for the release evidence.
 
 ## What this repository is allowed to contain
 
@@ -65,8 +69,10 @@ A connector is a **separately released distribution**, discovered through the
 The deployment manifest names and exactly pins connector DISTRIBUTIONS; generic
 assembly source imports no connector and carries no provider branch or registry.
 
-The complete published cohort is pinned today: WhatsApp, Meta Social, LinkedIn,
-Mono, Remita, Paystack and Flutterwave. Installation makes each distribution
+The deployment cohort includes WhatsApp, Meta Social, LinkedIn,
+Mono, Remita, Paystack, Flutterwave, Traccar and FreeRADIUS. Release-record
+closure, lock review and hosted CI remain required before acceptance.
+Installation makes each distribution
 discoverable; it does not activate it or declare a product capability. Those
 decisions remain in the durable installation/binding registry and in
 product-owned descriptors.
@@ -273,11 +279,16 @@ being absent from a second list. A library declares the earliest version it
 works with; a deployment declares the exact one it was tested against. `>=`
 here would let an install months from now compose a combination nobody ran.
 
+The pins below agree with the independently reviewed committed lock. Fresh full
+hosted CI remains the acceptance gate; version declarations alone are not
+publication evidence.
+
 | Distribution | Pin | Why this one |
 |---|---|---|
 | `dotmac-connector-whatsapp` | `0.1.0a2` | The first published ingress connector, re-released at SPI `>=1.3,<2.0` with its runtime boundaries declared. It keeps its a1 manifest in `historical_manifests`, so an installation pinned to the a1 digest is not invalidated by this bump. |
-| `dotmac-integration` | `0.1.0a17` | Published by release run `33043793199`; peeled tag `dotmac-integration-v0.1.0a17` resolves to `2cab76b442e6cc6c8ed81a409d943ba250351c3d`. Adds descriptor-v3 capability-contract persistence at lineage head `ig_0015` on top of a16's delivery/polling engine; the three existing prerequisites are unchanged. |
-| `dotmac-kernel` | `0.1.0a68` | Current pinned kernel. It satisfies the module's `>=0.1.0a68` floor — a10 did not move it — and is the exact release this composition is tested against. |
+| `dotmac-integration` | `0.1.0a20` | Verified published SPI 1.7 provisioning runtime (run `40716733852`); retained wheel confirms head `ig_0017_provisioning` and the same three prerequisites. The committed lock is reviewed; fresh full Integrator hosted CI is required. |
+| `dotmac-kernel` | `0.1.0a98` | Candidate exact composition satisfying a20's kernel floor and `conflict_savepoint` API; expected lineage head `0028_machine_attribution`. Hosted composition must verify the installed wheel. |
+| `dotmac-connector-freeradius` | `0.1.0a1` | Verified artifact from run `40758463088`, after integration a20; Acceptance requires App record #941 merged and green recorded Starter main. No activation, secret-fetch binding or writer cutover is authorized by installation. |
 
 ### What a pin bump actually costs
 

@@ -79,8 +79,13 @@ thresholds live in the deployment, never in the process.
 ## Re-derive at every pin bump
 
 `migration.expected_heads` names the head of each composed lineage —
-`0026_platform_audit_log` (kernel `0.1.0a68`) and `ig_0015_descriptor_contract`
-(`dotmac-integration 0.1.0a17`). A release that changes either lineage changes
+`0028_machine_attribution` (kernel `0.1.0a98`) and `ig_0017_provisioning`
+(`dotmac-integration 0.1.0a20`) in this composition. These expectations
+are derived from the kernel tag and the verified a20 wheel. Connector a1 is
+also artifact-verified, and the committed lock is independently reviewed.
+Acceptance requires its App record #941 merged, green recorded Starter main
+and fresh full Integrator hosted CI, including composition.
+A release that changes either lineage changes
 what this file must assert about it, exactly as rule 10 already requires of the
 prerequisite bindings. A partial `upgrade heads` still exits 0, so this list is
 the only thing that can see a lineage that silently did not advance.
@@ -93,3 +98,9 @@ heads from the installed wheels through `lineage.version_locations()`, so a pin
 bump that forgets to re-derive fails in CI instead of at the deploy gate — where
 the symptom is a correctly-migrated deployment failing `verify_heads`, which is
 the reliable way to teach an operator to skip a gate.
+
+
+The a20 pin preparation changes the declared heads without hand-editing generated
+`deploy/rendered` files. Hosted deployment conformance must still run the pinned
+Foundation `0.2.0a2` `render --check` against this descriptor; unchanged rendered
+output is an expectation to verify, not local test evidence.

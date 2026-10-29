@@ -197,6 +197,14 @@ def policy_report(policy: integration.RuntimePolicy) -> dict[str, Any]:
     1.3 contract: under 1.3 it is an explicit deny-all that every projected
     connector affirmatively declared, and it is indistinguishable at a glance
     from a field somebody forgot to fill in.
+
+    Per-connector `fleet_port_ranges` renders the module's SPI 1.7 ceilings;
+    `fleet_denies_all` makes an empty ceiling explicit. This is independent of
+    static host egress. It reports no configured installation targets, no CIDRs
+    and no effective network authorization: installations must narrow the
+    ceiling, and the module owns the pre-I/O target refusal (ADR-0074).
+    Older manifests without fleet declarations project deny-all by the module's
+    contract; SPI >=1.7 omission is refused by the manifest itself.
     """
     hosts = list(policy.egress_hosts)
     return {
@@ -213,6 +221,15 @@ def policy_report(policy: integration.RuntimePolicy) -> dict[str, Any]:
                 "connector_key": connector.connector_key,
                 "manifest_digest": connector.manifest_digest,
                 "egress_hosts": list(connector.egress_hosts),
+                "fleet_port_ranges": [
+                    {
+                        "protocol": port_range.protocol,
+                        "first_port": port_range.first_port,
+                        "last_port": port_range.last_port,
+                    }
+                    for port_range in connector.fleet_port_ranges
+                ],
+                "fleet_denies_all": not connector.fleet_port_ranges,
                 "secret_bindings": [
                     {"name": binding.name, "required": binding.required}
                     for binding in connector.secret_bindings

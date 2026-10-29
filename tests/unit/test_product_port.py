@@ -24,6 +24,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -319,15 +320,36 @@ def test_an_unknown_product_wire_protocol_is_refused_before_the_network() -> Non
     class _UnknownDestination(_GenericDestination):
         product_port = _UnknownProductPort()
 
-    request = integration.build_product_request(
+    # a20 refuses the unknown wire while constructing the module request.
+    with pytest.raises(integration.DeliveryError, match="unsupported.*wire schema"):
+        integration.build_product_request(
+            _claim(
+                {"observation_kind": "synthetic"},
+                destination=_UnknownDestination(),
+            )
+        )
+
+    # Independently exercise the assembly guard using the public request type:
+    # first prove the supported destination renders, then vary only its wire.
+    valid_request = integration.build_product_request(
         _claim(
             {"observation_kind": "synthetic"},
-            destination=_UnknownDestination(),
+            destination=_GenericDestination(),
         )
     )
+    assert build_product_document(valid_request) == (
+        integration.product_observation_document(valid_request)
+    )
+    request = replace(valid_request, destination=_UnknownDestination())
 
     with pytest.raises(EnvelopeNotConstructible, match="unsupported"):
         build_product_document(request)
+
+    writer, sent = _client(_ok())
+    outcome = writer.deliver(request)
+    assert outcome.acceptance is integration.ProductAcceptance.REJECTED
+    assert outcome.error_code == "integrator.envelope_not_constructible"
+    assert sent.calls == []
 
 
 def test_the_canonical_body_carries_every_field_the_destination_dumps() -> None:

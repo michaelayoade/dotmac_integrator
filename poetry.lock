@@ -313,6 +313,28 @@ url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
 reference = "forgejo"
 
 [[package]]
+name = "dotmac-connector-freeradius"
+version = "0.1.0a1"
+description = "FreeRADIUS SQL projection, observation polling and CoA connector"
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = [
+    {file = "dotmac_connector_freeradius-0.1.0a1-py3-none-any.whl", hash = "sha256:a3e91c334d023d080995fc578ade0ec90afc51850a08266135ee99f61117caad"},
+    {file = "dotmac_connector_freeradius-0.1.0a1.tar.gz", hash = "sha256:12a8c56cce2f19b490617a7a06f3c12404492807bc80c7442a1ab1282ad2ff17"},
+]
+
+[package.dependencies]
+dotmac-integration = ">=0.1.0a20"
+httpx = ">=0.27,<1.0"
+sqlalchemy = ">=2.0,<3.0"
+
+[package.source]
+type = "legacy"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple"
+reference = "forgejo"
+
+[[package]]
 name = "dotmac-connector-linkedin"
 version = "0.1.0a1"
 description = "Dotmac Integrator connector for LinkedIn webhook observations"
@@ -458,18 +480,18 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-integration"
-version = "0.1.0a18"
+version = "0.1.0a20"
 description = "DotMac Integration — the external connector control plane: installations, immutable configuration revisions, capability bindings, secret references and a versioned connector SPI (ADR-0024)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_integration-0.1.0a18-py3-none-any.whl", hash = "sha256:e38be076a0a2f768a181e6489257f24a3c1b99ec5f374727d1320dbd0684a6a6"},
-    {file = "dotmac_integration-0.1.0a18.tar.gz", hash = "sha256:66243fac2606b9b7c610ebcdac14436684d039648a6d93d06a95e8d8ec04deae"},
+    {file = "dotmac_integration-0.1.0a20-py3-none-any.whl", hash = "sha256:2a00ee6023d93d12c1132da4358b8e5230de2eebf844880ef084665561f610b9"},
+    {file = "dotmac_integration-0.1.0a20.tar.gz", hash = "sha256:b555b46cece088ede60930de3562c43ce3a0e7abc296ba432ba5360f43c361b6"},
 ]
 
 [package.dependencies]
-dotmac-kernel = ">=0.1.0a68"
+dotmac-kernel = ">=0.1.0a98"
 jsonschema = ">=4.23,<5.0"
 sqlalchemy = ">=2.0,<3.0"
 
@@ -480,14 +502,14 @@ reference = "forgejo"
 
 [[package]]
 name = "dotmac-kernel"
-version = "0.1.0a68"
+version = "0.1.0a98"
 description = "DotMac platform kernel — multi-tenant FastAPI foundation (config, RLS db, identity/tenancy models, security, platform auth, middleware, settings, features registry, audit)"
 optional = false
 python-versions = ">=3.11,<3.14"
 groups = ["main"]
 files = [
-    {file = "dotmac_kernel-0.1.0a68-py3-none-any.whl", hash = "sha256:b21bf682d603edad18818d747659309413df96ce47a65f67bf1dcdf320b3882a"},
-    {file = "dotmac_kernel-0.1.0a68.tar.gz", hash = "sha256:6fcc883d1ed9c218b2a98736568cfb5fc12c7c7f379da444f1c13aec772613f9"},
+    {file = "dotmac_kernel-0.1.0a98-py3-none-any.whl", hash = "sha256:27405c57c4af395224cdd2f4366c0144207e9df2eab4ca8a8ed1142c1d0859fa"},
+    {file = "dotmac_kernel-0.1.0a98.tar.gz", hash = "sha256:597acda6b7d1046650aa17b5d847f581b05ee577e7893067762f3bb2790c38af"},
 ]
 
 [package.dependencies]
@@ -2315,4 +2337,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "11198536abc437f29435d92ea265a3a486268f9b2b8b02b1ed2b9785b8747385"
+content-hash = "9400d4c1c7e6906cce2f939832c29fd039f0c1a02454fac79fd694f5027a90af"

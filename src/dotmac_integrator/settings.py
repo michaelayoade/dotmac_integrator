@@ -89,6 +89,15 @@ class Settings(BaseSettings):
         ),
     )
     worker_lease_sweep_seconds: float = Field(default=60.0, gt=0)
+    worker_provision_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Wake cadence for the provisioning pump. Separate from polling "
+            "and delivery on purpose: a stuck fleet target must not delay "
+            "receipts, and a slow poll must not delay a disconnect."
+        ),
+    )
     worker_batch_size: int = Field(
         default=20,
         ge=1,
@@ -126,12 +135,14 @@ class Settings(BaseSettings):
         description="`file://` references are confined to this directory.",
     )
     product_query_enabled: bool = False
+    product_provision_enabled: bool = False
     product_query_callers: tuple[ProductQueryCaller, ...] = ()
     product_contract_registry_enabled: bool = False
     product_contract_registry_url: str = ""
     product_contract_registry_expected_digest: str = ""
     product_contract_registry_api_key_ref: str = ""
     product_contract_registry_timeout_seconds: float = Field(default=15.0, gt=0)
+    product_contract_registry_expected_count: int = Field(default=4, ge=1)
 
     # ── Operator authentication ─────────────────────────────────────────────
     operator_auth_mechanism: str = Field(
@@ -438,10 +449,24 @@ def validate_settings(settings: Settings) -> list[str]:
     callers = settings.product_query_callers
     if settings.product_query_enabled and not callers:
         problems.append("PRODUCT_QUERY_ENABLED requires PRODUCT_QUERY_CALLERS")
-    if (
-        settings.product_query_enabled
-        and not settings.product_contract_registry_enabled
+    if settings.product_provision_enabled and not callers:
+        problems.append("PRODUCT_PROVISION_ENABLED requires PRODUCT_QUERY_CALLERS")
+    if settings.product_query_enabled and not any(
+        "integration:query" in caller.scopes for caller in callers
     ):
+        problems.append(
+            "PRODUCT_QUERY_ENABLED requires a caller with integration:query scope"
+        )
+    if settings.product_provision_enabled and not any(
+        "integration:provision" in caller.scopes for caller in callers
+    ):
+        problems.append(
+            "PRODUCT_PROVISION_ENABLED requires a caller with "
+            "integration:provision scope"
+        )
+    if (
+        settings.product_query_enabled or settings.product_provision_enabled
+    ) and not settings.product_contract_registry_enabled:
         problems.append(
             "PRODUCT_QUERY_ENABLED requires PRODUCT_CONTRACT_REGISTRY_ENABLED"
         )
@@ -452,11 +477,14 @@ def validate_settings(settings: Settings) -> list[str]:
     for caller in callers:
         if not caller.api_key_ref.startswith(("env://", "file://")):
             problems.append("product query api_key_ref must be env:// or file://")
-        if "integration:query" not in caller.scopes or any(
-            "*" in scope for scope in caller.scopes
+        known_scopes = {"integration:query", "integration:provision"}
+        if (
+            not set(caller.scopes) & known_scopes
+            or not set(caller.scopes) <= known_scopes
         ):
             problems.append(
-                "product query caller requires exact integration:query scope"
+                "product caller requires exact integration:query and/or "
+                "integration:provision scope"
             )
         if len(set(caller.binding_ids)) != len(caller.binding_ids):
             problems.append("product query caller binding_ids must be unique")

@@ -18,6 +18,7 @@ Three claims, and the middle one is the reason this file exists at all.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -110,6 +111,74 @@ def test_the_egress_union_is_the_sorted_union_of_every_connector(
 
     assert report["egress_hosts"] == ["a.example.com", "zeta.example.com"]
     assert report["egress_denies_all"] is False
+
+
+def test_the_report_preserves_the_module_declared_fleet_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nonempty control: omitting fleet fields or always reporting deny-all fails."""
+    manifest = replace(
+        fake_manifest(connector_key="planted_fleet"),
+        spi_range=integration.SpiRange.parse(">=1.7,<2.0"),
+        fleet_targets=integration.FleetTargetDeclaration(
+            port_ranges=(
+                integration.FleetPortRange("udp", 41000, 41010),
+                integration.FleetPortRange("tcp", 42000, 42000),
+            )
+        ),
+    )
+    _plant(monkeypatch, manifest)
+
+    report = runtime_policy.policy_report(runtime_policy.projected_policy())
+
+    connector = report["connectors"][0]
+    assert connector["fleet_port_ranges"] == [
+        {"protocol": "tcp", "first_port": 42000, "last_port": 42000},
+        {"protocol": "udp", "first_port": 41000, "last_port": 41010},
+    ]
+    assert connector["fleet_denies_all"] is False
+    # Static-host deny-all is independent of the manifest's fleet ceiling.
+    assert connector["egress_hosts"] == []
+    assert report["egress_denies_all"] is True
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_empty_and_pre_spi_17_fleet_declarations_report_deny_all(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: bool,
+) -> None:
+    """The module projects both empty 1.7 and older omission as fleet deny-all."""
+    manifest = fake_manifest(connector_key="planted_quiet_fleet")
+    if explicit:
+        manifest = replace(
+            manifest,
+            spi_range=integration.SpiRange.parse(">=1.7,<2.0"),
+            fleet_targets=integration.FleetTargetDeclaration(),
+        )
+    else:
+        manifest = replace(
+            manifest,
+            spi_range=integration.SpiRange.parse(">=1.3,<2.0"),
+            fleet_targets=None,
+        )
+    _plant(monkeypatch, manifest)
+
+    report = runtime_policy.policy_report(runtime_policy.projected_policy())
+
+    connector = report["connectors"][0]
+    assert connector["fleet_port_ranges"] == []
+    assert connector["fleet_denies_all"] is True
+    assert connector["manifest_digest"] == manifest.digest
+
+
+def test_spi_17_omission_cannot_be_presented_as_declared_fleet_deny_all() -> None:
+    """Use the module's manifest refusal; the assembly invents no fallback."""
+    with pytest.raises(integration.InvalidManifestError, match="omits.*fleet-target"):
+        replace(
+            fake_manifest(connector_key="planted_missing_fleet"),
+            spi_range=integration.SpiRange.parse(">=1.7,<2.0"),
+            fleet_targets=None,
+        )
 
 
 def test_the_report_carries_binding_names_and_no_reference_or_value(

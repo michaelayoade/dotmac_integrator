@@ -5,9 +5,12 @@ workload on the same physical host as ERP and Traccar. Co-location does not
 merge identities: ERP never joins `dotmac_traccar_api`, never mounts these
 secret files, and calls only the loopback-bound Integrator contract endpoint.
 
-The released image must be built from this repository's committed lock, which
-pins `dotmac-integration==0.1.0a18` and
-`dotmac-connector-traccar==0.1.0a1`. Supply the image by digest through
+The released image must be built from this repository's reviewed committed lock.
+The reviewed composition pins `dotmac-integration==0.1.0a20` and
+`dotmac-connector-traccar==0.1.0a1`. Integration a20 publication is verified;
+FreeRADIUS a1 is also artifact-verified, and the committed lock is reviewed.
+Acceptance requires App record #941 merged, green recorded Starter main and
+fresh full Integrator hosted CI. Supply the image by digest through
 `INTEGRATOR_TRACCAR_IMAGE`; mutable tags are not an activation input.
 
 ## Secret projection

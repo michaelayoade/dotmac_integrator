@@ -23,8 +23,8 @@ python = ">=3.11,<3.14"
 # ever run, which is the failure mode an assembly exists to prevent.
 #
 # Moving a pin is a reviewed diff with its own CI run — see `make outdated`.
-dotmac-kernel = "0.1.0a68"
-dotmac-integration = "0.1.0a18"
+dotmac-kernel = "0.1.0a98"
+dotmac-integration = "0.1.0a20"
 
 # ── Connectors ──────────────────────────────────────────────────────────────
 # Separately released distributions, each contributing exactly ONE connector key
@@ -33,8 +33,9 @@ dotmac-integration = "0.1.0a18"
 # rule 2), and `tests/architecture/test_pins_are_exact.py` derives its
 # parametrisation from this block rather than from a second hand-kept list.
 #
-# This is the complete published cohort. Installing the distributions makes
-# them discoverable; it does not activate or bind any of them. Product-owned
+# This is the declared deployment cohort; publication is verified before merge.
+# Installing the distributions makes them discoverable; it does not activate
+# or bind any of them. Product-owned
 # descriptors still declare the usable capability vocabulary, and the module
 # refuses undeclared or unreconciled bindings. Integration a12 is load-bearing:
 # one authenticated descriptor is projected onto every durable binding for its
@@ -48,6 +49,7 @@ dotmac-connector-remita = "0.1.0a1"
 dotmac-connector-paystack = "0.1.0a2"
 dotmac-connector-flutterwave = "0.1.0a2"
 dotmac-connector-traccar = "0.1.0a1"
+dotmac-connector-freeradius = "0.1.0a1"
 
 fastapi = "^0.115"
 uvicorn = { extras = ["standard"], version = "^0.32" }

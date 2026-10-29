@@ -146,33 +146,25 @@ start_period_seconds = 15
 command = ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
 owner_material = "MIGRATION_DATABASE_URL"
 
-# The two composed lineages at the current pins (pyproject.toml:26-27,
-# dotmac-kernel 0.1.0a68 and dotmac-integration 0.1.0a17):
+# The composed lineages for kernel 0.1.0a98 and integration 0.1.0a20:
 #
-#   0026_platform_audit_log       — the kernel lineage head at the pinned tag,
-#                                   re-derived from `dotmac-kernel-v0.1.0a68`:
-#                                   0026 is still the last revision in
-#                                   dotmac_kernel/migrations/versions, and the
-#                                   kernel pin did not move.
-#   ig_0015_descriptor_contract   — the integration lineage head at
-#                                   `dotmac-integration-v0.1.0a17`, re-derived
-#                                   by walking down_revision over the tag: the
-#                                   `ig` lineage is linear and nothing names
-#                                   ig_0015 as a parent.
+#   0028_machine_attribution — kernel head derived from the a98 tag.
+#   ig_0017_provisioning     — integration head verified in the released a20 wheel.
 #
-# RE-DERIVED at the a13 → a17 bump rather than carried forward. The previous
-# value, ig_0011_replay_retention, was the head at a13 and is now four
-# revisions behind (ig_0012 delivery evidence, ig_0013 delivery result,
-# ig_0014 polling evidence, ig_0015 descriptor contract). Left stale it would
-# have been the exact defect this list exists to catch — `verify_heads` would
-# have compared the declared head against a database four revisions ahead and
-# called a correctly-migrated deployment a failure.
+# Re-derived for the a18 → a20 composition preparation. Kernel a98 advances
+# beyond the previous 0026 head; integration a20 advances beyond ig_0015 through
+# ig_0016 and ig_0017. The existing cross-lineage providers at 0001, 0018 and
+# 0026 remain unchanged: provider effects and current heads are different facts.
+# Integration a20 publication and its App record are verified (see readiness).
+# Connector a1 artifacts and the committed lock passed independent review.
+# Acceptance requires App record #941 merged, green recorded Starter main and
+# fresh full Integrator hosted CI, including installed-wheel/composition gates.
 #
 # This list is what makes a lineage that silently did not advance visible: a
 # partial `upgrade heads` still exits 0, so an exit code cannot see it. RE-DERIVE
 # THIS AT EVERY PIN BUMP — the same obligation rule 10 already places on the
 # prerequisite bindings, and for the same reason.
-expected_heads = ["0026_platform_audit_log", "ig_0015_descriptor_contract"]
+expected_heads = ["0028_machine_attribution", "ig_0017_provisioning"]
 
 # The composed lineages are additive: `ig_0007` and `ig_0008` call
 # `require_prerequisites` before any DDL, and neither drops nor rewrites a
