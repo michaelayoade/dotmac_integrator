@@ -15,27 +15,35 @@ fresh full Integrator hosted CI. Supply the image by digest through
 
 ## Runtime materials and typed parameters
 
-This profile reads no environment file of any kind: nothing an operator writes
-on the host supplies a value. `deploy/traccar-host/product.toml` is the foundation descriptor
-(`ProductDeploymentSpec.v1`) and its `[runtime_materials]` table declares, by
-name only, every value the workload needs. Nothing in the checkout holds a
-value. The foundation supplies each one to the process environment when it
-executes, from one of two sources:
+`deploy/traccar-host/product.toml` is the authoritative deployment description
+(`ProductDeploymentSpec.v1`), and its generated output is in
+`deploy/traccar-host/rendered/`. `compose.yml` is a topology reference only, kept
+for the external Traccar network and the host secret-file mounts that foundation
+v0.2.0a2 cannot express; it is deleted at plan step P2.1, and a test holds it in
+parity with the descriptor until then. The profile reads no environment file of
+any kind: nothing an operator writes on the host supplies a value.
 
-- **Secret material is an OpenBao reference**, resolved by the foundation at
-  execution time. The descriptor carries only the name. The materials are
-  `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`, `JWT_SECRET`,
-  `METRICS_TOKEN`, and the three `*_FILE` paths below. The OpenBao reference for
-  each is bound in the deployment UI; the one path already fixed is the Traccar
-  service account, `secret/data/dotmac/traccar/erp-service` (fields `email` and
-  `password`).
+The descriptor splits values three ways:
+
+- **Fixed values** are literals in `[roles.environment]`, never parameters:
+  `ENVIRONMENT=production` (a missing value would skip the production checks),
+  `INGRESS_ENABLED=false`, `SECRET_SCHEMES=file`, `SECRET_FILE_ROOT=/run/secrets`,
+  `PRODUCT_PORT_ENABLED=false`, the query and contract-registry switches and the
+  worker switch. The one published port is the loopback-bound contract endpoint.
+- **Secret material is an OpenBao reference**, declared in `[runtime_materials]`
+  by name only and resolved by the foundation at execution: `DATABASE_URL`,
+  `MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`, `JWT_SECRET` and
+  `METRICS_TOKEN`. The OpenBao reference for each is bound in the deployment UI;
+  the one path already fixed is the Traccar service account,
+  `secret/data/dotmac/traccar/erp-service`.
 - **Everything else is a typed parameter entered in the deployment UI** at ship
-  time: `DEPLOYMENT_ID`, `PLATFORM_ROOT_DOMAIN`, `SECRET_FILE_ROOT`,
-  `PRODUCT_QUERY_CALLERS`, `PRODUCT_CONTRACT_REGISTRY_URL`,
-  `PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST`, and the compose parameters
-  `INTEGRATOR_TRACCAR_IMAGE` (an `image@sha256` digest), `INTEGRATOR_TRACCAR_PORT`,
-  `INTEGRATOR_RUNTIME_NETWORK` and `TRACCAR_API_NETWORK`. No address or allowlist
-  is authored into a file.
+  time: `DEPLOYMENT_ID`, `PLATFORM_ROOT_DOMAIN`, `PRODUCT_QUERY_CALLERS`,
+  `PRODUCT_CONTRACT_REGISTRY_URL`, `PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST`,
+  and the image `INTEGRATOR_TRACCAR_IMAGE` (an `image@sha256` digest).
+
+**Activation fails closed.** Every material renders as `${NAME:?...}`, so any
+unbound reference or unentered parameter stops the deploy before a container
+starts. No material has a default.
 
 ## Secret projection
 

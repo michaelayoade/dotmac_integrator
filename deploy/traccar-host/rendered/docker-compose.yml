@@ -60,16 +60,23 @@ services:
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set}"
       DEPLOYMENT_ID: "${DEPLOYMENT_ID:?DEPLOYMENT_ID must be set}"
-      ERP_CONTRACT_REGISTRY_API_KEY_FILE: "${ERP_CONTRACT_REGISTRY_API_KEY_FILE:?ERP_CONTRACT_REGISTRY_API_KEY_FILE must be set}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set}"
       METRICS_TOKEN: "${METRICS_TOKEN:?METRICS_TOKEN must be set}"
       PLATFORM_ROOT_DOMAIN: "${PLATFORM_ROOT_DOMAIN:?PLATFORM_ROOT_DOMAIN must be set}"
       PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST: "${PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST:?PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST must be set}"
       PRODUCT_CONTRACT_REGISTRY_URL: "${PRODUCT_CONTRACT_REGISTRY_URL:?PRODUCT_CONTRACT_REGISTRY_URL must be set}"
       PRODUCT_QUERY_CALLERS: "${PRODUCT_QUERY_CALLERS:?PRODUCT_QUERY_CALLERS must be set}"
-      SECRET_FILE_ROOT: "${SECRET_FILE_ROOT:?SECRET_FILE_ROOT must be set}"
-      TRACCAR_SERVICE_EMAIL_FILE: "${TRACCAR_SERVICE_EMAIL_FILE:?TRACCAR_SERVICE_EMAIL_FILE must be set}"
-      TRACCAR_SERVICE_PASSWORD_FILE: "${TRACCAR_SERVICE_PASSWORD_FILE:?TRACCAR_SERVICE_PASSWORD_FILE must be set}"
+      ENVIRONMENT: production
+      INGRESS_ENABLED: "false"
+      OPERATOR_AUTH_MECHANISM: platform_admin
+      PRODUCT_CONTRACT_REGISTRY_API_KEY_REF: "file:///run/secrets/erp_contract_registry_api_key"
+      PRODUCT_CONTRACT_REGISTRY_ENABLED: "true"
+      PRODUCT_CONTRACT_REGISTRY_TIMEOUT_SECONDS: "15"
+      PRODUCT_PORT_ENABLED: "false"
+      PRODUCT_QUERY_ENABLED: "true"
+      SECRET_FILE_ROOT: /run/secrets
+      SECRET_SCHEMES: file
+      WORKER_ENABLED: "true"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -83,6 +90,8 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+    ports:
+      - "127.0.0.1:8083:8080"
     networks:
       - dotmac_integrator_net
     deploy:

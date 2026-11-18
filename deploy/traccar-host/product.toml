@@ -20,7 +20,11 @@
 
 schema = "ProductDeploymentSpec.v1"
 product = "dotmac_integrator"
-environment = "production"
+# Distinct from the shared descriptor's "production" so the two deployments are
+# never confused in alert dedup, drift or evidence. The ENVIRONMENT variable the
+# process reads is fixed to "production" below, which keeps the prod-fatal
+# settings checks on.
+environment = "production-traccar"
 
 [assembly]
 manifest_path = "deploy/traccar-host/product-manifest.json"
@@ -44,13 +48,9 @@ names = [
   "PLATFORM_ROOT_DOMAIN",
   "JWT_SECRET",
   "METRICS_TOKEN",
-  "SECRET_FILE_ROOT",
   "PRODUCT_QUERY_CALLERS",
   "PRODUCT_CONTRACT_REGISTRY_URL",
   "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST",
-  "TRACCAR_SERVICE_EMAIL_FILE",
-  "TRACCAR_SERVICE_PASSWORD_FILE",
-  "ERP_CONTRACT_REGISTRY_API_KEY_FILE",
   "BACKUP_DATABASE_URL",
 ]
 
@@ -73,14 +73,35 @@ materials = [
   "PLATFORM_ROOT_DOMAIN",
   "JWT_SECRET",
   "METRICS_TOKEN",
-  "SECRET_FILE_ROOT",
   "PRODUCT_QUERY_CALLERS",
   "PRODUCT_CONTRACT_REGISTRY_URL",
   "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST",
-  "TRACCAR_SERVICE_EMAIL_FILE",
-  "TRACCAR_SERVICE_PASSWORD_FILE",
-  "ERP_CONTRACT_REGISTRY_API_KEY_FILE",
 ]
+
+# Fixed values. These are NOT typed parameters: a missing ENVIRONMENT would skip
+# the production checks, INGRESS_ENABLED defaults on, and SECRET_SCHEMES defaults
+# to env,file, each a silent widening of the host profile. Literals are
+# reviewable and diffable; the secrets guard still scans them.
+[roles.environment]
+ENVIRONMENT = "production"
+OPERATOR_AUTH_MECHANISM = "platform_admin"
+SECRET_SCHEMES = "file"
+SECRET_FILE_ROOT = "/run/secrets"
+PRODUCT_PORT_ENABLED = "false"
+INGRESS_ENABLED = "false"
+PRODUCT_QUERY_ENABLED = "true"
+PRODUCT_CONTRACT_REGISTRY_ENABLED = "true"
+PRODUCT_CONTRACT_REGISTRY_API_KEY_REF = "file:///run/secrets/erp_contract_registry_api_key"
+PRODUCT_CONTRACT_REGISTRY_TIMEOUT_SECONDS = "15"
+WORKER_ENABLED = "true"
+
+# The one published port: the loopback-bound contract endpoint ERP calls. The
+# host port is the value `compose.yml` defaults to; `bind` is loopback.
+[[roles.ports]]
+container = 8080
+host = 8083
+protocol = "tcp"
+bind = "127.0.0.1"
 
 [roles.resources]
 cpus = "1.0"

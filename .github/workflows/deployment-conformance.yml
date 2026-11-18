@@ -107,3 +107,23 @@ jobs:
       # `test_deployment_release_lane.py` walks the parsed YAML of the reusable
       # workflow for every string value to keep it that way.
       FORGEJO_READ_TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+
+  # The Traccar companion descriptor is validated and render-checked by the same
+  # pinned reusable gate as deploy/product.toml; before this job nothing in CI
+  # read it.
+  traccar-host:
+    uses: michaelayoade/dotmac_starter_mt/.github/workflows/deployment-conformance.yml@55750e104df3dd94b6f9f70bf8c8db53986394c7
+    with:
+      descriptor: deploy/traccar-host/product.toml
+      rendered-dir: deploy/traccar-host/rendered
+      thresholds: deploy/alerts/thresholds.json
+
+      foundation-version: "0.2.0a2"
+
+      # Same premise as the job above: the image digest and manifest digest are
+      # placeholders until the release image exists. Turn back on with it.
+      require-real-digests: false
+
+    secrets:
+      FORGEJO_READ_TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+
