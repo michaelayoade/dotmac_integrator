@@ -20,7 +20,7 @@ different owners.**
 |---|---|---|---|
 | **1** | Integration a10 + WhatsApp a2 + the SPI 1.3 runtime-policy surface | this repository | released tags, re-derived bindings, a refreshed lock |
 | **2** | Reconcile every local binding for the capability, then pin the published cohort | module + this repository | a12 is registry-verified before the exact assembly pins resolve |
-| **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v3 contract descriptor and ProductObservation v1 wire agree before shadow begins |
+| **3** | Compose the settlement product wire; activate Paystack, then Flutterwave | product + module + this repository | Sub's v3 contract descriptor and ProductObservation v1 wire agree before any preview begins |
 | **4** | Pin a16's polling engine, then a17's contract descriptor | module + this repository | immutable release oracles, re-derived bindings, refreshed lock and CI |
 
 Collapsing them means a red CI run cannot tell you which slice broke, and
@@ -419,7 +419,7 @@ Stated so the next reader does not mistake absence for oversight:
   configured or enabled, no ingress endpoint is minted.
 * **No external traffic.** No provider is repointed, no callback URL moves, no
   incumbent receiver is retired and no ratchet is lowered.
-* **No product cutover.** Shadow comparison against Sub remains the gate, and
+* **No product cutover.** Verification rails (backtest, saved tests, one-shot preview, guarded enable) remain the gate, and
   the final cutover is a product decision the module refuses to make for
   anybody.
 * **No product domain decision.** No capability is declared, no port descriptor
