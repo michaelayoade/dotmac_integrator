@@ -1,0 +1,143 @@
+# Host-local Traccar companion Integrator — ProductDeploymentSpec.v1.
+#
+# This is the foundation descriptor for the Integrator workload that runs beside
+# ERP and Traccar (README.md here). It REPLACES the former host-authored
+# environment file and its example: every value the workload needs is a declared
+# runtime material, supplied at deploy time and never written to a file on the
+# host by an operator.
+#
+#   * Secrets are OpenBao references. The descriptor holds material NAMES only
+#     (ADR-0070 section 4, ADR-0009); the foundation resolves each name from its
+#     OpenBao reference when it executes, and the value never touches a file the
+#     checkout or an operator owns. The reference for each name is listed in
+#     README.md in this directory (names and paths only).
+#   * Non-secret values (operator host, deployment id, registry URL and digest,
+#     query callers, port and network names) are typed parameters entered in the
+#     deployment UI at ship time (Governance ADR 0014), never an authored file.
+#
+# This descriptor is a DESCRIPTION. Nothing here deploys, materialises a secret,
+# creates a network, configures a connector installation or starts a container.
+
+schema = "ProductDeploymentSpec.v1"
+product = "dotmac_integrator"
+environment = "production"
+
+[assembly]
+manifest_path = "deploy/traccar-host/product-manifest.json"
+# Placeholder shape, as in deploy/product.toml: the value is proven by
+# `dotmac-deploy drift` against a running deployment, the only place it can be.
+manifest_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[image]
+# Placeholder zero digest, as in deploy/product.toml. The approved release digest
+# is supplied as a typed parameter at ship time, never a mutable tag.
+reference = "registry.dotmac.io/dotmac/integrator@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+source_revision = "84c0f020ca63333ab56c39fb96a0acc4630b2e01"
+
+[runtime_materials]
+# Names only. Every name the `integrator-traccar-api` service of compose.yml
+# requires, plus the owner DSN used only by the one-shot migration.
+names = [
+  "DATABASE_URL",
+  "MIGRATION_DATABASE_URL",
+  "DEPLOYMENT_ID",
+  "PLATFORM_ROOT_DOMAIN",
+  "JWT_SECRET",
+  "METRICS_TOKEN",
+  "SECRET_FILE_ROOT",
+  "PRODUCT_QUERY_CALLERS",
+  "PRODUCT_CONTRACT_REGISTRY_URL",
+  "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST",
+  "TRACCAR_SERVICE_EMAIL_FILE",
+  "TRACCAR_SERVICE_PASSWORD_FILE",
+  "ERP_CONTRACT_REGISTRY_API_KEY_FILE",
+  "BACKUP_DATABASE_URL",
+]
+
+[[roles]]
+code = "api"
+command = [
+  "uvicorn",
+  "--factory",
+  "dotmac_integrator.assembly:create_app",
+  "--host",
+  "0.0.0.0",
+  "--port",
+  "8080",
+]
+replicas = 1
+stop_grace_seconds = 30
+materials = [
+  "DATABASE_URL",
+  "DEPLOYMENT_ID",
+  "PLATFORM_ROOT_DOMAIN",
+  "JWT_SECRET",
+  "METRICS_TOKEN",
+  "SECRET_FILE_ROOT",
+  "PRODUCT_QUERY_CALLERS",
+  "PRODUCT_CONTRACT_REGISTRY_URL",
+  "PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST",
+  "TRACCAR_SERVICE_EMAIL_FILE",
+  "TRACCAR_SERVICE_PASSWORD_FILE",
+  "ERP_CONTRACT_REGISTRY_API_KEY_FILE",
+]
+
+[roles.resources]
+cpus = "1.0"
+memory = "512m"
+pids = 256
+
+[roles.security]
+user = "10001:10001"
+read_only_root = true
+no_new_privileges = true
+cap_drop = ["ALL"]
+tmpfs = ["/tmp"]
+
+[roles.health.live]
+path = "/health/live"
+port = 8080
+interval_seconds = 10
+timeout_seconds = 3
+retries = 3
+start_period_seconds = 10
+
+[roles.health.ready]
+path = "/health/ready"
+port = 8080
+interval_seconds = 10
+timeout_seconds = 5
+retries = 6
+start_period_seconds = 15
+
+[migration]
+command = ["python", "-m", "dotmac_integrator.migrate", "upgrade", "heads"]
+owner_material = "MIGRATION_DATABASE_URL"
+expected_heads = ["0028_machine_attribution", "ig_0017_provisioning"]
+compatibility = "online"
+lock_timeout_seconds = 600
+lock_retries = 3
+preflight_command = ["python", "-m", "dotmac_integrator.migrate", "current"]
+heads_command = ["python", "-m", "dotmac_integrator.migrate", "current"]
+
+[backup]
+# The companion database is its own database on the host Postgres server (never
+# a schema in the ERP database), so it is its own dataset.
+[[backup.datasets]]
+code = "platform"
+kind = "postgres"
+material = "BACKUP_DATABASE_URL"
+retention_days = 30
+checksum = "sha256"
+encryption = "age"
+restore_proof_max_age_days = 30
+verify = ["schema", "row_counts", "migration_heads"]
+
+[egress]
+# A positive deny-all declaration, as in deploy/product.toml: provider hosts are
+# declared by the connector manifest, never restated here.
+hosts = []
+
+[rollout]
+stability_window_seconds = 120
+rollback_images_retained = 3

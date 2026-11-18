@@ -116,3 +116,28 @@ def test_profile_requires_an_operator_supplied_image_and_never_defaults_latest()
     assert isinstance(image, str)
     assert "INTEGRATOR_TRACCAR_IMAGE:?" in image
     assert "latest" not in image
+
+
+def test_profile_has_no_host_env_file_and_declares_every_material() -> None:
+    """Deploy values are foundation runtime materials, never a host env file."""
+    import re
+
+    profile_dir = PROFILE.parent
+    forbidden = re.compile(r"\.env\b|env[-_]file", re.IGNORECASE)
+    for path in profile_dir.rglob("*"):
+        if path.is_file() and path.suffix in {".yml", ".md", ".toml", ".example"}:
+            assert path.suffix != ".example"
+            assert forbidden.search(path.read_text(encoding="utf-8")) is None, path
+    assert not list(profile_dir.glob("*.env*"))
+
+    descriptor = tomllib.loads((profile_dir / "product.toml").read_text("utf-8"))
+    names = set(descriptor["runtime_materials"]["names"])
+    secrets = _document()["secrets"]
+    assert isinstance(secrets, dict)
+    for secret in secrets.values():
+        referenced = re.findall(r"\$\{([A-Z_]+)", secret["file"])
+        assert referenced
+        assert set(referenced) <= names
+    for role in descriptor["roles"]:
+        assert set(role["materials"]) <= names
+    assert descriptor["migration"]["owner_material"] in names

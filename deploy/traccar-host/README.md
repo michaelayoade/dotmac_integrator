@@ -13,6 +13,30 @@ Acceptance requires App record #941 merged, green recorded Starter main and
 fresh full Integrator hosted CI. Supply the image by digest through
 `INTEGRATOR_TRACCAR_IMAGE`; mutable tags are not an activation input.
 
+## Runtime materials and typed parameters
+
+This profile reads no environment file of any kind: nothing an operator writes
+on the host supplies a value. `deploy/traccar-host/product.toml` is the foundation descriptor
+(`ProductDeploymentSpec.v1`) and its `[runtime_materials]` table declares, by
+name only, every value the workload needs. Nothing in the checkout holds a
+value. The foundation supplies each one to the process environment when it
+executes, from one of two sources:
+
+- **Secret material is an OpenBao reference**, resolved by the foundation at
+  execution time. The descriptor carries only the name. The materials are
+  `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`, `JWT_SECRET`,
+  `METRICS_TOKEN`, and the three `*_FILE` paths below. The OpenBao reference for
+  each is bound in the deployment UI; the one path already fixed is the Traccar
+  service account, `secret/data/dotmac/traccar/erp-service` (fields `email` and
+  `password`).
+- **Everything else is a typed parameter entered in the deployment UI** at ship
+  time: `DEPLOYMENT_ID`, `PLATFORM_ROOT_DOMAIN`, `SECRET_FILE_ROOT`,
+  `PRODUCT_QUERY_CALLERS`, `PRODUCT_CONTRACT_REGISTRY_URL`,
+  `PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST`, and the compose parameters
+  `INTEGRATOR_TRACCAR_IMAGE` (an `image@sha256` digest), `INTEGRATOR_TRACCAR_PORT`,
+  `INTEGRATOR_RUNTIME_NETWORK` and `TRACCAR_API_NETWORK`. No address or allowlist
+  is authored into a file.
+
 ## Secret projection
 
 The host secret agent may read only
@@ -20,7 +44,9 @@ The host secret agent may read only
 into the two files named by `TRACCAR_SERVICE_EMAIL_FILE` and
 `TRACCAR_SERVICE_PASSWORD_FILE`. Project the independent ERP contract-registry
 credential into `ERP_CONTRACT_REGISTRY_API_KEY_FILE`. All three host files must
-be owned by the deployment operator and mode `0400`.
+be owned by the deployment operator and mode `0400`. They are projected
+secret-agent files mounted read-only; the profile never reads them as
+environment.
 
 The Compose profile mounts each file as a read-only secret into the Integrator
 API only. It does not pass an OpenBao token into the container. Configure the
@@ -32,12 +58,20 @@ Traccar installation's declared secret bindings with these references:
 The non-secret connector URL is `http://traccar:8082`; the connector manifest,
 not this generic host assembly, declares that provider egress boundary.
 
-## Render and verify without activation
+## Validate and render without activation
+
+Run these from the repository root. They need no secret value and no host file:
 
 ```bash
-docker compose --env-file /etc/dotmac/integrator-traccar.env \
-  -f deploy/traccar-host/compose.yml --profile traccar config
+dotmac-deploy -f deploy/traccar-host/product.toml validate
+dotmac-deploy -f deploy/traccar-host/product.toml render --check \
+  -o deploy/traccar-host/rendered --thresholds deploy/alerts/thresholds.json
+docker compose -f deploy/traccar-host/compose.yml --profile traccar \
+  config --no-interpolate
 ```
+
+After a descriptor edit, regenerate with `render` (without `--check`) and commit
+the result. The rendered files are generated; do not edit them.
 
 Before any production `up`, verify all of the following:
 
