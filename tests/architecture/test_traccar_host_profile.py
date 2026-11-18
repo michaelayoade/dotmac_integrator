@@ -166,7 +166,9 @@ def test_descriptor_is_in_parity_with_the_topology_reference() -> None:
     (published,) = api["ports"]
     assert port["bind"] == published["host_ip"] == "127.0.0.1"
     assert port["container"] == published["target"]
-    assert f"{port['host']}" in str(published["published"])
+    assert str(published["published"]) == (
+        "${INTEGRATOR_TRACCAR_PORT:-" + str(port["host"]) + "}"
+    )
 
 
 def test_rendered_profile_fails_closed_on_every_unbound_material() -> None:

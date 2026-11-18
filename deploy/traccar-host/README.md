@@ -41,6 +41,10 @@ The descriptor splits values three ways:
   `PRODUCT_CONTRACT_REGISTRY_URL`, `PRODUCT_CONTRACT_REGISTRY_EXPECTED_DIGEST`,
   and the image `INTEGRATOR_TRACCAR_IMAGE` (an `image@sha256` digest).
 
+**The rendered file cannot activate on its own until P2.1.** It lacks the
+external Traccar network and the host secret-file mounts, which only
+`compose.yml` carries. Do not bring it up alone.
+
 **Activation fails closed.** Every material renders as `${NAME:?...}`, so any
 unbound reference or unentered parameter stops the deploy before a container
 starts. No material has a default.
