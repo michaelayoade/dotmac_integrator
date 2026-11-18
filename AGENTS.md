@@ -168,7 +168,9 @@ This is a **thin assembly**. The reusable behaviour lives in
     collision ESCALATES (`INDETERMINATE`) rather than reporting
     `already_applied`, because the owning service is saying two producers
     disagree about what the provider said.
-26. **A product port declares its DIRECTION, and shadow never settles.** The
+26. **A product port declares its DIRECTION, and a preview never settles.**
+    (Mirror mode is the one-shot real-record preview mechanism, not a standing
+    shadow or a gate; see rule 34.) The
     destination exposes a write port and a strictly narrower shadow port that
     records nothing; the narrowness is the safety property and this side
     honours it. `install_product_port` requires a boolean `writes` — required,
@@ -255,3 +257,26 @@ This is a **thin assembly**. The reusable behaviour lives in
     path stays fail-closed regardless: an unreconciled destination is a
     pre-network `UNAVAILABLE`, never a receipt marked done.
     (`docs/UPGRADE-READINESS.md`)
+34. **Topology: one Integrator deployment per application, never in-process.**
+    Each composed application, Platform CP included, runs its own companion
+    from this image as a separate process with its own database, roles and
+    OpenBao identity. One provider account is installed in exactly one
+    deployment; another application reaches it through the owner's port. A
+    product never composes `dotmac-integration` or a connector, never refuses to
+    start because its companion is absent, and the companion image is a
+    late-bound deploy value. Platform-owned key material (the licence signing
+    key) is never co-located with a companion. Licensing stays parked; the
+    licence check stays in the product kernel. Egress is reported, not enforced,
+    so nothing is described as egress-isolated yet. (Governance ADR 0011 and
+    Starter ADR-0024 § 15.)
+35. **Verification is rails, never a shadow, side-by-side or N-day gate.** A
+    connector cutover is verified by a backtest over recorded data, saved golden
+    tests, a one-shot real-record preview (the mirror path) and a guarded enable
+    of one binding with a target cap and a disable-binding kill switch. The
+    incumbent writer is sealed before a binding becomes writable, so there is no
+    dual write.
+36. **No host env file, no `.env` in a deployment.** Deploy values are entered
+    in the UI as typed params and secrets are OpenBao references materialised by
+    the deployment foundation (`[runtime_materials]`), never `--env-file`, never
+    a file an operator writes on a host. A `.env` is for local development with
+    throwaway values only. This is a precondition for activating any companion.

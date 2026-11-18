@@ -44,6 +44,40 @@ The Starter deliberately does **not** compose this module: `app/assembly.py`
 omits it and its `alembic.ini` carries no `ig` lineage, because every Starter
 deployment would otherwise grow a `mod_intg` schema it never uses.
 
+## Deployment topology: one Integrator per application
+
+Each composed application runs its own companion Integrator: this same image,
+deployed as a separate workload with its own process, database and roles, and
+OpenBao workload identity. Platform CP is an application like the others and has
+its own companion. There is no shared Integrator serving every application.
+(Decided 2026-11-18, recorded as amendments to Governance ADR 0011 and Starter
+ADR-0024 § 15.)
+
+* **Never in-process.** The companion is never composed into a product process,
+  and a product never loads `dotmac-integration` or a connector distribution.
+* **One account, one deployment.** A provider account is installed in exactly one
+  Integrator deployment. An application that needs an account it does not own
+  reaches it through the owning application's port.
+* **Own database.** The companion's database is never the product database or a
+  schema in it. On a shared Postgres server it is a separate database with
+  separate roles, and the product role has no CONNECT to it. Same host and server
+  is accepted for application-owned providers only; platform-owned key material
+  (the licence signing key) is never co-located with a companion.
+* **The product never refuses to start because its companion is absent.** A
+  companion failure ages the outbox and fires an alert. The companion is a
+  separate deploy unit with its own health gate.
+* **Late-bound release.** The companion image is a deploy value entered in the
+  deployment UI, so adding or changing a provider does not release the product.
+* **Egress is reported, not enforced.** Projection is the union over installed
+  manifests, so no deployment may be called egress-isolated until projection
+  narrows to enabled installations and the network is split per application.
+* **Licensing is parked.** Licence delivery and enforcement are new feature work.
+  Only the shape is reserved: the companion is the deployment's only egress and
+  would pull platform traffic outbound-only. A licence check stays in the
+  product's kernel and never in the companion.
+* **Operator login** is the kernel's `platform_auth`, bootstrapped by CLI per
+  companion, a single operator and no second-person step.
+
 ## Persistence
 
 Platform-plane only (ADR-0023). Every table the module declares lands in
@@ -77,8 +111,11 @@ discoverable; it does not activate it or declare a product capability. Those
 decisions remain in the durable installation/binding registry and in
 product-owned descriptors.
 
-It is installed and discoverable here; shadow comparison against Sub remains the
-cutover gate before any incumbent receiver is retired or its ratchet is lowered.
+It is installed and discoverable here. A connector's cutover is verified by
+rails (a backtest over recorded data, saved golden tests, a one-shot preview
+against real records, then a guarded enable of one binding with a target cap and
+a disable-binding kill switch) before any incumbent receiver is retired or its
+ratchet is lowered. There is no shadow, side-by-side or agreed-window gate.
 
 **Composed is not the same as delivering.** `docs/UPGRADE-READINESS.md` carries
 the release and adoption evidence:
@@ -95,8 +132,9 @@ the release and adoption evidence:
   engine-owned source provenance into ProductObservation v1, and this assembly
   selects that wire only from `wire_schema_version`. The
   remaining work is operational adoption: reconcile the authenticated descriptor,
-  run Paystack shadow first, cut it over on zero unexplained drift, then repeat
-  for Flutterwave v4. ERP remains the GL owner and receives only product-owned
+  backtest Paystack over recorded receipts with saved golden tests, preview a
+  one-shot sample of real records, enable one guarded binding with a target cap
+  and a disable-binding kill switch, then repeat for Flutterwave v4. ERP remains the GL owner and receives only product-owned
   accounting consequences, never provider transport.
 * **Polling runs without an assembly-owned retry engine.** Integration a17 is
   pinned from immutable release run `33043793199` and peeled tag
@@ -129,8 +167,13 @@ when a release is installed, which a scrape is the wrong instrument for.
 
 ## Running it
 
+A deployment never reads a host env file or an `.env`: its values are entered in
+the deployment UI as typed params and its secrets are OpenBao references
+materialised by the deployment foundation. The commands below are for local
+development only, with throwaway values exported in your own shell (the names are
+listed in `.env.example`):
+
 ```bash
-cp .env.example .env          # then edit
 make install                  # needs registry credentials, see below
 make migrate                  # as the OWNER role — a deploy step, not a boot step
 make run
@@ -538,28 +581,36 @@ Five decisions worth reading before touching it:
   reporting that two producers disagree about what the provider said, and that
   needs a human, not a retry and not a dead letter.
 
-### Shadow, and why it cannot settle
+### Preview (mirror mode), and why it cannot settle
+
+Mirror mode is the mechanism for the one-shot real-record preview. It is not a
+standing shadow, a side-by-side run or an agreed-window gate, and none of those
+exists as a cutover condition. A cutover is verified by a backtest over recorded
+data, saved golden tests, a one-shot preview of real records, and a guarded
+enable of one binding with a target cap and a disable-binding kill switch.
 
 The destination exposes a second, strictly narrower port that records nothing
-and answers with a parity verdict, under its own scope so a shadow credential
+and answers with a parity verdict, under its own scope so a preview credential
 cannot become a writer by accident. That narrowness is honoured on this side:
 the client declares a direction, `install_product_port` requires it, a `MIRROR`
 client's `deliver` raises, and the delivery pump refuses to run against one. A
-shadow deployment runs `mirror_due_receipts` instead — it claims nothing,
-settles nothing, and returns verdict counts. Each comparison is appended through
-the module's `record_shadow_observation` service to
+preview run uses `mirror_due_receipts` instead: it claims nothing, settles
+nothing, and returns verdict counts. Each comparison is appended through the
+module's `record_shadow_observation` service to
 `mod_intg.shadow_comparison_evidence`, keyed by the immutable
 `PRODUCT_PORT_SHADOW_REVISION`. Terminal results run once per receipt and
 revision; `no_counterpart`, `unreadable`, and `unrecognized` results are sampled
 again only after `PRODUCT_PORT_SHADOW_RETRY_SECONDS`. Changing the revision
-deliberately re-drives the full population after an image or contract change.
+deliberately re-drives the full sample after an image or contract change. (The
+`shadow` names in the code, the settings and the route are retained; renaming
+them is a separate change.)
 
 `GET /operations/shadow-report` asks the module to reduce the latest observation
 per receipt into counts, field names and an observation window. It emits no
 receipt or provider identifiers. `sample_has_no_blockers` describes that
-non-empty sample only; it cannot approve a cutover without traffic-cycle,
-replay/collision, credential-scope, migration and rollback evidence.
+non-empty sample only; it cannot approve a cutover without replay/collision,
+credential-scope, migration and rollback evidence and the guarded enable.
 
-The failure this prevents is the expensive one. A shadow run that settled
+The failure this prevents is the expensive one. A preview run that settled
 receipts as `processed` would look exactly like a completed cutover, while every
 observation it "delivered" was seen by nobody.
