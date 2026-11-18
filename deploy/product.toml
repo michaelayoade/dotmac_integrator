@@ -378,7 +378,7 @@ for_seconds = 1800
 summary = "An installation is pinned to a connector manifest digest nothing publishes"
 runbook = "#integrator-manifest-digest-unknown"
 recovery = "the binding is re-enabled against a published digest, or the connector version is restored"
-protects = "AGENTS.md rule 34: an installation adopts by manifest digest, so a published version's manifest is frozen; an unknown pin means one version named two contracts"
+protects = "Starter AGENTS.md rule 34: an installation adopts by manifest digest, so a published version's manifest is frozen; an unknown pin means one version named two contracts"
 dedup_by = ["product", "environment", "installation"]
 
 [[alerts]]

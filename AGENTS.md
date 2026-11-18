@@ -170,7 +170,7 @@ This is a **thin assembly**. The reusable behaviour lives in
     disagree about what the provider said.
 26. **A product port declares its DIRECTION, and a preview never settles.**
     (Mirror mode is the one-shot real-record preview mechanism, not a standing
-    shadow or a gate; see rule 34.) The
+    shadow or a gate; see rule 35.) The
     destination exposes a write port and a strictly narrower shadow port that
     records nothing; the narrowness is the safety property and this side
     honours it. `install_product_port` requires a boolean `writes` — required,

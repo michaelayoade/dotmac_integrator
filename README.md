@@ -601,15 +601,16 @@ module's `record_shadow_observation` service to
 `PRODUCT_PORT_SHADOW_REVISION`. Terminal results run once per receipt and
 revision; `no_counterpart`, `unreadable`, and `unrecognized` results are sampled
 again only after `PRODUCT_PORT_SHADOW_RETRY_SECONDS`. Changing the revision
-deliberately re-drives the full sample after an image or contract change. (The
+deliberately re-drives the full population after an image or contract change. (The
 `shadow` names in the code, the settings and the route are retained; renaming
 them is a separate change.)
 
 `GET /operations/shadow-report` asks the module to reduce the latest observation
 per receipt into counts, field names and an observation window. It emits no
 receipt or provider identifiers. `sample_has_no_blockers` describes that
-non-empty sample only; it cannot approve a cutover without replay/collision,
-credential-scope, migration and rollback evidence and the guarded enable.
+non-empty sample only; it cannot approve a cutover without a backtest over
+recorded data covering a complete traffic cycle, replay/collision,
+credential-scope, migration and rollback evidence, and the guarded enable.
 
 The failure this prevents is the expensive one. A preview run that settled
 receipts as `processed` would look exactly like a completed cutover, while every
