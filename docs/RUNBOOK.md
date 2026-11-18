@@ -167,7 +167,7 @@ Boot refuses, with the knob named, if:
 - **URL, digest or key-ref is blank while enabled.** A port that cannot address
   the destination would fail every receipt and report it as a product problem.
 
-### 3. Enable in mirror
+### 3. Preview once in mirror, then close the port
 
 ```
 PRODUCT_PORT_ENABLED=true
@@ -180,9 +180,15 @@ surrounding whitespace. It is what separates evidence produced by one build
 from evidence produced by another; without it a re-drive cannot be told from a
 regression.
 
-Mirror posts to the destination's **shadow** port, which records nothing — no
-receipt, no observation, no conversation — so the provider callback can keep
-going to the product's existing webhook while both producers are compared.
+Mirror posts to the destination's **shadow** port, which records nothing: no
+receipt, no observation, no conversation. This is the one-shot real-record
+preview, not a side-by-side run. The mirror worker loops continuously, so bound
+it: run it once over the recorded sample, read the report below, then set
+`PRODUCT_PORT_ENABLED=false` again and restart. Do not leave mirror running.
+Cutover is verified by the rails: a backtest over recorded data, saved golden
+tests, this one-shot preview, and a guarded enable of one binding with a target
+cap and a disable-binding kill switch. The incumbent writer is sealed before the
+binding becomes writable.
 
 ### Reading the evidence
 
@@ -209,7 +215,8 @@ end a run, because the run's value is the population it covers.
 
 It is deliberately not named `is_cutover_safe`. It says only that this sample
 had rows and none of them carried a blocking reason. A full cutover also needs
-a complete traffic cycle, collision/replay proof, and a named rollback owner.
+a backtest over recorded data covering a complete traffic cycle, collision/replay
+proof, and a named rollback owner.
 
 An empty population cannot read as clean — the property requires
 `unique_receipts > 0` — but a *small* one still can. Deciding the sample is
