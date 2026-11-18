@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import re
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -116,3 +118,66 @@ def test_profile_requires_an_operator_supplied_image_and_never_defaults_latest()
     assert isinstance(image, str)
     assert "INTEGRATOR_TRACCAR_IMAGE:?" in image
     assert "latest" not in image
+
+
+def _descriptor() -> dict[str, Any]:
+    return tomllib.loads((PROFILE.parent / "product.toml").read_text("utf-8"))
+
+
+def test_profile_has_no_host_env_file() -> None:
+    """Deploy values are foundation runtime materials, never a host env file."""
+    forbidden = re.compile(r"\.env\b|env[-_]file", re.IGNORECASE)
+    for path in PROFILE.parent.rglob("*"):
+        if path.is_file() and path.suffix in {".yml", ".md", ".toml", ".example"}:
+            assert path.suffix != ".example"
+            assert forbidden.search(path.read_text(encoding="utf-8")) is None, path
+    assert not list(PROFILE.parent.glob("*.env*"))
+
+
+def test_descriptor_is_in_parity_with_the_topology_reference() -> None:
+    descriptor = _descriptor()
+    assert descriptor["environment"] != "production"
+    (role,) = descriptor["roles"]
+    materials = set(role["materials"])
+    fixed: dict[str, str] = role["environment"]
+    names = set(descriptor["runtime_materials"]["names"])
+    assert materials <= names
+    # The host secret-file paths and the file root are never typed parameters.
+    assert "SECRET_FILE_ROOT" not in names
+    assert not [name for name in names if name.endswith("_FILE")]
+    # Settings that would silently widen the profile are fixed, not defaulted.
+    assert fixed["ENVIRONMENT"] == "production"
+    assert fixed["INGRESS_ENABLED"] == "false"
+    assert fixed["SECRET_SCHEMES"] == "file"
+    assert fixed["PRODUCT_PORT_ENABLED"] == "false"
+    assert not materials & set(fixed)
+
+    api = _document()["services"]["integrator-traccar-api"]  # type: ignore[index]
+    environment: dict[str, str] = api["environment"]
+    assert set(environment) == materials | set(fixed)
+    for key, value in environment.items():
+        if key in materials:
+            # Fail closed: a required reference, never a default.
+            assert re.fullmatch(r"\$\{" + key + r":\?[^}]+\}", str(value)), key
+        else:
+            assert str(value) == fixed[key], key
+
+    (port,) = role["ports"]
+    (published,) = api["ports"]
+    assert port["bind"] == published["host_ip"] == "127.0.0.1"
+    assert port["container"] == published["target"]
+    assert str(published["published"]) == (
+        "${INTEGRATOR_TRACCAR_PORT:-" + str(port["host"]) + "}"
+    )
+
+
+def test_rendered_profile_fails_closed_on_every_unbound_material() -> None:
+    rendered = yaml.safe_load(
+        (PROFILE.parent / "rendered" / "docker-compose.yml").read_text("utf-8")
+    )
+    environment = rendered["services"]["api"]["environment"]
+    (role,) = _descriptor()["roles"]
+    for key in role["materials"]:
+        assert re.fullmatch(r"\$\{" + key + r":\?[^}]+\}", environment[key]), key
+    assert environment["ENVIRONMENT"] == "production"
+    assert rendered["services"]["api"]["ports"] == ["127.0.0.1:8083:8080"]
