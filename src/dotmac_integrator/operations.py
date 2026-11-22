@@ -50,7 +50,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import runtime_policy, secret_loading, telemetry
+from dotmac_integrator import outbound, runtime_policy, secret_loading, telemetry
 from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
@@ -941,36 +941,43 @@ def enable_installation(
 
 
 def release_expired_leases(
-    engine: Engine, actor: OperatorIdentity, reason: str
+    engine: Engine,
+    actor: OperatorIdentity,
+    reason: str,
 ) -> dict[str, Any]:
-    """Sweep leases whose holder died, at an operator's request.
+    """Settle leases whose holder died, at an operator's request.
 
-    Committed here because the module's operation is a mutation and the module
-    does not own the transaction — `dotmac_kernel.db` holds that authority in the
-    Starter, and in this deployment the assembly does.
+    Every delivery row in this assembly is outbound, and an expired `in_flight`
+    outbound lease is AMBIGUOUS (the call may have landed), so this marks them
+    `reconciliation_required` and does NOT call the module's
+    `release_expired_leases`: that function sets the row `retryable` by primary
+    key, and next to a concurrent marker (which takes `SKIP LOCKED`) it would
+    overwrite a row another process is marking and the mail would be resent.
+    The Starter module fix (a claim that never takes `in_flight`, and a release
+    that is ambiguity-aware) will make the module path safe; this is the
+    workaround until a pin bump carries it. `released` is therefore always 0.
 
-    `reason` is carried in this assembly's own audit detail because the module's
-    `leases.released` event records the count and the ids but has no `reason`
-    field — a gap raised with the module rather than papered over here.
+    `reason` is carried in this assembly's own audit detail because the
+    module's event has no `reason` field.
     """
-    with Session(engine) as db:
-        released = integration.release_expired_leases(db, actor_admin_id=actor.admin_id)
-        db.commit()
-    return {"released": released, "reason": reason, "actor": actor.label}
+    ambiguous = outbound.mark_stranded_ambiguous(engine)
+    return {
+        "released": 0,
+        "ambiguous": ambiguous,
+        "reason": reason,
+        "actor": actor.label,
+    }
 
 
 def sweep_expired_leases(engine: Engine) -> int:
     """The TIMED sweep. No actor, because a schedule is not a person.
 
-    Separate from `release_expired_leases` rather than an optional argument:
-    the difference between "the deployment reclaimed a dead worker's lease on
-    its timer" and "someone reclaimed it" is exactly what a reader of the trail
-    needs, and a default parameter hides which one happened.
+    Separate from `release_expired_leases` so the trail can tell "the
+    deployment settled a dead worker's lease on its timer" from "someone did".
+    Marks expired outbound leases ambiguous and returns how many; the module's
+    blanket release is deliberately not called (see `release_expired_leases`).
     """
-    with Session(engine) as db:
-        released = integration.release_expired_leases(db)
-        db.commit()
-    return released
+    return outbound.mark_stranded_ambiguous(engine)
 
 
 def replay_delivery(
@@ -989,6 +996,16 @@ def replay_delivery(
         if delivery is None:
             telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no delivery {delivery_id}")
+        if delivery.state == "reconciliation_required":
+            # The module would accept this. An ambiguous delivery may already
+            # have landed, so requeueing it needs the explicit acknowledgement
+            # of `python -m dotmac_integrator.requeue_ambiguous`, not a route.
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                "delivery outcome is ambiguous; requeue only with "
+                "`requeue_ambiguous --accept-possible-duplicate`",
+            )
         try:
             replayed = integration.replay_delivery(
                 db, delivery, actor_admin_id=actor.admin_id, reason=reason

@@ -20,6 +20,8 @@ INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.binding.disabled",
     "integrator.binding.enabled",
     "integrator.ingress_endpoint.minted",
+    "integrator.delivery.ambiguous_on_lease_expiry",
+    "integrator.delivery.requeued_after_ambiguity",
     "integrator.installation.configured",
     "integrator.installation.disabled",
     "integrator.installation.drafted",
