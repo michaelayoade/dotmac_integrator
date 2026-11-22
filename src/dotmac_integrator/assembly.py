@@ -69,6 +69,7 @@ from dotmac_integrator import (
     delivery,
     health,
     ingress,
+    manage,
     operations,
     product_contracts,
     product_port,
@@ -88,6 +89,7 @@ from dotmac_integrator.operator_auth import (
 )
 from dotmac_integrator.product_auth import (
     ProductAuthenticator,
+    ProductManagePrincipal,
     ProductProvisionPrincipal,
     ProductQueryPrincipal,
 )
@@ -127,6 +129,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     query_dispatcher: query.QueryDispatcher | None = None,
+    manage_test_sender: manage.ManageTestSender | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
 
@@ -263,6 +266,124 @@ def create_app(
                 result.model_dump(mode="json"),
                 status_code=_PRODUCT_QUERY_STATUS_CODES[result.status],
             )
+
+    if settings.product_manage_enabled:
+        # D12a. The one scoped product-management caller per companion. Not an
+        # operator: it carries `require_product_manage`, never `require_operator`,
+        # and every handler confines it to its configured grants.
+
+        def _actor(
+            principal: ProductManagePrincipal, asserted: str | None
+        ) -> manage.ManageActor:
+            return manage.ManageActor(principal.application, asserted)
+
+        @app.get("/product/v1/manage/health", tags=["product-integration"])
+        def manage_health(principal: ProductManagePrincipal) -> dict[str, Any]:
+            return manage.readiness(engine)
+
+        @app.get(
+            "/product/v1/manage/installations/{installation_id}",
+            tags=["product-integration"],
+        )
+        def manage_installation(
+            installation_id: str, principal: ProductManagePrincipal
+        ) -> dict[str, Any]:
+            return manage.installation_view(engine, principal, installation_id)
+
+        @app.put(
+            "/product/v1/manage/installations/{installation_id}/config",
+            tags=["product-integration"],
+        )
+        def manage_set_config(
+            installation_id: str,
+            body: manage.ConfigBody,
+            principal: ProductManagePrincipal,
+        ) -> dict[str, Any]:
+            return manage.set_config(
+                engine,
+                principal,
+                _actor(principal, body.asserted_actor),
+                installation_id,
+                config=body.config,
+                reason=body.reason,
+            )
+
+        @app.post(
+            "/product/v1/manage/installations/{installation_id}"
+            "/bindings/{binding_id}/disable",
+            tags=["product-integration"],
+        )
+        def manage_disable_binding(
+            installation_id: str,
+            binding_id: str,
+            body: manage.ReasonBody,
+            principal: ProductManagePrincipal,
+        ) -> dict[str, Any]:
+            return manage.disable_own_binding(
+                engine,
+                principal,
+                _actor(principal, body.asserted_actor),
+                installation_id,
+                binding_id,
+                reason=body.reason,
+            )
+
+        @app.post(
+            "/product/v1/manage/installations/{installation_id}"
+            "/bindings/{binding_id}/enable",
+            tags=["product-integration"],
+        )
+        def manage_enable_binding(
+            installation_id: str,
+            binding_id: str,
+            body: manage.ReasonBody,
+            principal: ProductManagePrincipal,
+        ) -> dict[str, Any]:
+            return manage.enable_own_binding(
+                engine,
+                principal,
+                _actor(principal, body.asserted_actor),
+                installation_id,
+                binding_id,
+                reason=body.reason,
+            )
+
+        @app.post(
+            "/product/v1/manage/installations/{installation_id}"
+            "/bindings/{binding_id}/test-send",
+            tags=["product-integration"],
+        )
+        def manage_test_send(
+            installation_id: str,
+            binding_id: str,
+            body: manage.ManageTestSendBody,
+            principal: ProductManagePrincipal,
+        ) -> dict[str, Any]:
+            return manage.test_send(
+                engine,
+                principal,
+                _actor(principal, body.asserted_actor),
+                installation_id,
+                binding_id,
+                to_address=body.to_address,
+                reason=body.reason,
+                sender=manage_test_sender,
+            )
+
+        @app.api_route(
+            "/product/v1/manage/{rest:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            tags=["product-integration"],
+            include_in_schema=False,
+        )
+        def manage_everything_else(
+            rest: str, principal: ProductManagePrincipal
+        ) -> None:
+            # Registered AFTER every real manage route. Anything else under
+            # this prefix (releasing a quarantine, first activation, binding a
+            # target, minting or rotating anything) is refused to this caller
+            # by name: those are operator-only (PLAN §1d/§1e).
+            raise HTTPException(403, "operator-only; not available to this caller")
 
     if settings.product_provision_enabled:
         assert provision_dispatcher is not None

@@ -23,6 +23,10 @@ INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.installation.drafted",
     "integrator.installation.enabled",
     "integrator.installation.enable_refused",
+    "integrator.manage.binding_disabled",
+    "integrator.manage.binding_enabled",
+    "integrator.manage.config_set",
+    "integrator.manage.test_send",
     "integrator.secrets.refreshed",
 )
 

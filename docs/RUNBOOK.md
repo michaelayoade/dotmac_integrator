@@ -123,6 +123,21 @@ Set `revoked_at` on the `platform_sessions` row, or `is_active = false` on the
 operational point of a session table, and it is why revocation does not wait
 for a token to expire.
 
+### Product-management caller (`integration:manage`, D12a)
+
+Off by default (`PRODUCT_MANAGE_ENABLED`). One scoped caller per companion,
+declared in `PRODUCT_QUERY_CALLERS` with the scope `integration:manage` ALONE and
+`manage_grants`: a list of entries, each naming an installation id, its connector
+key, the binding ids it may disable and enable and the non-egress config keys it
+may set. Everything comes from typed deploy parameters; the default is empty, and
+an empty list means the caller can do nothing. It is not an operator: operator
+routes answer it 401, anything it should not do under `/product/v1/manage/` is
+403. Destination keys (host, port, user, TLS, URL, credential, network target)
+are refused by name and cannot be allowlisted. A configuration change takes the
+installation back to `draft`; an operator re-validates it. Enabling a binding is
+refused when the installation is quarantined or not enabled, or when no operator
+`integrator.binding.enabled` audit row exists for it.
+
 ---
 
 ## Bringing up the product port

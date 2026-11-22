@@ -11,7 +11,7 @@ from uuid import UUID
 from dotmac_kernel.secret_sources import get_secret
 from fastapi import Depends, Header, HTTPException, Request
 
-from dotmac_integrator.settings import ProductQueryCaller
+from dotmac_integrator.settings import ManageGrant, ProductQueryCaller
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,9 @@ class ProductPrincipal:
     application: str
     scopes: frozenset[str]
     binding_ids: frozenset[UUID]
+    #: Populated only for an `integration:manage` caller (D12a). Empty means
+    #: the caller can do nothing.
+    manage_grants: tuple[ManageGrant, ...] = ()
 
 
 class ProductAuthenticationFailed(RuntimeError):
@@ -49,6 +52,7 @@ class ProductAuthenticator:
             matched.application,
             frozenset(matched.scopes),
             frozenset(matched.binding_ids),
+            tuple(matched.manage_grants),
         )
 
 
@@ -78,7 +82,15 @@ def require_product_provision(
     return _require(request, x_api_key, scope="integration:provision")
 
 
+def require_product_manage(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+) -> ProductPrincipal:
+    return _require(request, x_api_key, scope="integration:manage")
+
+
 ProductQueryPrincipal = Annotated[ProductPrincipal, Depends(require_product_query)]
 ProductProvisionPrincipal = Annotated[
     ProductPrincipal, Depends(require_product_provision)
 ]
+ProductManagePrincipal = Annotated[ProductPrincipal, Depends(require_product_manage)]

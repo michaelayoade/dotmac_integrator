@@ -15,7 +15,7 @@ from functools import lru_cache
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The owner DSN's default. Named because `validate_settings` has to tell "still
@@ -28,15 +28,128 @@ _DEFAULT_MIGRATION_DATABASE_URL = (
 )
 
 
+#: The scope of the one scoped product-management caller per companion (D12a).
+#: It is never an operator and holds no other scope.
+MANAGE_SCOPE = "integration:manage"
+
+#: Words that make a configuration key a DESTINATION key. The management caller
+#: may never set one (PLAN §1d: a compromised product repointing the
+#: destination would get held credentials presented to an attacker). Matched on
+#: whole words after splitting on `_`, `-`, `.` and camelCase, so
+#: `from_address` is a sender label while `smtp_host` and `serverUrl` are not.
+EGRESS_KEY_WORDS: frozenset[str] = frozenset(
+    {
+        "host",
+        "hostname",
+        "port",
+        "user",
+        "username",
+        "login",
+        "tls",
+        "ssl",
+        "starttls",
+        "url",
+        "uri",
+        "endpoint",
+        "server",
+        "relay",
+        "proxy",
+        "dsn",
+        "domain",
+        "ip",
+        "network",
+        "target",
+        "targets",
+        "auth",
+        "password",
+        "secret",
+        "token",
+    }
+)
+
+
+def config_key_is_egress(key: str) -> bool:
+    """True when `key` names a destination, a credential or a network target."""
+    spaced = (
+        "".join(f" {c.lower()}" if c.isupper() else c for c in key)
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace(".", " ")
+    )
+    return bool(set(spaced.split()) & EGRESS_KEY_WORDS)
+
+
+class ManageGrant(BaseModel):
+    """One structured allowlist entry for an `integration:manage` caller.
+
+    Everything a manage caller may touch is named by a grant and arrives ONLY
+    from typed settings; nothing is defaulted in code and no connector key is
+    written in source. A structured entry rather than flat lists, so a later
+    (data set, direction) dimension can be added as new optional fields without
+    breaking configurations written today (`extra="forbid"` makes an unknown
+    field a refused boot, never an ignored one).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    installation_id: UUID
+    connector_key: str = Field(min_length=1)
+    #: The bindings of that installation the caller may disable and enable.
+    binding_ids: tuple[UUID, ...] = ()
+    #: The non-egress configuration keys the caller may set.
+    config_keys: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _no_egress_keys(self) -> ManageGrant:
+        egress = sorted(k for k in self.config_keys if config_key_is_egress(k))
+        if egress:
+            raise ValueError(
+                "config_keys may not name a destination, credential or "
+                f"network key: {egress}"
+            )
+        return self
+
+
 class ProductQueryCaller(BaseModel):
-    """Non-secret caller identity, held-key reference and granted scopes."""
+    """Non-secret caller identity, held-key reference and granted scopes.
+
+    A caller holding `integration:manage` (D12a) is a different kind of
+    principal: it holds that scope ALONE and is confined to its `manage_grants`.
+    An empty `manage_grants` means it can do nothing. A caller without the
+    manage scope may carry no grants, so they can never be silently ignored.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     application: str = Field(min_length=1, pattern=r"^[a-z0-9_.-]+$")
     api_key_ref: str = Field(min_length=1)
     scopes: tuple[str, ...] = Field(min_length=1)
-    binding_ids: tuple[UUID, ...] = Field(min_length=1)
+    binding_ids: tuple[UUID, ...] = ()
+    manage_grants: tuple[ManageGrant, ...] = ()
+
+    @model_validator(mode="after")
+    def _scope_shape(self) -> ProductQueryCaller:
+        if MANAGE_SCOPE not in self.scopes:
+            if self.manage_grants:
+                raise ValueError(
+                    f"manage_grants are valid only with the {MANAGE_SCOPE} scope"
+                )
+            if not self.binding_ids:
+                raise ValueError("binding_ids requires at least one binding")
+            return self
+        if set(self.scopes) != {MANAGE_SCOPE}:
+            raise ValueError(
+                f"{MANAGE_SCOPE} must be the caller's only scope; use a "
+                "separate caller (and key) for any other scope"
+            )
+        if self.binding_ids:
+            raise ValueError(
+                f"a {MANAGE_SCOPE} caller names bindings inside manage_grants"
+            )
+        installations = [g.installation_id for g in self.manage_grants]
+        if len(set(installations)) != len(installations):
+            raise ValueError("manage_grants name an installation more than once")
+        return self
 
 
 class Settings(BaseSettings):
@@ -133,6 +246,13 @@ class Settings(BaseSettings):
         default="/run/secrets",
         min_length=1,
         description="`file://` references are confined to this directory.",
+    )
+    product_manage_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the integration:manage routes under /product/v1/manage. "
+            "Needs a caller holding exactly that scope. Off by default."
+        ),
     )
     product_query_enabled: bool = False
     product_provision_enabled: bool = False
@@ -457,6 +577,12 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append(
             "PRODUCT_QUERY_ENABLED requires a caller with integration:query scope"
         )
+    if settings.product_manage_enabled and not any(
+        MANAGE_SCOPE in caller.scopes for caller in callers
+    ):
+        problems.append(
+            f"PRODUCT_MANAGE_ENABLED requires a caller with {MANAGE_SCOPE} scope"
+        )
     if settings.product_provision_enabled and not any(
         "integration:provision" in caller.scopes for caller in callers
     ):
@@ -477,14 +603,14 @@ def validate_settings(settings: Settings) -> list[str]:
     for caller in callers:
         if not caller.api_key_ref.startswith(("env://", "file://")):
             problems.append("product query api_key_ref must be env:// or file://")
-        known_scopes = {"integration:query", "integration:provision"}
+        known_scopes = {"integration:query", "integration:provision", MANAGE_SCOPE}
         if (
             not set(caller.scopes) & known_scopes
             or not set(caller.scopes) <= known_scopes
         ):
             problems.append(
-                "product caller requires exact integration:query and/or "
-                "integration:provision scope"
+                "product caller requires exact integration:query, "
+                "integration:provision and/or integration:manage scope"
             )
         if len(set(caller.binding_ids)) != len(caller.binding_ids):
             problems.append("product query caller binding_ids must be unique")
