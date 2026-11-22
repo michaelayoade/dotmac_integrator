@@ -42,18 +42,22 @@ replayable, so its payload is unresolved content to the module.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
 import dotmac_integration as integration
 from dotmac_kernel.audit import write_platform_audit_event
 from fastapi import HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -66,6 +70,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DispatchBody",
     "deliver_due_outbound",
+    "drive_one",
+    "enqueue_dispatch",
+    "submit_dispatch_async",
     "lease_exceeds_budget",
     "mark_stranded_ambiguous",
     "redact_expired_payloads",
@@ -122,28 +129,58 @@ def _view(delivery: Any, *, dispatch_id: str, is_new: bool) -> dict[str, Any]:
     }
 
 
-def submit_dispatch(
+@dataclass(frozen=True, slots=True)
+class Enqueued:
+    delivery_id: UUID
+    dispatch_id: str
+    is_new: bool
+    view: dict[str, Any]
+
+
+def enqueue_dispatch(
     engine: Engine,
     principal: ProductPrincipal,
     body: DispatchBody,
     *,
-    wait_seconds: float,
     capabilities: Any = None,
-    sleep: Callable[[float], None] = time.sleep,
-) -> dict[str, Any]:
-    """Queue (or find) the delivery for `dispatch_id`; wait for its state.
+    cap_per_hour: int = 0,
+    max_payload_bytes: int = 0,
+) -> Enqueued:
+    """Queue (or find) the delivery for `dispatch_id`. No waiting here.
 
     Idempotent through the module's `enqueue_delivery`: the same key with the
     same content returns the existing row (one send, whatever the retries); the
-    same key with different content is a 409.
+    same key with different content is a 409. The per-binding hourly cap is
+    checked only for a key that is not already queued, so a retry of an accepted
+    dispatch is never refused by it.
     """
     if body.capability_binding_id not in principal.binding_ids:
         raise HTTPException(403, "dispatch not authorized for this binding")
+    if (
+        max_payload_bytes
+        and len(json.dumps(body.payload, separators=(",", ":"), default=str))
+        > max_payload_bytes
+    ):
+        raise HTTPException(413, "payload too large")
     declared = capabilities if capabilities is not None else _capabilities()
     with Session(engine) as db:
         binding = db.get(integration.CapabilityBinding, body.capability_binding_id)
         if binding is None:
             raise HTTPException(404, "binding not found")
+        if cap_per_hour > 0 and not _already_queued(
+            db, binding.installation_id, body.dispatch_id
+        ):
+            since = datetime.now(UTC) - timedelta(hours=1)
+            recent = db.execute(
+                select(func.count())
+                .select_from(integration.DeliveryAttempt)
+                .where(
+                    integration.DeliveryAttempt.capability_binding_id == binding.id,
+                    integration.DeliveryAttempt.created_at >= since,
+                )
+            ).scalar_one()
+            if int(recent) >= cap_per_hour:
+                raise HTTPException(429, "per-binding hourly send cap reached")
         try:
             delivery, is_new = integration.enqueue_delivery(
                 db,
@@ -170,19 +207,94 @@ def submit_dispatch(
             raise HTTPException(
                 422, "payload rejected by the capability contract"
             ) from None
-        delivery_id = delivery.id
-        first = _view(delivery, dispatch_id=body.dispatch_id, is_new=is_new)
+        return Enqueued(
+            delivery.id,
+            body.dispatch_id,
+            is_new,
+            _view(delivery, dispatch_id=body.dispatch_id, is_new=is_new),
+        )
 
+
+def _already_queued(db: Session, installation_id: UUID, key: str) -> bool:
+    return (
+        db.execute(
+            select(integration.DeliveryAttempt.id).where(
+                integration.DeliveryAttempt.installation_id == installation_id,
+                integration.DeliveryAttempt.idempotency_key == key.strip(),
+            )
+        ).first()
+        is not None
+    )
+
+
+def current_view(engine: Engine, queued: Enqueued) -> dict[str, Any]:
+    with Session(engine) as db:
+        row = db.get(integration.DeliveryAttempt, queued.delivery_id)
+        if row is None:  # pragma: no cover - the row was just written
+            return queued.view
+        db.refresh(row)
+        return _view(row, dispatch_id=queued.dispatch_id, is_new=queued.is_new)
+
+
+def submit_dispatch(
+    engine: Engine,
+    principal: ProductPrincipal,
+    body: DispatchBody,
+    *,
+    wait_seconds: float,
+    capabilities: Any = None,
+    cap_per_hour: int = 0,
+    max_payload_bytes: int = 0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Synchronous enqueue-and-wait, for callers that are not the event loop."""
+    queued = enqueue_dispatch(
+        engine,
+        principal,
+        body,
+        capabilities=capabilities,
+        cap_per_hour=cap_per_hour,
+        max_payload_bytes=max_payload_bytes,
+    )
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    current = first
+    current = queued.view
     while not current["terminal"] and time.monotonic() < deadline:
         sleep(0.25)
-        with Session(engine) as db:
-            row = db.get(integration.DeliveryAttempt, delivery_id)
-            if row is None:  # pragma: no cover - the row was just written
-                break
-            db.refresh(row)
-            current = _view(row, dispatch_id=body.dispatch_id, is_new=is_new)
+        current = current_view(engine, queued)
+    return current
+
+
+async def submit_dispatch_async(
+    engine: Engine,
+    principal: ProductPrincipal,
+    body: DispatchBody,
+    *,
+    wait_seconds: float,
+    waiters: asyncio.Semaphore,
+    cap_per_hour: int = 0,
+    max_payload_bytes: int = 0,
+) -> dict[str, Any]:
+    """The route's path. The 20 s wait is `await asyncio.sleep`, holding no
+    thread, so a flood of waiting dispatches cannot exhaust the pool that serves
+    `/operations/**` (the kill switch). Waiters are also capped: past the cap the
+    caller gets the current state at once (202) and re-posts the same key.
+    """
+    queued = await run_in_threadpool(
+        enqueue_dispatch,
+        engine,
+        principal,
+        body,
+        cap_per_hour=cap_per_hour,
+        max_payload_bytes=max_payload_bytes,
+    )
+    current = queued.view
+    if current["terminal"] or waiters.locked():
+        return current
+    async with waiters:
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while not current["terminal"] and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            current = await run_in_threadpool(current_view, engine, queued)
     return current
 
 
@@ -196,25 +308,12 @@ def _capabilities() -> Any:
 # ── Pump ────────────────────────────────────────────────────────────────────
 
 
-def deliver_due_outbound(
-    engine: Engine,
-    limit: int,
-    *,
-    registry: Any = None,
-    capabilities: Any = None,
-    resolver: Callable[[Mapping[str, str]], Mapping[str, str]] = resolve_secrets,
-) -> dict[str, int]:
-    """One bounded pass: prepare (claim), invoke (no session), settle.
-
-    The selector is a HINT (hard rule 24): it reads queued ids without a lock and
-    `prepare`'s conditional claim decides the race. It never selects `in_flight`,
-    so an expired lease is not re-driven here; it is recovered as ambiguous by
-    `mark_stranded_ambiguous`.
-    """
-    reg = registry if registry is not None else integration.discover()
+def select_due(engine: Engine, limit: int) -> list[UUID]:
+    """Queued ids, WITHOUT a lock: a hint only (hard rule 24). It never selects
+    `in_flight`, so an expired lease is never re-driven from here."""
     now = datetime.now(UTC)
     with Session(engine) as db:
-        ids = list(
+        return list(
             db.execute(
                 select(integration.DeliveryAttempt.id)
                 .where(
@@ -228,77 +327,125 @@ def deliver_due_outbound(
             .scalars()
             .all()
         )
-    counts = {
-        "selected": len(ids),
-        "settled": 0,
-        "lost": 0,
-        "refused": 0,
-        "failed": 0,
-    }
+
+
+def drive_one(
+    engine: Engine,
+    delivery_id: UUID,
+    *,
+    registry: Any,
+    capabilities: Any,
+    resolver: Callable[[Mapping[str, str]], Mapping[str, str]],
+    data_budget_seconds: int = 0,
+) -> str:
+    """Prepare, invoke, settle ONE delivery. Returns a closed outcome word.
+
+    The id may be stale: the batch was selected earlier, and another pump may
+    have claimed it or a killed pump may have left it `in_flight`. The row is
+    therefore re-read FOR UPDATE SKIP LOCKED and driven only while it is still
+    `pending`/`retryable`; `prepare` then claims inside the SAME transaction.
+    The module's `claim_delivery` would also re-claim an expired `in_flight`
+    row, which is exactly what this predicate keeps from ever reaching it.
+    """
+    with Session(engine) as db:
+        delivery = db.execute(
+            select(integration.DeliveryAttempt)
+            .where(
+                integration.DeliveryAttempt.id == delivery_id,
+                integration.DeliveryAttempt.state.in_(_QUEUED),
+            )
+            .with_for_update(skip_locked=True)
+        ).scalar_one_or_none()
+        if delivery is None:
+            return "lost"
+        try:
+            prepared = integration.prepare(db, delivery, registry=registry)
+        except (integration.DispatchNotAdmitted, integration.DispatchUnavailable):
+            db.rollback()
+            return "refused"
+        db.commit()
+    if prepared is None:
+        return "lost"
+    started = time.monotonic()
+    try:
+        outcome = integration.invoke(
+            prepared, registry=registry, resolve_secrets=resolver
+        )
+    except Exception as exc:
+        # Nothing is known about whether anything left the process, so this is
+        # ambiguous, never retryable. Type name only.
+        name = type(exc).__name__
+        outcome = integration.Outcome(
+            status=integration.OutcomeStatus.RECONCILIATION_REQUIRED,
+            error_code="invoke_failed",
+            error_detail=name if name.isidentifier() else "Exception",
+        )
+    if data_budget_seconds and time.monotonic() - started > data_budget_seconds:
+        logger.warning("an outbound send exceeded OUTBOUND_DATA_BUDGET_SECONDS")
+    with Session(engine) as db:
+        delivery = db.get(integration.DeliveryAttempt, delivery_id)
+        if delivery is None:  # pragma: no cover
+            return "failed"
+        integration.settle(
+            db, delivery, outcome, prepared=prepared, registry=capabilities
+        )
+        db.commit()
+    return "settled"
+
+
+def deliver_due_outbound(
+    engine: Engine,
+    limit: int,
+    *,
+    registry: Any = None,
+    capabilities: Any = None,
+    resolver: Callable[[Mapping[str, str]], Mapping[str, str]] = resolve_secrets,
+    data_budget_seconds: int = 0,
+) -> dict[str, int]:
+    """One bounded pass over the module's due set. Identifier-free counts."""
+    reg = registry if registry is not None else integration.discover()
+    ids = select_due(engine, limit)
+    counts = {"selected": len(ids), "settled": 0, "lost": 0, "refused": 0, "failed": 0}
     for delivery_id in ids:
         try:
-            with Session(engine) as db:
-                delivery = db.get(integration.DeliveryAttempt, delivery_id)
-                if delivery is None:
-                    continue
-                try:
-                    prepared = integration.prepare(db, delivery, registry=reg)
-                except (
-                    integration.DispatchNotAdmitted,
-                    integration.DispatchUnavailable,
-                ):
-                    counts["refused"] += 1
-                    continue
-                db.commit()
-            if prepared is None:
-                counts["lost"] += 1
-                continue
-            try:
-                outcome = integration.invoke(
-                    prepared, registry=reg, resolve_secrets=resolver
-                )
-            except Exception as exc:
-                # Nothing is known about whether anything left the process, so
-                # this is ambiguous, never retryable. Type name only.
-                name = type(exc).__name__
-                outcome = integration.Outcome(
-                    status=integration.OutcomeStatus.RECONCILIATION_REQUIRED,
-                    error_code="invoke_failed",
-                    error_detail=name if name.isidentifier() else "Exception",
-                )
-            with Session(engine) as db:
-                delivery = db.get(integration.DeliveryAttempt, delivery_id)
-                if delivery is None:  # pragma: no cover
-                    continue
-                integration.settle(
-                    db, delivery, outcome, prepared=prepared, registry=capabilities
-                )
-                db.commit()
-            counts["settled"] += 1
+            result = drive_one(
+                engine,
+                delivery_id,
+                registry=reg,
+                capabilities=capabilities,
+                resolver=resolver,
+                data_budget_seconds=data_budget_seconds,
+            )
         except integration.LostClaim:
-            counts["lost"] += 1
+            result = "lost"
         except Exception:
-            counts["failed"] += 1
+            result = "failed"
             logger.error("outbound delivery pass item failed")
+        counts[result] += 1
     return counts
 
 
 def mark_stranded_ambiguous(engine: Engine) -> int:
     """An expired in-flight outbound lease is AMBIGUOUS, never retryable.
 
-    Runs before the module's blanket `release_expired_leases`, which would turn
-    the same row into `retryable` and send it again.
+    UNCONDITIONAL: it does not depend on the pump flag (toggling the pump must
+    not turn a stranded send into a resend), and it runs at startup, on the
+    timed sweep and before the operator's lease release. Every row is taken
+    `FOR UPDATE SKIP LOCKED` under the same predicate, so it cannot race a pump
+    that is settling it.
     """
     now = datetime.now(UTC)
     marked = 0
     with Session(engine) as db:
         stranded = list(
             db.execute(
-                select(integration.DeliveryAttempt).where(
+                select(integration.DeliveryAttempt)
+                .where(
                     integration.DeliveryAttempt.state == "in_flight",
                     integration.DeliveryAttempt.leased_until.is_not(None),
                     integration.DeliveryAttempt.leased_until < now,
                 )
+                .with_for_update(skip_locked=True)
             )
             .scalars()
             .all()

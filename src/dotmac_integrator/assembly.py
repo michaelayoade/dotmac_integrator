@@ -53,6 +53,8 @@ decides anything.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -97,6 +99,8 @@ from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
 from dotmac_integrator.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 _PRODUCT_QUERY_STATUS_CODES: dict[query.ProductQueryStatus, int] = {
     "ok": 200,
@@ -209,6 +213,12 @@ def create_app(
                 delivery.install_product_port(
                     port_client, registry=registry, install_registry=False
                 )
+        # UNCONDITIONAL and before serving: a send killed mid-flight by the last
+        # process is ambiguous whatever the pump flag says now.
+        try:
+            await asyncio.to_thread(outbound.mark_stranded_ambiguous, engine)
+        except Exception:
+            logger.error("startup recovery of stranded outbound leases failed")
         await worker.start()
         try:
             yield
@@ -267,17 +277,21 @@ def create_app(
             )
 
     if settings.product_dispatch_enabled:
+        waiters = asyncio.Semaphore(settings.outbound_max_waiters)
 
         @app.post("/product/v1/dispatches", tags=["product-integration"])
-        def product_dispatch(
+        async def product_dispatch(
             body: outbound.DispatchBody,
             principal: ProductDispatchPrincipal,
         ) -> JSONResponse:
-            result = outbound.submit_dispatch(
+            result = await outbound.submit_dispatch_async(
                 engine,
                 principal,
                 body,
                 wait_seconds=settings.outbound_wait_seconds,
+                waiters=waiters,
+                cap_per_hour=settings.outbound_binding_cap_per_hour,
+                max_payload_bytes=settings.outbound_max_payload_bytes,
             )
             return JSONResponse(result, status_code=200 if result["terminal"] else 202)
 
@@ -565,12 +579,7 @@ def create_app(
         body: OperationReason,
         actor: Operator,
     ) -> dict[str, Any]:
-        return operations.release_expired_leases(
-            engine,
-            actor,
-            body.reason,
-            outbound_ambiguity=settings.outbound_pump_enabled,
-        )
+        return operations.release_expired_leases(engine, actor, body.reason)
 
     @app.post("/operations/deliveries/{delivery_id}/replay", tags=["operations"])
     def replay_delivery(

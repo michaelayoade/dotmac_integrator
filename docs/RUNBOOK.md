@@ -142,7 +142,14 @@ to boot unless the module's lease is longer than `OUTBOUND_DATA_BUDGET_SECONDS`
 are set. A delivered payload is redacted after the retention period.
 
 An ambiguous delivery is terminal. A process killed mid-send leaves an expired
-lease, which is recorded as ambiguous (never retryable). The replay route
+lease, which is recorded as ambiguous (never retryable) at startup, on the timed
+sweep and before the operator's lease release, whatever the pump flag says.
+Each pass re-reads the row `FOR UPDATE SKIP LOCKED` and drives it only while it
+is still queued, so overlapping pumps cannot send twice. The 20 s wait is an
+`await`, not a thread (`OUTBOUND_MAX_WAITERS` caps waiters), so a flood of
+dispatches cannot block `/operations`. `OUTBOUND_BINDING_CAP_PER_HOUR` (default
+20; 0 disables) refuses new dispatch keys past the cap with 429; a retry of an
+accepted key is never counted. The replay route
 refuses it; a person requeues one deliberately:
 
 ```bash

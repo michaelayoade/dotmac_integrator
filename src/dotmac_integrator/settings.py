@@ -44,8 +44,11 @@ class ProductQueryCaller(BaseModel):
 
     @model_validator(mode="after")
     def _dispatch_is_one_binding(self) -> ProductQueryCaller:
-        if DISPATCH_SCOPE in self.scopes and len(set(self.binding_ids)) != 1:
-            raise ValueError(f"{DISPATCH_SCOPE} is bound to exactly one binding id")
+        if DISPATCH_SCOPE in self.scopes:
+            if len(set(self.binding_ids)) != 1:
+                raise ValueError(f"{DISPATCH_SCOPE} is bound to exactly one binding id")
+            if set(self.scopes) != {DISPATCH_SCOPE}:
+                raise ValueError(f"{DISPATCH_SCOPE} must be the caller's only scope")
         return self
 
 
@@ -172,6 +175,25 @@ class Settings(BaseSettings):
             "The connector's declared budget for the send itself. The module's "
             "lease must exceed it or the pump refuses to start."
         ),
+    )
+    outbound_max_waiters: int = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Dispatches that may wait for a terminal state at once. Past it a "
+            "caller gets the current state immediately and re-posts its key."
+        ),
+    )
+    outbound_binding_cap_per_hour: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "New dispatches accepted per binding per hour; 0 disables the cap. "
+            "A re-post of an accepted dispatch_id is never counted."
+        ),
+    )
+    outbound_max_payload_bytes: int = Field(
+        default=262_144, ge=0, description="Largest accepted payload; 0 disables."
     )
     outbound_payload_retention_days: int = Field(
         default=7,

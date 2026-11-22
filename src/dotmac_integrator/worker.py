@@ -224,7 +224,9 @@ class Worker:
 
     def _outbound_once(self) -> None:
         counted = outbound.deliver_due_outbound(
-            self._engine, self._settings.worker_batch_size
+            self._engine,
+            self._settings.worker_batch_size,
+            data_budget_seconds=self._settings.outbound_data_budget_seconds,
         )
         if counted["selected"]:
             logger.info("outbound delivery pass: %s", sorted(counted.items()))
@@ -303,9 +305,7 @@ class Worker:
     def _sweep_once(self) -> None:
         # The TIMED variant, which records no actor: a schedule is not a
         # person, and an audit row naming one would be a lie about who decided.
-        released = operations.sweep_expired_leases(
-            self._engine, outbound_ambiguity=self._settings.outbound_pump_enabled
-        )
+        released = operations.sweep_expired_leases(self._engine)
         # Stamped AFTER the sweep returns, never before. A timestamp written on
         # entry would keep advancing while every sweep failed, and the stall
         # alert would report a healthy worker doing nothing.

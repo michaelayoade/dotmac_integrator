@@ -729,8 +729,6 @@ def release_expired_leases(
     engine: Engine,
     actor: OperatorIdentity,
     reason: str,
-    *,
-    outbound_ambiguity: bool = False,
 ) -> dict[str, Any]:
     """Sweep leases whose holder died, at an operator's request.
 
@@ -742,7 +740,7 @@ def release_expired_leases(
     `leases.released` event records the count and the ids but has no `reason`
     field — a gap raised with the module rather than papered over here.
     """
-    ambiguous = outbound.mark_stranded_ambiguous(engine) if outbound_ambiguity else 0
+    ambiguous = outbound.mark_stranded_ambiguous(engine)
     with Session(engine) as db:
         released = integration.release_expired_leases(db, actor_admin_id=actor.admin_id)
         db.commit()
@@ -754,7 +752,7 @@ def release_expired_leases(
     }
 
 
-def sweep_expired_leases(engine: Engine, *, outbound_ambiguity: bool = False) -> int:
+def sweep_expired_leases(engine: Engine) -> int:
     """The TIMED sweep. No actor, because a schedule is not a person.
 
     Separate from `release_expired_leases` rather than an optional argument:
@@ -762,10 +760,9 @@ def sweep_expired_leases(engine: Engine, *, outbound_ambiguity: bool = False) ->
     its timer" and "someone reclaimed it" is exactly what a reader of the trail
     needs, and a default parameter hides which one happened.
     """
-    if outbound_ambiguity:
-        # BEFORE the module's blanket release, which would make the same
-        # stranded outbound row retryable and send it twice.
-        outbound.mark_stranded_ambiguous(engine)
+    # BEFORE the module's blanket release, which would make the same stranded
+    # outbound row retryable and send it twice. Unconditional.
+    outbound.mark_stranded_ambiguous(engine)
     with Session(engine) as db:
         released = integration.release_expired_leases(db)
         db.commit()

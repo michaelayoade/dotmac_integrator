@@ -15,6 +15,8 @@ Requires PostgreSQL; skipped without one (CI does not skip).
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -37,11 +39,13 @@ from dotmac_kernel.models_platform import PlatformAdmin
 from dotmac_kernel.modules import ModuleRegistry
 from dotmac_kernel.security import hash_password
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from dotmac_integrator import operations, outbound, requeue_ambiguous
+from dotmac_integrator.assembly import create_app
 from dotmac_integrator.manifest import module as assembly_module
 from dotmac_integrator.product_auth import ProductPrincipal
 from dotmac_integrator.settings import get_settings
@@ -253,13 +257,13 @@ def test_a_crash_after_invoke_is_ambiguous_and_never_resent(world: Any) -> None:
     assert _state(world.engine, "dispatch-5") == "in_flight"
 
     _expire_lease(world.engine, "dispatch-5")
-    operations.sweep_expired_leases(world.engine, outbound_ambiguity=True)
+    operations.sweep_expired_leases(world.engine)
     assert _state(world.engine, "dispatch-5") == "reconciliation_required"
 
     world.plugin.behaviour = lambda _r: Outcome(status=OutcomeStatus.SUCCEEDED)
     for _ in range(3):
         _pump(world)
-        operations.sweep_expired_leases(world.engine, outbound_ambiguity=True)
+        operations.sweep_expired_leases(world.engine)
     assert world.plugin.calls == ["dispatch-5"], "an ambiguous send was resent"
     view = _submit(world, "dispatch-5")
     assert view["state"] == "ambiguous" and view["terminal"] is True
@@ -277,7 +281,9 @@ def test_sensitivity_the_blanket_release_alone_would_resend(world: Any) -> None:
     with pytest.raises(_Crash):
         _pump(world)
     _expire_lease(world.engine, "dispatch-6")
-    operations.sweep_expired_leases(world.engine, outbound_ambiguity=False)
+    with Session(world.engine) as db:
+        integration.release_expired_leases(db)
+        db.commit()
     assert _state(world.engine, "dispatch-6") == "retryable"
 
 
@@ -375,3 +381,117 @@ def test_a_delivered_payload_is_redacted_after_retention_and_not_before(
         ).scalar_one()
     assert "person@example.test" not in payload
     assert integration.REDACTION_MARKER in payload
+
+
+def _delivery_id(engine: Engine, key: str) -> UUID:
+    with Session(engine) as db:
+        return UUID(
+            str(
+                db.execute(
+                    text(
+                        "SELECT id FROM mod_intg.delivery_attempts "
+                        "WHERE idempotency_key = :k"
+                    ),
+                    {"k": key},
+                ).scalar_one()
+            )
+        )
+
+
+def _drive(w: Any, delivery_id: UUID) -> str:
+    return outbound.drive_one(
+        w.engine,
+        delivery_id,
+        registry=w.registry,
+        capabilities=CAPABILITIES,
+        resolver=dict,
+    )
+
+
+def test_a_stale_id_cannot_retake_an_expired_in_flight_lease(world: Any) -> None:
+    """Pump B holds an id selected earlier; pump A died after claiming it. The
+    module's claim_delivery WOULD re-claim the expired row; drive_one must not
+    reach it."""
+    _submit(world, "dispatch-10")
+    delivery_id = _delivery_id(world.engine, "dispatch-10")
+    with Session(world.engine) as db:  # pump A: claimed, then killed
+        row = db.get(integration.DeliveryAttempt, delivery_id)
+        assert row is not None
+        assert integration.prepare(db, row, registry=world.registry) is not None
+        db.commit()
+    _expire_lease(world.engine, "dispatch-10")
+    assert _drive(world, delivery_id) == "lost"
+    assert world.plugin.calls == []
+    assert _state(world.engine, "dispatch-10") == "in_flight"
+    # Sensitivity: the module's own claim WOULD take the expired row over.
+    with Session(world.engine) as db:
+        row = db.get(integration.DeliveryAttempt, delivery_id)
+        assert row is not None
+        assert integration.prepare(db, row, registry=world.registry) is not None
+
+
+def test_two_overlapping_pumps_invoke_exactly_once(world: Any) -> None:
+    _submit(world, "dispatch-11")
+    delivery_id = _delivery_id(world.engine, "dispatch-11")
+    gate = threading.Event()
+
+    def slow(_request: DispatchRequest) -> Outcome:
+        gate.wait(5)
+        return Outcome(status=OutcomeStatus.SUCCEEDED)
+
+    world.plugin.behaviour = slow
+    results: list[str] = []
+
+    def pump() -> None:
+        results.append(_drive(world, delivery_id))
+
+    first = threading.Thread(target=pump)
+    first.start()
+    deadline = time.monotonic() + 5
+    while not world.plugin.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    second = threading.Thread(target=pump)
+    second.start()
+    second.join(5)
+    gate.set()
+    first.join(5)
+    assert sorted(results) == ["lost", "settled"]
+    assert world.plugin.calls == ["dispatch-11"]
+
+
+def test_the_binding_hourly_cap_counts_new_keys_only(world: Any) -> None:
+    def send(key: str) -> dict[str, Any]:
+        return outbound.submit_dispatch(
+            world.engine,
+            world.principal,
+            _body(world.binding_id, key),
+            wait_seconds=0,
+            capabilities=CAPABILITIES,
+            cap_per_hour=2,
+        )
+
+    send("cap-1")
+    send("cap-2")
+    with pytest.raises(HTTPException) as refused:
+        send("cap-3")
+    assert refused.value.status_code == 429
+    assert send("cap-1")["accepted_now"] is False  # a retry is never capped
+
+
+def test_startup_recovers_a_stranded_send_as_ambiguous_with_the_pump_off(
+    world: Any, migrated: str
+) -> None:
+    _submit(world, "dispatch-12")
+
+    def die(_request: DispatchRequest) -> Outcome:
+        raise _Crash
+
+    world.plugin.behaviour = die
+    with pytest.raises(_Crash):
+        _pump(world)
+    _expire_lease(world.engine, "dispatch-12")
+    settings = build_settings(database_url=migrated)  # pump flag OFF
+    assert settings.outbound_pump_enabled is False
+    with TestClient(create_app(settings)):
+        pass
+    assert _state(world.engine, "dispatch-12") == "reconciliation_required"
