@@ -282,7 +282,7 @@ def test_sensitivity_the_blanket_release_alone_would_resend(world: Any) -> None:
         _pump(world)
     _expire_lease(world.engine, "dispatch-6")
     with Session(world.engine) as db:
-        integration.release_expired_leases(db)
+        integration.release_expired_leases(db)  # the MODULE's release, not ours
         db.commit()
     assert _state(world.engine, "dispatch-6") == "retryable"
 
@@ -495,3 +495,79 @@ def test_startup_recovers_a_stranded_send_as_ambiguous_with_the_pump_off(
     with TestClient(create_app(settings)):
         pass
     assert _state(world.engine, "dispatch-12") == "reconciliation_required"
+
+
+def test_two_concurrent_sweeps_never_make_an_expired_send_retryable(
+    world: Any,
+) -> None:
+    """Process A is mid-way through marking a stranded row (it holds the row
+    lock); process B runs the timed sweep and the operator release. B must not
+    touch the row (SKIP LOCKED) and must not run the module's release, which
+    would set it retryable and resend the mail."""
+    _submit(world, "dispatch-13")
+
+    def die(_request: DispatchRequest) -> Outcome:
+        raise _Crash
+
+    world.plugin.behaviour = die
+    with pytest.raises(_Crash):
+        _pump(world)
+    _expire_lease(world.engine, "dispatch-13")
+    delivery_id = _delivery_id(world.engine, "dispatch-13")
+    actor = SimpleNamespace(admin_id=uuid4(), label="op", mechanism="platform_admin")
+
+    with Session(world.engine) as a:
+        row = a.execute(
+            text("SELECT id FROM mod_intg.delivery_attempts WHERE id = :i FOR UPDATE"),
+            {"i": delivery_id},
+        ).scalar_one()
+        assert row == delivery_id  # A holds the lock
+        assert operations.sweep_expired_leases(world.engine) == 0
+        result = operations.release_expired_leases(world.engine, actor, "r")  # type: ignore[arg-type]
+        assert result["ambiguous"] == 0 and result["released"] == 0
+        assert _state_of(world.engine, delivery_id) == "in_flight"
+        a.rollback()
+
+    assert operations.sweep_expired_leases(world.engine) == 1
+    for _ in range(3):
+        operations.sweep_expired_leases(world.engine)
+        operations.release_expired_leases(world.engine, actor, "r")  # type: ignore[arg-type]
+    assert _state_of(world.engine, delivery_id) == "reconciliation_required"
+
+    # And a thread storm over many stranded rows: none is ever retryable.
+    keys = [f"storm-{n}" for n in range(8)]
+    for key in keys:
+        _submit(world, key)
+    world.plugin.behaviour = lambda _r: Outcome(status=OutcomeStatus.SUCCEEDED)
+    for key in keys:
+        with Session(world.engine) as db:
+            row = db.get(integration.DeliveryAttempt, _delivery_id(world.engine, key))
+            assert row is not None
+            assert integration.prepare(db, row, registry=world.registry) is not None
+            db.commit()
+        _expire_lease(world.engine, key)
+    seen: list[str] = []
+
+    def sweeper() -> None:
+        for _ in range(5):
+            operations.sweep_expired_leases(world.engine)
+            operations.release_expired_leases(world.engine, actor, "r")  # type: ignore[arg-type]
+            seen.extend(_state(world.engine, key) for key in keys)
+
+    threads = [threading.Thread(target=sweeper) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert "retryable" not in seen
+    assert {_state(world.engine, key) for key in keys} == {"reconciliation_required"}
+
+
+def _state_of(engine: Engine, delivery_id: UUID) -> str:
+    with Session(engine) as db:
+        return str(
+            db.execute(
+                text("SELECT state FROM mod_intg.delivery_attempts WHERE id = :i"),
+                {"i": delivery_id},
+            ).scalar_one()
+        )

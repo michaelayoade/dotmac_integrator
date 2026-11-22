@@ -15,7 +15,8 @@ reported ambiguity.
 
 A process killed between the claim and the settle reports nothing, and the
 module's generic `release_expired_leases` would turn that stranded `in_flight`
-row into `retryable`: the next pass would send it again, and a mail that may
+row into `retryable` (this assembly never calls it; see `operations`): the
+next pass would send it again, and a mail that may
 already have been accepted by the provider would go out twice. So the stranded
 row is handled FIRST, by `mark_stranded_ambiguous`, which records the module's
 own `RECONCILIATION_REQUIRED` outcome through the module's
