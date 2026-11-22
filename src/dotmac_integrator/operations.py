@@ -45,6 +45,7 @@ from uuid import UUID
 import dotmac_integration as integration
 from dotmac_kernel.audit import write_platform_audit_event
 from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -528,6 +529,61 @@ def _installation_summary(installation: Any) -> dict[str, Any]:
         "connector_key": installation.connector_key,
         "state": installation.state,
         "state_reason": installation.state_reason,
+    }
+
+
+def _census_block(rows: list[Any]) -> dict[str, Any]:
+    by_state: dict[str, int] = {}
+    by_connector: dict[str, dict[str, int]] = {}
+    for connector_key, state, count in rows:
+        by_state[str(state)] = by_state.get(str(state), 0) + int(count)
+        per = by_connector.setdefault(str(connector_key), {})
+        per[str(state)] = per.get(str(state), 0) + int(count)
+    return {
+        "total": sum(by_state.values()),
+        "by_state": dict(sorted(by_state.items())),
+        "by_connector": {
+            k: dict(sorted(v.items())) for k, v in sorted(by_connector.items())
+        },
+    }
+
+
+def binding_census(engine: Engine) -> dict[str, Any]:
+    """Counts of installations and bindings by state and connector key.
+
+    NAMES AND COUNTS ONLY: no id, no configuration, no secret reference or name.
+    The connector key is the one identifier, and it is a distribution name.
+    """
+    with Session(engine) as db:
+        installations = db.execute(
+            select(
+                integration.ConnectorInstallation.connector_key,
+                integration.ConnectorInstallation.state,
+                func.count(),
+            ).group_by(
+                integration.ConnectorInstallation.connector_key,
+                integration.ConnectorInstallation.state,
+            )
+        ).all()
+        bindings = db.execute(
+            select(
+                integration.ConnectorInstallation.connector_key,
+                integration.CapabilityBinding.state,
+                func.count(),
+            )
+            .join(
+                integration.ConnectorInstallation,
+                integration.ConnectorInstallation.id
+                == integration.CapabilityBinding.installation_id,
+            )
+            .group_by(
+                integration.ConnectorInstallation.connector_key,
+                integration.CapabilityBinding.state,
+            )
+        ).all()
+    return {
+        "installations": _census_block([tuple(r) for r in installations]),
+        "bindings": _census_block([tuple(r) for r in bindings]),
     }
 
 

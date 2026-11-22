@@ -137,6 +137,10 @@ routes. Each needs an operator token and a required `reason`, and writes an
 | `/operations/installations/{id}/quarantine` | containment; destroys nothing |
 | `/operations/installations/{id}/quarantine/release` | lands in `disabled`, never `enabled`; re-enable re-runs the live connection check |
 
+`GET /operations/bindings/census` (same flag, operator-only) returns counts of
+installations and bindings by state and connector key: names and counts only,
+no ids, config or secret references.
+
 A binding whose installation is quarantined cannot be enabled (the module's
 activation gate refuses it).
 

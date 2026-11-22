@@ -547,6 +547,13 @@ def create_app(
         # The kill switch. Operator-only, reason required, audited. Flag-gated
         # so shipping this code adds no route until a deployment asks for it.
 
+        @app.get("/operations/bindings/census", tags=["operations"])
+        def binding_census(
+            _actor: Operator,
+        ) -> dict[str, Any]:
+            """Names and counts only; see `operations.binding_census`."""
+            return operations.binding_census(engine)
+
         @app.post("/operations/bindings/{binding_id}/disable", tags=["operations"])
         def disable_binding(
             binding_id: str,

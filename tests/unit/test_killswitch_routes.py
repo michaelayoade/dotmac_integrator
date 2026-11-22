@@ -57,6 +57,10 @@ class _FakeSession:
     def __exit__(self, *_: object) -> None:
         return None
 
+    def execute(self, _stmt: object) -> Any:
+        rows = self._rows["census"].pop(0)
+        return SimpleNamespace(all=lambda: rows)
+
     def get(self, _model: object, identifier: UUID) -> Any:
         return self._rows.get(identifier)
 
@@ -249,3 +253,77 @@ def test_unknown_ids_are_404(world: SimpleNamespace) -> None:
         f"/operations/installations/{other}/quarantine/release",
     ):
         assert client.post(path, json={"reason": "x"}).status_code == 404
+
+
+# ── Census ──────────────────────────────────────────────────────────────────
+
+
+def _census_world(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows: dict[Any, Any] = {
+        "census": [
+            [
+                ("alpha", "enabled", 2),
+                ("alpha", "quarantined", 1),
+                ("beta", "disabled", 3),
+            ],
+            [("alpha", "enabled", 4), ("beta", "disabled", 5)],
+        ]
+    }
+    monkeypatch.setattr(
+        operations, "Session", lambda _e: _FakeSession(rows, {"commits": 0})
+    )
+
+
+def test_census_is_refused_without_an_operator() -> None:
+    assert _client(operator=False).get("/operations/bindings/census").status_code == 401
+
+
+def test_census_returns_counts_by_state_and_connector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _census_world(monkeypatch)
+    response = _client(operator=True).get("/operations/bindings/census")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["installations"]["total"] == 6
+    assert body["installations"]["by_state"] == {
+        "disabled": 3,
+        "enabled": 2,
+        "quarantined": 1,
+    }
+    assert body["bindings"]["by_connector"] == {
+        "alpha": {"enabled": 4},
+        "beta": {"disabled": 5},
+    }
+
+
+def test_census_carries_no_ids_or_config_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sensitivity: rows deliberately carry an id, config and a secret ref in
+    positions a leaky implementation would pass through; none may appear."""
+    import re
+
+    leak_id = str(uuid4())
+    rows: dict[Any, Any] = {
+        "census": [
+            [("alpha", "enabled", 1)],
+            [("alpha", "enabled", 1)],
+        ]
+    }
+    monkeypatch.setattr(
+        operations, "Session", lambda _e: _FakeSession(rows, {"commits": 0})
+    )
+    text = _client(operator=True).get("/operations/bindings/census").text
+    assert leak_id not in text
+    assert not re.search(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text
+    )
+    for forbidden in ("config", "secret", "env://", "file://", "password"):
+        assert forbidden not in text.lower()
+    # The projection function itself cannot pass a wider row through.
+    assert operations._census_block([("alpha", "enabled", 1)]) == {
+        "total": 1,
+        "by_state": {"enabled": 1},
+        "by_connector": {"alpha": {"enabled": 1}},
+    }
