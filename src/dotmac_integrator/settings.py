@@ -134,6 +134,16 @@ class Settings(BaseSettings):
         min_length=1,
         description="`file://` references are confined to this directory.",
     )
+    operator_killswitch_routes_enabled: bool = Field(
+        default=True,
+        description=(
+            "Mount the operator kill-switch routes (binding and installation "
+            "disable, quarantine, release-quarantine) and the census under "
+            "/operations. Every one carries require_operator and a required "
+            "reason. ON by default (explicit exception approved by Michael: "
+            "operator-only routes that only contain); set false to opt out."
+        ),
+    )
     product_query_enabled: bool = False
     product_provision_enabled: bool = False
     product_query_callers: tuple[ProductQueryCaller, ...] = ()
