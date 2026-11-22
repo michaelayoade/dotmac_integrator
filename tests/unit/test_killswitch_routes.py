@@ -61,7 +61,7 @@ class _FakeSession:
         rows = self._rows["census"].pop(0)
         return SimpleNamespace(all=lambda: rows)
 
-    def get(self, _model: object, identifier: UUID) -> Any:
+    def get(self, _model: object, identifier: UUID, **_kw: object) -> Any:
         return self._rows.get(identifier)
 
     def flush(self) -> None:
@@ -327,3 +327,35 @@ def test_census_carries_no_ids_or_config_values(
         "by_state": {"enabled": 1},
         "by_connector": {"alpha": {"enabled": 1}},
     }
+
+
+def test_installation_enable_cannot_be_a_way_out_of_quarantine(
+    world: SimpleNamespace,
+) -> None:
+    world.installation.state = "quarantined"
+    response = _client(operator=True, world=world).post(
+        f"/operations/installations/{INSTALLATION_ID}/enable",
+        json={"reason": "try"},
+    )
+    assert response.status_code == 409
+    assert "quarantine" in response.text
+    assert world.installation.state == "quarantined"
+    assert world.audits == []
+
+
+def test_state_decisions_load_the_installation_under_a_row_lock(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    locked: list[bool] = []
+    original = _FakeSession.get
+
+    def spy(self: _FakeSession, model: object, identifier: UUID, **kw: Any) -> Any:
+        if identifier == INSTALLATION_ID:
+            locked.append(bool(kw.get("with_for_update")))
+        return original(self, model, identifier, **kw)
+
+    monkeypatch.setattr(_FakeSession, "get", spy)
+    client = _client(operator=True, world=world)
+    for _method, path in ROUTES[:3]:
+        client.post(path, json={"reason": "r"})
+    assert locked and all(locked)

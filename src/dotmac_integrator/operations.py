@@ -232,9 +232,11 @@ def _lifecycle_conflict(exc: Exception) -> HTTPException:
     return HTTPException(409, detail)
 
 
-def _installation(db: Session, raw: str) -> Any:
+def _installation(db: Session, raw: str, *, lock: bool = False) -> Any:
     identifier = _uuid(raw, "installation_id")
-    row = db.get(integration.ConnectorInstallation, identifier)
+    # `lock` takes SELECT ... FOR UPDATE so a state decision (quarantine,
+    # disable, enable) cannot be overwritten by a concurrent one.
+    row = db.get(integration.ConnectorInstallation, identifier, with_for_update=lock)
     if row is None:
         raise HTTPException(404, f"no installation {raw}")
     return row
@@ -469,7 +471,9 @@ def enable_binding(
     with Session(engine) as db:
         binding = _binding(db, binding_id)
         installation = db.get(
-            integration.ConnectorInstallation, binding.installation_id
+            integration.ConnectorInstallation,
+            binding.installation_id,
+            with_for_update=True,
         )
         if installation is None:  # pragma: no cover - protected by the FK
             raise HTTPException(409, "binding installation is missing")
@@ -599,7 +603,9 @@ def disable_binding(
     with Session(engine) as db:
         binding = _binding(db, binding_id)
         installation = db.get(
-            integration.ConnectorInstallation, binding.installation_id
+            integration.ConnectorInstallation,
+            binding.installation_id,
+            with_for_update=True,
         )
         if installation is None:  # pragma: no cover - protected by the FK
             raise HTTPException(409, "binding installation is missing")
@@ -639,7 +645,7 @@ def disable_installation(
     engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
 ) -> dict[str, Any]:
     with Session(engine) as db:
-        installation = _installation(db, installation_id)
+        installation = _installation(db, installation_id, lock=True)
         if installation.state in {"quarantined", "retired"}:
             telemetry.counters.record_refusal("not_repairable")
             raise HTTPException(
@@ -669,7 +675,7 @@ def quarantine_installation(
     engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
 ) -> dict[str, Any]:
     with Session(engine) as db:
-        installation = _installation(db, installation_id)
+        installation = _installation(db, installation_id, lock=True)
         if installation.state == "retired":
             raise HTTPException(409, "installation is retired")
         try:
@@ -693,7 +699,7 @@ def release_installation_quarantine(
 ) -> dict[str, Any]:
     """Lands in `disabled`, never `enabled` (module contract)."""
     with Session(engine) as db:
-        installation = _installation(db, installation_id)
+        installation = _installation(db, installation_id, lock=True)
         try:
             integration.release_quarantine(
                 db, installation, reason=reason, actor=actor.label
@@ -778,9 +784,19 @@ def enable_installation(
     """
     identifier = _uuid(installation_id, "installation_id")
     with Session(engine) as db:
-        installation = db.get(integration.ConnectorInstallation, identifier)
+        installation = db.get(
+            integration.ConnectorInstallation, identifier, with_for_update=True
+        )
         if installation is None:
             raise HTTPException(404, f"no installation {installation_id}")
+        if installation.state == "quarantined":
+            # A second way out of quarantine would skip the separately audited
+            # release, and bindings stay enabled through a quarantine.
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                "installation is quarantined; use quarantine release, then enable",
+            )
 
         revision = (
             db.get(

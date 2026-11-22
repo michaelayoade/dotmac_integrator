@@ -141,6 +141,11 @@ routes. Each needs an operator token and a required `reason`, and writes an
 installations and bindings by state and connector key: names and counts only,
 no ids, config or secret references.
 
+`POST /operations/installations/{id}/enable` also refuses a quarantined
+installation (409): the only exit is quarantine release, then enable. State
+decisions load the installation under a row lock. Quarantine writes two audit
+rows, the module's `integration.*` and this assembly's `integrator.*`.
+
 A binding whose installation is quarantined cannot be enabled (the module's
 activation gate refuses it).
 
