@@ -1,0 +1,528 @@
+"""The `integration:manage` service layer (D12a). Not an operator.
+
+One scoped product-management caller per companion. It authenticates with a
+held key through the product mechanism (`product_auth`) and is confined to an
+installation-id allowlist, a connector-key allowlist, its own binding ids and
+an allowlist of non-egress configuration keys. This is the service layer for
+those routes, in the same split as `operations.py`: `assembly.py` only adapts.
+
+## What it can do (PLAN §1a)
+
+reads: readiness, one installation's state and bindings, secret status by NAME
+only, delivery counts by state; set non-egress configuration; disable or enable
+its OWN binding. There is no test-send route: Academy sends its operator.test
+message through the dispatch intake like any other mail.
+
+## What it can never do, and where that is enforced
+
+* **Repoint the destination (§1d).** A key naming a host, port, user, TLS mode,
+  URL, credential or network target, or the exact key `address` (the SMTP
+  connector's pinned egress address), is refused 403 before any query
+  (`settings.config_key_is_egress`), and a key outside the caller's explicit
+  `config_keys` allowlist is refused too. The new revision is built FROM the
+  current one: every key the caller did not name, the secret references and the
+  bound network targets are carried over unchanged, so omission cannot drop a
+  destination or a credential reference either.
+* **Release a quarantine, activate for the first time, mint or rotate anything,
+  create an installation or bind a target.** No route exists for them.
+* **Leave a quarantine by side effect.** The module's configuration write
+  resets an installation to `draft`, which would silently exit a quarantine, so
+  configuration is refused while the installation is quarantined.
+* **Enable a binding that was never activated.** The module keeps no
+  "ever activated" marker (`enabled_at` is cleared by a disable), so the fact is
+  read from the operator's audit row `integrator.binding.enabled`. No such row
+  means an operator never activated it, and enable is refused.
+* **Undo an operator.** Re-enable is allowed only when the LATEST state-changing
+  audit event for the binding (or its installation) is this same caller's own
+  `integrator.manage.binding_disabled`. An operator disable, a quarantine, a
+  configuration change or any module invalidation after that needs the
+  operator, so a compromised product cannot re-open what an operator closed.
+
+## Attribution
+
+The audit row's principal is the authenticated caller application. The
+`asserted_actor` the caller forwards is recorded verbatim-bounded and labelled
+`asserted_actor_authenticated: false`: this assembly cannot verify who a
+caller's own user is, and must not let a row suggest it did.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Annotated, Any
+from uuid import UUID
+
+import dotmac_integration as integration
+from dotmac_kernel.audit import write_platform_audit_event
+from dotmac_kernel.models_platform import PlatformAuditEvent
+from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from sqlalchemy import func, or_, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from dotmac_integrator import health, secret_loading
+from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
+from dotmac_integrator.operations import _lifecycle_conflict
+from dotmac_integrator.product_auth import ProductPrincipal
+from dotmac_integrator.settings import ManageGrant, config_key_is_egress
+
+__all__ = [
+    "ConfigBody",
+    "ManageActor",
+    "ReasonBody",
+    "require_manage_installation",
+]
+
+_Reason = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+]
+#: Forwarded by the caller and NOT authenticated here; bounded and printable.
+_Asserted = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=160, pattern=r"^[^\x00-\x1f]+$"
+    ),
+]
+
+
+class ReasonBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: _Reason
+    asserted_actor: _Asserted | None = None
+
+
+_Scalar = str | int | bool
+
+
+class ConfigBody(ReasonBody):
+    """Scalar values only: no nested object, array or null (bounded)."""
+
+    config: dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=64)],
+        Annotated[str, StringConstraints(max_length=320)] | int | bool,
+    ] = Field(min_length=1, max_length=20)
+
+
+#: `integrator.binding.enabled` is written only by the OPERATOR enable route
+#: (`operations.enable_binding`), which is what makes it a usable record that an
+#: operator performed the first activation.
+_OPERATOR_ACTIVATION_ACTION = "integrator.binding.enabled"
+
+
+@dataclass(frozen=True, slots=True)
+class ManageActor:
+    """Who acted: the authenticated application, and a claim about a person."""
+
+    application: str
+    asserted_actor: str | None
+
+    @property
+    def label(self) -> str:
+        return self.application
+
+    def audit_fields(self) -> dict[str, object]:
+        return {
+            "principal": self.application,
+            "principal_authenticated": True,
+            "asserted_actor": self.asserted_actor,
+            "asserted_actor_authenticated": False,
+        }
+
+
+def _audit(
+    db: Session,
+    actor: ManageActor,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    details: dict[str, object],
+) -> None:
+    if action not in INTEGRATOR_AUDIT_ACTIONS:  # pragma: no cover
+        raise AssertionError(f"undeclared audit action {action!r}")
+    write_platform_audit_event(
+        db,
+        actor_admin_id=None,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        details={**actor.audit_fields(), **details},
+    )
+
+
+def _parse(raw: str, field: str) -> UUID:
+    try:
+        return UUID(raw)
+    except ValueError:
+        raise HTTPException(422, f"{field} is not a UUID") from None
+
+
+def _grant(principal: ProductPrincipal, identifier: UUID) -> ManageGrant:
+    for grant in principal.manage_grants:
+        if grant.installation_id == identifier:
+            return grant
+    raise HTTPException(403, "installation is not managed by this caller")
+
+
+def require_manage_installation(
+    principal: ProductPrincipal, installation_id: str
+) -> UUID:
+    """Allowlist check BEFORE any lookup, so existence is not an oracle."""
+    identifier = _parse(installation_id, "installation_id")
+    _grant(principal, identifier)
+    return identifier
+
+
+def _load_installation(
+    db: Session,
+    principal: ProductPrincipal,
+    identifier: UUID,
+    *,
+    lock: bool = False,
+) -> Any:
+    installation = db.get(
+        integration.ConnectorInstallation, identifier, with_for_update=lock
+    )
+    if installation is None:
+        raise HTTPException(404, "installation not found")
+    if installation.connector_key != _grant(principal, identifier).connector_key:
+        raise HTTPException(403, "connector is not managed by this caller")
+    return installation
+
+
+def _load_binding(
+    db: Session, principal: ProductPrincipal, installation: Any, raw: str
+) -> Any:
+    identifier = _parse(raw, "binding_id")
+    if identifier not in _grant(principal, installation.id).binding_ids:
+        raise HTTPException(403, "binding is not managed by this caller")
+    binding = db.get(integration.CapabilityBinding, identifier)
+    if binding is None or binding.installation_id != installation.id:
+        raise HTTPException(404, "binding not found")
+    return binding
+
+
+# ── Reads ───────────────────────────────────────────────────────────────────
+
+
+def readiness(engine: Engine) -> dict[str, Any]:
+    ok, detail = health.readiness(engine)
+    return {"ready": ok, "detail": detail}
+
+
+def installation_view(
+    engine: Engine, principal: ProductPrincipal, installation_id: str
+) -> dict[str, Any]:
+    identifier = require_manage_installation(principal, installation_id)
+    with Session(engine) as db:
+        installation = _load_installation(db, principal, identifier)
+        grant = _grant(principal, identifier)
+        revision = (
+            db.get(
+                integration.ConnectorConfigRevision,
+                installation.current_config_revision_id,
+            )
+            if installation.current_config_revision_id is not None
+            else None
+        )
+        bindings = (
+            db.execute(
+                select(integration.CapabilityBinding).where(
+                    integration.CapabilityBinding.installation_id == installation.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        counts: dict[str, int] = {
+            str(state): int(total)
+            for state, total in db.execute(
+                select(integration.DeliveryAttempt.state, func.count())
+                .where(integration.DeliveryAttempt.installation_id == installation.id)
+                .group_by(integration.DeliveryAttempt.state)
+            ).all()
+        }
+        report = secret_loading.last_report()
+        names: dict[str, str] = {}
+        if revision is not None:
+            for name, ref in sorted((revision.secret_refs or {}).items()):
+                # NAME and held/unresolved only: neither the reference string
+                # nor any value reaches the caller.
+                names[str(name)] = "held" if str(ref) in report.held else "unresolved"
+        config = revision.config_json if revision is not None else {}
+        return {
+            "installation": {
+                "id": str(installation.id),
+                "connector_key": installation.connector_key,
+                "state": installation.state,
+            },
+            "bindings": [
+                {
+                    "id": str(b.id),
+                    "capability_id": b.capability_id,
+                    "state": b.state,
+                    "managed": b.id in grant.binding_ids,
+                }
+                for b in bindings
+            ],
+            "config": {
+                k: v for k, v in sorted(config.items()) if k in grant.config_keys
+            },
+            "secrets": names,
+            "delivery_counts": dict(sorted(counts.items())),
+        }
+
+
+# ── Mutations ───────────────────────────────────────────────────────────────
+
+
+def set_config(
+    engine: Engine,
+    principal: ProductPrincipal,
+    actor: ManageActor,
+    installation_id: str,
+    *,
+    config: Mapping[str, object],
+    reason: str,
+) -> dict[str, Any]:
+    identifier = require_manage_installation(principal, installation_id)
+    if not config:
+        raise HTTPException(422, "config is empty")
+    for key in sorted(config):
+        if config_key_is_egress(key):
+            raise HTTPException(
+                403,
+                "destination and credential settings are operator-only",
+            )
+        if key not in _grant(principal, identifier).config_keys:
+            raise HTTPException(403, "configuration key is not managed by this caller")
+    registry = integration.discover()
+    with Session(engine) as db:
+        installation = _load_installation(db, principal, identifier, lock=True)
+        if installation.state == "quarantined":
+            # The module's configuration write resets the installation to
+            # `draft`, which would leave a quarantine without the operator's
+            # release. Refused rather than allowed to.
+            raise HTTPException(409, "installation is quarantined; operator-only")
+        current = (
+            db.get(
+                integration.ConnectorConfigRevision,
+                installation.current_config_revision_id,
+            )
+            if installation.current_config_revision_id is not None
+            else None
+        )
+        if current is None:
+            raise HTTPException(
+                409, "installation has no configuration; an operator authors it"
+            )
+        merged = {**(current.config_json or {}), **config}
+        targets = (
+            None
+            if current.network_targets_json is None
+            else integration.network_targets_from_json(current.network_targets_json)
+        )
+        try:
+            revision, is_new = integration.put_config_revision(
+                db,
+                installation,
+                registry=registry,
+                config=merged,
+                secret_refs=dict(current.secret_refs or {}),
+                network_targets=targets,
+                schema_version=current.schema_version,
+                actor=actor.label,
+            )
+        except (
+            integration.InvalidManifestError,
+            integration.LifecycleError,
+            integration.SecretValueError,
+        ) as exc:
+            raise _lifecycle_conflict(exc) from None
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, "concurrent configuration write; retry") from None
+        _audit(
+            db,
+            actor,
+            action="integrator.manage.config_set",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={
+                "reason": reason,
+                "keys": sorted(config),
+                "config_revision_id": str(revision.id),
+                "is_new": is_new,
+            },
+        )
+        db.commit()
+        return {
+            "installation_id": str(installation.id),
+            "config_revision_id": str(revision.id),
+            "revision": revision.revision,
+            "is_new": is_new,
+            # A changed configuration takes the installation out of service
+            # until an operator re-validates it; said, not hidden.
+            "installation_state": installation.state,
+        }
+
+
+def disable_own_binding(
+    engine: Engine,
+    principal: ProductPrincipal,
+    actor: ManageActor,
+    installation_id: str,
+    binding_id: str,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    identifier = require_manage_installation(principal, installation_id)
+    registry = integration.discover()
+    with Session(engine) as db:
+        installation = _load_installation(db, principal, identifier, lock=True)
+        binding = _load_binding(db, principal, installation, binding_id)
+        if binding.state != "enabled":
+            # No audit row for a no-op: a disable of an already-disabled binding
+            # (an operator's, say) would otherwise become the "latest own
+            # disable" that lets this caller re-enable it.
+            raise HTTPException(409, "binding is not enabled")
+        try:
+            integration.set_binding_enabled(
+                db,
+                installation,
+                binding,
+                registry=registry,
+                enabled=False,
+                actor=actor.label,
+            )
+        except (integration.LifecycleError, integration.ActivationRefused) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _audit(
+            db,
+            actor,
+            action="integrator.manage.binding_disabled",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={"reason": reason, "installation_id": str(installation.id)},
+        )
+        db.commit()
+        return {"id": str(binding.id), "state": binding.state}
+
+
+def _operator_has_activated(db: Session, binding_id: UUID) -> bool:
+    found = db.execute(
+        select(PlatformAuditEvent.id)
+        .where(
+            PlatformAuditEvent.action == _OPERATOR_ACTIVATION_ACTION,
+            PlatformAuditEvent.entity_type == "capability_binding",
+            PlatformAuditEvent.entity_id == str(binding_id),
+        )
+        .limit(1)
+    ).first()
+    return found is not None
+
+
+#: Events that change whether a binding may serve: its own enables/disables
+#: and the installation-level changes that disable or invalidate it.
+_BINDING_STATE_ACTIONS = (
+    "integrator.binding.enabled",
+    "integrator.binding.disabled",
+    "integrator.manage.binding_enabled",
+    "integrator.manage.binding_disabled",
+)
+_INSTALLATION_STATE_ACTIONS = (
+    "integrator.installation.configured",
+    "integrator.installation.enabled",
+    "integrator.installation.disabled",
+    "integrator.installation.quarantined",
+    "integrator.installation.quarantine_released",
+    "integrator.manage.config_set",
+)
+_OWN_DISABLE_ACTION = "integrator.manage.binding_disabled"
+
+
+def _latest_state_event(
+    db: Session, binding_id: UUID, installation_id: UUID
+) -> tuple[str, object] | None:
+    """The most recent state-changing audit event, as `(action, principal)`."""
+    row = db.execute(
+        select(PlatformAuditEvent.action, PlatformAuditEvent.details)
+        .where(
+            or_(
+                (PlatformAuditEvent.entity_type == "capability_binding")
+                & (PlatformAuditEvent.entity_id == str(binding_id))
+                & PlatformAuditEvent.action.in_(_BINDING_STATE_ACTIONS),
+                (PlatformAuditEvent.entity_type == "connector_installation")
+                & (PlatformAuditEvent.entity_id == str(installation_id))
+                & PlatformAuditEvent.action.in_(_INSTALLATION_STATE_ACTIONS),
+            )
+        )
+        .order_by(PlatformAuditEvent.created_at.desc(), PlatformAuditEvent.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    details = row[1] if isinstance(row[1], dict) else {}
+    return str(row[0]), details.get("principal")
+
+
+def enable_own_binding(
+    engine: Engine,
+    principal: ProductPrincipal,
+    actor: ManageActor,
+    installation_id: str,
+    binding_id: str,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    identifier = require_manage_installation(principal, installation_id)
+    registry = integration.discover()
+    with Session(engine) as db:
+        installation = _load_installation(db, principal, identifier, lock=True)
+        binding = _load_binding(db, principal, installation, binding_id)
+        if installation.state == "quarantined":
+            raise HTTPException(409, "installation is quarantined; operator-only")
+        if installation.state != "enabled":
+            raise HTTPException(
+                409, "installation is not enabled; an operator re-validates it"
+            )
+        if not _operator_has_activated(db, binding.id):
+            raise HTTPException(
+                409, "binding was never activated; first activation is operator-only"
+            )
+        latest = _latest_state_event(db, binding.id, installation.id)
+        if latest != (_OWN_DISABLE_ACTION, actor.application):
+            raise HTTPException(
+                409,
+                "binding was not last disabled by this caller; "
+                "an operator re-enables it",
+            )
+        try:
+            integration.set_binding_enabled(
+                db,
+                installation,
+                binding,
+                registry=registry,
+                enabled=True,
+                actor=actor.label,
+            )
+        except (
+            integration.ActivationRefused,
+            integration.InvalidManifestError,
+            integration.LifecycleError,
+        ) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _audit(
+            db,
+            actor,
+            action="integrator.manage.binding_enabled",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={"reason": reason, "installation_id": str(installation.id)},
+        )
+        db.commit()
+        return {"id": str(binding.id), "state": binding.state}

@@ -29,6 +29,9 @@ INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.installation.enable_refused",
     "integrator.installation.quarantine_released",
     "integrator.installation.quarantined",
+    "integrator.manage.binding_disabled",
+    "integrator.manage.binding_enabled",
+    "integrator.manage.config_set",
     "integrator.secrets.refreshed",
 )
 
