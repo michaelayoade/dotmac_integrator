@@ -30,8 +30,12 @@ acknowledgement (`requeue_ambiguous.py`), never a route and never a timer.
 
 The lease duration is the module's (`DEFAULT_POLICY.lease_seconds`); it is read,
 not set, here. `lease_exceeds_budget` is the boot check that it outlasts the
-connector's declared DATA budget, so a slow, healthy send cannot lose its claim
-to a second worker.
+connector's real wall-clock deadline plus a margin (`OUTBOUND_DATA_BUDGET_SECONDS`
+and `OUTBOUND_LEASE_MARGIN_SECONDS`), so a slow, healthy send cannot lose its
+claim to a second worker. The SMTP connector's `SEND_DEADLINE_SECONDS` is 240 and
+an uninterruptible TLS handshake makes the real worst case about 255 s; the
+connector publishes no manifest field for it, so the pump carries it as a
+setting.
 
 ## Payload redaction
 
@@ -112,8 +116,11 @@ class DispatchBody(BaseModel):
     payload: dict[str, object] = Field(default_factory=dict)
 
 
-def lease_exceeds_budget(lease_seconds: int, data_budget_seconds: int) -> bool:
-    return lease_seconds > data_budget_seconds
+def lease_exceeds_budget(
+    lease_seconds: int, data_budget_seconds: int, margin_seconds: int = 0
+) -> bool:
+    """True when the lease outlasts the connector's deadline plus the margin."""
+    return lease_seconds > data_budget_seconds + margin_seconds
 
 
 # ── Intake ──────────────────────────────────────────────────────────────────
@@ -311,13 +318,31 @@ def _capabilities() -> Any:
 
 def select_due(engine: Engine, limit: int) -> list[UUID]:
     """Queued ids, WITHOUT a lock: a hint only (hard rule 24). It never selects
-    `in_flight`, so an expired lease is never re-driven from here."""
+    `in_flight`, so an expired lease is never re-driven from here.
+
+    Only rows whose binding AND installation are `enabled` are selected. A
+    disabled binding, or a disabled or quarantined installation, is refused by
+    `prepare` and the refusal leaves the row untouched, so were it selected the
+    earliest-due refused rows would fill every batch and starve every other
+    binding (MED-1). Leaving them out costs nothing: the row keeps its
+    `next_attempt_at`, so after re-enable it is due immediately, in its original
+    order, and is delivered once. Intake is not gated, so the backlog still
+    accrues while disabled (B14)."""
     now = datetime.now(UTC)
+    binding = integration.CapabilityBinding
+    installation = integration.ConnectorInstallation
     with Session(engine) as db:
         return list(
             db.execute(
                 select(integration.DeliveryAttempt.id)
+                .join(
+                    binding,
+                    binding.id == integration.DeliveryAttempt.capability_binding_id,
+                )
+                .join(installation, installation.id == binding.installation_id)
                 .where(
+                    binding.state == "enabled",
+                    installation.state == "enabled",
                     integration.DeliveryAttempt.state.in_(_QUEUED),
                     integration.DeliveryAttempt.capability_binding_id.is_not(None),
                     integration.DeliveryAttempt.next_attempt_at <= now,

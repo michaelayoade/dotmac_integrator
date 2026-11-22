@@ -156,10 +156,31 @@ the message MAY have been sent; the product must not resend it.
 
 `OUTBOUND_PUMP_ENABLED` runs the pump (module prepare/invoke/settle). It refuses
 to boot unless the module's lease is longer than `OUTBOUND_DATA_BUDGET_SECONDS`
-(set it to at least the connector's declared send budget) and unless
+plus `OUTBOUND_LEASE_MARGIN_SECONDS` and unless
 `OUTBOUND_REPLAY_EVIDENCE_RETENTION_DAYS` (greater than
 `OUTBOUND_PAYLOAD_RETENTION_DAYS`, default 7) and `OUTBOUND_LEGAL_POLICY_OWNER`
 are set. A delivered payload is redacted after the retention period.
+
+`OUTBOUND_DATA_BUDGET_SECONDS` is the connector's real wall-clock deadline for one
+send, not its nominal data timeout. The SMTP connector's `SEND_DEADLINE_SECONDS`
+is 240 and a TLS handshake in progress cannot be interrupted, so the worst case
+is about 255 s; the default is 256 with a 30 s margin, which the module's 300 s
+lease clears. The connector publishes no manifest field for the deadline, so
+this is a setting: raise it, and check the lease, whenever the connector pin
+changes. A lease no longer than the budget plus margin refuses to boot.
+
+**What the kill switch does to queued dispatches.** Disabling a binding, or
+disabling or quarantining its installation, holds the queued rows: the pump does
+not select them (they are not refused row by row, so they cannot starve other
+bindings) and their schedule is untouched. Intake still accepts dispatches for a
+disabled binding (202, `pending`), subject to the per-binding hourly cap. After
+the binding or installation is enabled again (a quarantine is released first,
+which lands `disabled`, then enabled) the held rows are due at once and each is
+sent once. A backlog queued during a quarantine is therefore sent after release
+and enable, and no route cancels it: to drop it, leave the binding disabled and
+decide the rows individually before re-enabling. `ExecutionPolicy.dispatch_enabled`
+(the runtime kill switch) also leaves queued rows, leases and retry schedules
+untouched. Rows already past `prepare` when a disable commits still finish.
 
 An ambiguous delivery is terminal. A process killed mid-send leaves an expired
 lease, which is recorded as ambiguous (never retryable) at startup, on the timed
