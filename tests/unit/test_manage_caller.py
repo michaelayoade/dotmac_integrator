@@ -256,7 +256,7 @@ def _client(
         app.state.settings.product_query_callers, secret_lookup=lambda _ref: KEY
     )
     if world is not None:
-        integration.discover = lambda: world.registry
+        integration.discover = lambda: world.registry  # type: ignore[assignment,misc]
     return TestClient(app)
 
 
@@ -518,7 +518,7 @@ def test_test_send_calls_the_injected_sender_once(world: SimpleNamespace) -> Non
     app.state.product_query_authenticator = ProductAuthenticator(
         app.state.settings.product_query_callers, secret_lookup=lambda _r: KEY
     )
-    integration.discover = lambda: world.registry
+    integration.discover = lambda: world.registry  # type: ignore[assignment,misc]
     response = TestClient(app).post(
         f"{BASE}/bindings/{BINDING}/test-send",
         headers=HEADERS,
