@@ -543,6 +543,59 @@ def create_app(
             engine, installation_id, actor, body.reason
         )
 
+    if settings.operator_killswitch_routes_enabled:
+        # The kill switch. Operator-only, reason required, audited. Flag-gated
+        # so shipping this code adds no route until a deployment asks for it.
+
+        @app.post("/operations/bindings/{binding_id}/disable", tags=["operations"])
+        def disable_binding(
+            binding_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.disable_binding(
+                engine, binding_id, actor=actor, reason=body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/disable",
+            tags=["operations"],
+        )
+        def disable_installation(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.disable_installation(
+                engine, installation_id, actor, body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/quarantine",
+            tags=["operations"],
+        )
+        def quarantine_installation(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.quarantine_installation(
+                engine, installation_id, actor, body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/quarantine/release",
+            tags=["operations"],
+        )
+        def release_installation_quarantine(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.release_installation_quarantine(
+                engine, installation_id, actor, body.reason
+            )
+
     @app.post("/operations/leases/release-expired", tags=["operations"])
     def release_expired(
         body: OperationReason,

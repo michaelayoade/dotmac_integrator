@@ -513,6 +513,149 @@ def enable_binding(
         }
 
 
+# ── Kill switch ─────────────────────────────────────────────────────────────
+#
+# Wrappers over `dotmac_integration.lifecycle`'s disable and quarantine
+# operations. The module owns every transition; the only thing added here is the
+# refusal to let `disable` ESCAPE a quarantine. The module's `disable` is an
+# unconditional state write, so aimed at a quarantined installation it would
+# land in `disabled` and skip the separately audited `release_quarantine`.
+
+
+def _installation_summary(installation: Any) -> dict[str, Any]:
+    return {
+        "id": str(installation.id),
+        "connector_key": installation.connector_key,
+        "state": installation.state,
+        "state_reason": installation.state_reason,
+    }
+
+
+def disable_binding(
+    engine: Engine,
+    binding_id: str,
+    *,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Turn one binding off. Reversible by `enable_binding`, which re-gates."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        binding = _binding(db, binding_id)
+        installation = db.get(
+            integration.ConnectorInstallation, binding.installation_id
+        )
+        if installation is None:  # pragma: no cover - protected by the FK
+            raise HTTPException(409, "binding installation is missing")
+        try:
+            integration.set_binding_enabled(
+                db,
+                installation,
+                binding,
+                registry=registry,
+                enabled=False,
+                actor=actor.label,
+            )
+        except (integration.LifecycleError, integration.ActivationRefused) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.binding.disabled",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={
+                "reason": reason,
+                "installation_id": str(installation.id),
+                "capability_id": binding.capability_id,
+            },
+        )
+        db.commit()
+        return {
+            "id": str(binding.id),
+            "installation_id": str(installation.id),
+            "capability_id": binding.capability_id,
+            "state": binding.state,
+        }
+
+
+def disable_installation(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    with Session(engine) as db:
+        installation = _installation(db, installation_id)
+        if installation.state in {"quarantined", "retired"}:
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                f"installation is {installation.state}; use the quarantine "
+                "release route, disable cannot leave quarantine"
+                if installation.state == "quarantined"
+                else f"installation is {installation.state}",
+            )
+        try:
+            integration.disable(db, installation, reason=reason, actor=actor.label)
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.disabled",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
+
+
+def quarantine_installation(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    with Session(engine) as db:
+        installation = _installation(db, installation_id)
+        if installation.state == "retired":
+            raise HTTPException(409, "installation is retired")
+        try:
+            integration.quarantine(db, installation, reason=reason, actor=actor.label)
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.quarantined",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
+
+
+def release_installation_quarantine(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    """Lands in `disabled`, never `enabled` (module contract)."""
+    with Session(engine) as db:
+        installation = _installation(db, installation_id)
+        try:
+            integration.release_quarantine(
+                db, installation, reason=reason, actor=actor.label
+            )
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.quarantine_released",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
+
+
 # ── Secret material ─────────────────────────────────────────────────────────
 
 

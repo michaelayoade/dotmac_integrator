@@ -123,6 +123,23 @@ Set `revoked_at` on the `platform_sessions` row, or `is_active = false` on the
 operational point of a session table, and it is why revocation does not wait
 for a token to expire.
 
+### Kill switch
+
+With `OPERATOR_KILLSWITCH_ROUTES_ENABLED=true` (off by default; set as a typed
+deploy parameter, never a host file) the operations surface adds four POST
+routes. Each needs an operator token and a required `reason`, and writes an
+`integrator.*` audit row naming the operator:
+
+| Route | Effect |
+|---|---|
+| `/operations/bindings/{id}/disable` | binding to `disabled`; `enable` re-runs the activation gate |
+| `/operations/installations/{id}/disable` | installation to `disabled`; refused for a quarantined or retired one |
+| `/operations/installations/{id}/quarantine` | containment; destroys nothing |
+| `/operations/installations/{id}/quarantine/release` | lands in `disabled`, never `enabled`; re-enable re-runs the live connection check |
+
+A binding whose installation is quarantined cannot be enabled (the module's
+activation gate refuses it).
+
 ---
 
 ## Bringing up the product port
