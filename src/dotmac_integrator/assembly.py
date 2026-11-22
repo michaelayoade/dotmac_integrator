@@ -53,6 +53,8 @@ decides anything.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -71,6 +73,7 @@ from dotmac_integrator import (
     ingress,
     manage,
     operations,
+    outbound,
     product_contracts,
     product_port,
     provision_api,
@@ -89,6 +92,7 @@ from dotmac_integrator.operator_auth import (
 )
 from dotmac_integrator.product_auth import (
     ProductAuthenticator,
+    ProductDispatchPrincipal,
     ProductManagePrincipal,
     ProductProvisionPrincipal,
     ProductQueryPrincipal,
@@ -97,6 +101,8 @@ from dotmac_integrator.redaction import install_log_redaction
 from dotmac_integrator.settings import Settings, get_settings, validate_settings
 from dotmac_integrator.surface import require_a_correct_surface
 from dotmac_integrator.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 _PRODUCT_QUERY_STATUS_CODES: dict[query.ProductQueryStatus, int] = {
     "ok": 200,
@@ -209,6 +215,12 @@ def create_app(
                 delivery.install_product_port(
                     port_client, registry=registry, install_registry=False
                 )
+        # UNCONDITIONAL and before serving: a send killed mid-flight by the last
+        # process is ambiguous whatever the pump flag says now.
+        try:
+            await asyncio.to_thread(outbound.mark_stranded_ambiguous, engine)
+        except Exception:
+            logger.error("startup recovery of stranded outbound leases failed")
         await worker.start()
         try:
             yield
@@ -361,6 +373,25 @@ def create_app(
             # target, minting or rotating anything) is refused to this caller
             # by name: those are operator-only (PLAN §1d/§1e).
             raise HTTPException(403, "operator-only; not available to this caller")
+
+    if settings.product_dispatch_enabled:
+        waiters = asyncio.Semaphore(settings.outbound_max_waiters)
+
+        @app.post("/product/v1/dispatches", tags=["product-integration"])
+        async def product_dispatch(
+            body: outbound.DispatchBody,
+            principal: ProductDispatchPrincipal,
+        ) -> JSONResponse:
+            result = await outbound.submit_dispatch_async(
+                engine,
+                principal,
+                body,
+                wait_seconds=settings.outbound_wait_seconds,
+                waiters=waiters,
+                cap_per_hour=settings.outbound_binding_cap_per_hour,
+                max_payload_bytes=settings.outbound_max_payload_bytes,
+            )
+            return JSONResponse(result, status_code=200 if result["terminal"] else 202)
 
     if settings.product_provision_enabled:
         assert provision_dispatcher is not None
@@ -640,6 +671,66 @@ def create_app(
         return operations.enable_installation(
             engine, installation_id, actor, body.reason
         )
+
+    if settings.operator_killswitch_routes_enabled:
+        # The kill switch. Operator-only, reason required, audited. Flag-gated
+        # so shipping this code adds no route until a deployment asks for it.
+
+        @app.get("/operations/bindings/census", tags=["operations"])
+        def binding_census(
+            _actor: Operator,
+        ) -> dict[str, Any]:
+            """Names and counts only; see `operations.binding_census`."""
+            return operations.binding_census(engine)
+
+        @app.post("/operations/bindings/{binding_id}/disable", tags=["operations"])
+        def disable_binding(
+            binding_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.disable_binding(
+                engine, binding_id, actor=actor, reason=body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/disable",
+            tags=["operations"],
+        )
+        def disable_installation(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.disable_installation(
+                engine, installation_id, actor, body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/quarantine",
+            tags=["operations"],
+        )
+        def quarantine_installation(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.quarantine_installation(
+                engine, installation_id, actor, body.reason
+            )
+
+        @app.post(
+            "/operations/installations/{installation_id}/quarantine/release",
+            tags=["operations"],
+        )
+        def release_installation_quarantine(
+            installation_id: str,
+            body: OperationReason,
+            actor: Operator,
+        ) -> dict[str, Any]:
+            return operations.release_installation_quarantine(
+                engine, installation_id, actor, body.reason
+            )
 
     @app.post("/operations/leases/release-expired", tags=["operations"])
     def release_expired(

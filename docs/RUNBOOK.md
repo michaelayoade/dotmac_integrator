@@ -142,6 +142,69 @@ state-changing event is this caller's own `integrator.manage.binding_disabled`
 test-send route: Academy sends its `operator.test` mail through the dispatch
 intake. Config values are bounded scalars.
 
+### Outbound dispatch and the pump
+
+Both are off by default. `PRODUCT_DISPATCH_ENABLED` mounts
+`POST /product/v1/dispatches` for a caller holding `integration:dispatch`, which
+is bound to exactly ONE binding id. The body carries `dispatch_id` (the
+idempotency key: the same key and content returns the existing delivery and
+never queues a second), the binding id, `event_type` and `payload`. The answer is
+the current state after waiting at most 20 s: `pending`, `in_flight`,
+`delivered`, `failed` or `ambiguous` (HTTP 202 until terminal). `ambiguous` means
+the message MAY have been sent; the product must not resend it.
+
+`OUTBOUND_PUMP_ENABLED` runs the pump (module prepare/invoke/settle). It refuses
+to boot unless the module's lease is longer than `OUTBOUND_DATA_BUDGET_SECONDS`
+(set it to at least the connector's declared send budget) and unless
+`OUTBOUND_REPLAY_EVIDENCE_RETENTION_DAYS` (greater than
+`OUTBOUND_PAYLOAD_RETENTION_DAYS`, default 7) and `OUTBOUND_LEGAL_POLICY_OWNER`
+are set. A delivered payload is redacted after the retention period.
+
+An ambiguous delivery is terminal. A process killed mid-send leaves an expired
+lease, which is recorded as ambiguous (never retryable) at startup, on the timed
+sweep and before the operator's lease release, whatever the pump flag says.
+Each pass re-reads the row `FOR UPDATE SKIP LOCKED` and drives it only while it
+is still queued, so overlapping pumps cannot send twice. The 20 s wait is an
+`await`, not a thread (`OUTBOUND_MAX_WAITERS` caps waiters), so a flood of
+dispatches cannot block `/operations`. `OUTBOUND_BINDING_CAP_PER_HOUR` (default
+20; 0 disables) refuses new dispatch keys past the cap with 429; a retry of an
+accepted key is never counted. The replay route
+refuses it; a person requeues one deliberately:
+
+```bash
+python -m dotmac_integrator.requeue_ambiguous --delivery-id <uuid> \
+  --operator-email <email> --reason "<why>"            # dry run, changes nothing
+python -m dotmac_integrator.requeue_ambiguous ... --accept-possible-duplicate
+```
+
+### Kill switch
+
+With `OPERATOR_KILLSWITCH_ROUTES_ENABLED` (a typed bool, ON by default; set it
+false to opt out) the operations surface adds four POST
+routes. Each needs an operator token and a required `reason`, and writes an
+`integrator.*` audit row naming the operator:
+
+| Route | Effect |
+|---|---|
+| `/operations/bindings/{id}/disable` | binding to `disabled`; `enable` re-runs the activation gate |
+| `/operations/installations/{id}/disable` | installation to `disabled`; refused for a quarantined or retired one |
+| `/operations/installations/{id}/quarantine` | containment; destroys nothing |
+| `/operations/installations/{id}/quarantine/release` | lands in `disabled`, never `enabled`; re-enable re-runs the live connection check |
+
+`GET /operations/bindings/census` (same flag, operator-only) returns counts of
+installations and bindings by state and connector key: names and counts only,
+no ids, config or secret references.
+
+`POST /operations/installations/{id}/enable` also refuses a quarantined
+installation (409): the only exit is quarantine release, then enable. State
+decisions load the installation under a row lock (installation enable holds it
+during the live connection check, so a quarantine can wait up to the connector's
+timeout). Quarantine writes two audit
+rows, the module's `integration.*` and this assembly's `integrator.*`.
+
+A binding whose installation is quarantined cannot be enabled (the module's
+activation gate refuses it).
+
 ---
 
 ## Bringing up the product port

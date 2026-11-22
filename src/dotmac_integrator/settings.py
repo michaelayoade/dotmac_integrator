@@ -135,6 +135,10 @@ class ManageGrant(BaseModel):
         return self
 
 
+#: Outbound dispatch scope. A caller holding it is bound to exactly ONE binding.
+DISPATCH_SCOPE = "integration:dispatch"
+
+
 class ProductQueryCaller(BaseModel):
     """Non-secret caller identity, held-key reference and granted scopes.
 
@@ -174,6 +178,15 @@ class ProductQueryCaller(BaseModel):
         installations = [g.installation_id for g in self.manage_grants]
         if len(set(installations)) != len(installations):
             raise ValueError("manage_grants name an installation more than once")
+        return self
+
+    @model_validator(mode="after")
+    def _dispatch_is_one_binding(self) -> ProductQueryCaller:
+        if DISPATCH_SCOPE in self.scopes:
+            if len(set(self.binding_ids)) != 1:
+                raise ValueError(f"{DISPATCH_SCOPE} is bound to exactly one binding id")
+            if set(self.scopes) != {DISPATCH_SCOPE}:
+                raise ValueError(f"{DISPATCH_SCOPE} must be the caller's only scope")
         return self
 
 
@@ -277,6 +290,81 @@ class Settings(BaseSettings):
         description=(
             "Mount the integration:manage routes under /product/v1/manage. "
             "Needs a caller holding exactly that scope. Off by default."
+        ),
+    )
+    # ── Outbound dispatch (B5). Every switch defaults OFF. ───────────────────
+    product_dispatch_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount POST /product/v1/dispatches for callers holding "
+            "integration:dispatch, each bound to exactly one binding id."
+        ),
+    )
+    outbound_pump_enabled: bool = Field(
+        default=False,
+        description=(
+            "Run the outbound delivery pump (prepare, invoke, settle) and treat "
+            "an expired outbound lease as AMBIGUOUS rather than retryable."
+        ),
+    )
+    outbound_wait_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=20,
+        description="How long the intake waits for a terminal state. At most 20.",
+    )
+    outbound_data_budget_seconds: int = Field(
+        default=120,
+        ge=1,
+        description=(
+            "The connector's declared budget for the send itself. The module's "
+            "lease must exceed it or the pump refuses to start."
+        ),
+    )
+    outbound_max_waiters: int = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Dispatches that may wait for a terminal state at once. Past it a "
+            "caller gets the current state immediately and re-posts its key."
+        ),
+    )
+    outbound_binding_cap_per_hour: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "New dispatches accepted per binding per hour; 0 disables the cap. "
+            "A re-post of an accepted dispatch_id is never counted."
+        ),
+    )
+    outbound_max_payload_bytes: int = Field(
+        default=262_144, ge=0, description="Largest accepted payload; 0 disables."
+    )
+    outbound_payload_retention_days: int = Field(
+        default=7,
+        ge=1,
+        description="Days an outbound payload is kept before redaction.",
+    )
+    outbound_replay_evidence_retention_days: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Days the delivery identity outlives its payload. Unset (0) refuses "
+            "the pump: it is a separate legal decision with no default."
+        ),
+    )
+    outbound_legal_policy_owner: str = Field(
+        default="",
+        description="Accountable owner for legal holds. Unset refuses the pump.",
+    )
+    operator_killswitch_routes_enabled: bool = Field(
+        default=True,
+        description=(
+            "Mount the operator kill-switch routes (binding and installation "
+            "disable, quarantine, release-quarantine) and the census under "
+            "/operations. Every one carries require_operator and a required "
+            "reason. ON by default (explicit exception approved by Michael: "
+            "operator-only routes that only contain); set false to opt out."
         ),
     )
     product_query_enabled: bool = False
@@ -584,6 +672,33 @@ def _product_port_problems(settings: Settings) -> list[str]:
     return problems
 
 
+def _outbound_problems(settings: Settings) -> list[str]:
+    """What the outbound pump needs before it may run. Fail closed."""
+    if not settings.outbound_pump_enabled:
+        return []
+    from dotmac_integration import DEFAULT_POLICY
+
+    problems: list[str] = []
+    if not settings.worker_enabled:
+        problems.append("OUTBOUND_PUMP_ENABLED requires WORKER_ENABLED=true")
+    if DEFAULT_POLICY.lease_seconds <= settings.outbound_data_budget_seconds:
+        problems.append(
+            "the module's lease must be longer than OUTBOUND_DATA_BUDGET_SECONDS; "
+            "a send that outlasts its lease can be taken over and sent twice"
+        )
+    if (
+        settings.outbound_replay_evidence_retention_days
+        <= settings.outbound_payload_retention_days
+    ):
+        problems.append(
+            "OUTBOUND_REPLAY_EVIDENCE_RETENTION_DAYS must be set and exceed "
+            "OUTBOUND_PAYLOAD_RETENTION_DAYS"
+        )
+    if not settings.outbound_legal_policy_owner.strip():
+        problems.append("OUTBOUND_LEGAL_POLICY_OWNER must name an accountable owner")
+    return problems
+
+
 def validate_settings(settings: Settings) -> list[str]:
     """Configuration checks. Everything unconditional first, prod-fatal after.
 
@@ -608,6 +723,13 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append(
             f"PRODUCT_MANAGE_ENABLED requires a caller with {MANAGE_SCOPE} scope"
         )
+    if settings.product_dispatch_enabled and not any(
+        DISPATCH_SCOPE in caller.scopes for caller in callers
+    ):
+        problems.append(
+            f"PRODUCT_DISPATCH_ENABLED requires a caller with {DISPATCH_SCOPE} scope"
+        )
+    problems.extend(_outbound_problems(settings))
     if settings.product_provision_enabled and not any(
         "integration:provision" in caller.scopes for caller in callers
     ):
@@ -616,10 +738,13 @@ def validate_settings(settings: Settings) -> list[str]:
             "integration:provision scope"
         )
     if (
-        settings.product_query_enabled or settings.product_provision_enabled
+        settings.product_query_enabled
+        or settings.product_provision_enabled
+        or settings.product_dispatch_enabled
     ) and not settings.product_contract_registry_enabled:
         problems.append(
-            "PRODUCT_QUERY_ENABLED requires PRODUCT_CONTRACT_REGISTRY_ENABLED"
+            "PRODUCT_QUERY_ENABLED, PRODUCT_PROVISION_ENABLED and "
+            "PRODUCT_DISPATCH_ENABLED require PRODUCT_CONTRACT_REGISTRY_ENABLED"
         )
     if len({c.application for c in callers}) != len(callers):
         problems.append("product query caller applications must be unique")
@@ -628,14 +753,20 @@ def validate_settings(settings: Settings) -> list[str]:
     for caller in callers:
         if not caller.api_key_ref.startswith(("env://", "file://")):
             problems.append("product query api_key_ref must be env:// or file://")
-        known_scopes = {"integration:query", "integration:provision", MANAGE_SCOPE}
+        known_scopes = {
+            "integration:query",
+            "integration:provision",
+            MANAGE_SCOPE,
+            DISPATCH_SCOPE,
+        }
         if (
             not set(caller.scopes) & known_scopes
             or not set(caller.scopes) <= known_scopes
         ):
             problems.append(
                 "product caller requires exact integration:query, "
-                "integration:provision and/or integration:manage scope"
+                "integration:provision, integration:manage and/or "
+                "integration:dispatch scope"
             )
         if len(set(caller.binding_ids)) != len(caller.binding_ids):
             problems.append("product query caller binding_ids must be unique")
