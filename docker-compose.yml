@@ -13,14 +13,15 @@
 # Every value is an overridable knob with a documented default, per AGENTS.md
 # § "Everything by config". Nothing here is a business decision.
 #
-# STATUS (AGENTS.md rule 36, D11). This file still reads `${NAME}` from the
-# shell environment, and it is still the LIVE path of the shared deployment: it
-# is not retired until deploy/rendered/ is proven equivalent on a named target
-# (deploy/README.md). New or companion deployments do NOT use this file; they
-# are described by a ProductDeploymentSpec (deploy/product.toml,
-# deploy/traccar-host/product.toml) whose secrets are `[runtime_materials]`
-# references and whose other values are typed params entered in the deployment
-# UI. No host env file and no `--env-file` is part of any deployment path.
+# STATUS (D11). This file reads `${NAME}` interpolation from the shell
+# environment (and compose also reads a project `.env` if one is present). It is
+# the shared deployment's live path and is not retired until deploy/rendered/ is
+# proven equivalent on a named target (deploy/README.md); where the shared host
+# gets its values is not verified here. AGENTS.md rule 36 sets the TARGET: a
+# deployment must not depend on a host env file or `--env-file`. The
+# ProductDeploymentSpec descriptors (deploy/product.toml,
+# deploy/traccar-host/product.toml) declare secret material NAMES under
+# `[runtime_materials]`; they are not by themselves a working resolution path.
 
 name: ${COMPOSE_PROJECT_NAME:-integrator}
 
