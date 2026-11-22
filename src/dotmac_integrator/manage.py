@@ -384,6 +384,11 @@ def disable_own_binding(
     with Session(engine) as db:
         installation = _load_installation(db, principal, identifier, lock=True)
         binding = _load_binding(db, principal, installation, binding_id)
+        if binding.state != "enabled":
+            # No audit row for a no-op: a disable of an already-disabled binding
+            # (an operator's, say) would otherwise become the "latest own
+            # disable" that lets this caller re-enable it.
+            raise HTTPException(409, "binding is not enabled")
         try:
             integration.set_binding_enabled(
                 db,

@@ -561,3 +561,35 @@ def test_the_test_send_route_is_gone(world: SimpleNamespace) -> None:
     )
     assert response.status_code == 403  # the catch-all, never a send
     assert world.audits == []
+
+
+def test_after_an_operator_disable_the_caller_can_neither_disable_nor_enable(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Route level, with the latest-event rule driven by the REAL audit trail
+    (here the writes this code makes) rather than a stubbed answer: disable then
+    enable must not be a way to undo an operator."""
+    state_actions = {
+        "integrator.binding.enabled",
+        "integrator.binding.disabled",
+        "integrator.manage.binding_enabled",
+        "integrator.manage.binding_disabled",
+    }
+
+    def latest(_db: Any, _binding: Any, _installation: Any) -> Any:
+        for event in reversed(world.audits):
+            if event["action"] in state_actions:
+                return event["action"], event["details"].get("principal")
+        return None
+
+    monkeypatch.setattr(manage, "_latest_state_event", latest)
+    # An operator disables the binding (route in #34; its effect and audit row).
+    world.binding.state = "disabled"
+    world.audits.append({"action": "integrator.binding.disabled", "details": {}})
+    client = _client(world, GRANT)
+    path = f"{BASE}/bindings/{BINDING}"
+    body = {"reason": "r"}
+    assert client.post(f"{path}/disable", headers=HEADERS, json=body).status_code == 409
+    assert len(world.audits) == 1, "a no-op disable wrote an audit row"
+    assert client.post(f"{path}/enable", headers=HEADERS, json=body).status_code == 409
+    assert world.binding.state == "disabled"
