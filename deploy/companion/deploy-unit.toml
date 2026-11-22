@@ -23,6 +23,8 @@
 schema = "dotmac.deploy_unit/1"
 product = "dotmac-integrator-companion"
 spec = "deploy/companion/product.toml"
+# The <product> segment of the approved OpenBao layout <env>/<product>.
+secrets_namespace = "erp-integrator"
 
 # Section 2.7 (D-1): every private image is transferred, never pulled. The
 # image lives in a private registry; no host holds a pull credential. Written
