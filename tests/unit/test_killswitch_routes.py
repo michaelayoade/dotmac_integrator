@@ -141,8 +141,12 @@ def _client(
     return TestClient(app)
 
 
-def test_the_routes_are_not_mounted_while_the_flag_is_off() -> None:
-    app = _app()
+def test_the_flag_defaults_on() -> None:
+    assert build_settings().operator_killswitch_routes_enabled is True
+
+
+def test_the_routes_are_not_mounted_when_the_flag_is_set_false() -> None:
+    app = _app(operator_killswitch_routes_enabled=False)
     mounted = {r.path for r in app.routes if isinstance(r, APIRoute)}
     for _method, path in ROUTES:
         template = path.replace(str(BINDING_ID), "{binding_id}").replace(

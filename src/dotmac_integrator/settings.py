@@ -135,13 +135,13 @@ class Settings(BaseSettings):
         description="`file://` references are confined to this directory.",
     )
     operator_killswitch_routes_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Mount the operator kill-switch routes (binding and installation "
-            "disable, quarantine, release-quarantine) under /operations. Every "
-            "one still carries require_operator and a required reason. Off by "
-            "default so a deploy of this code adds no route until an operator "
-            "turns it on."
+            "disable, quarantine, release-quarantine) and the census under "
+            "/operations. Every one carries require_operator and a required "
+            "reason. ON by default (explicit exception approved by Michael: "
+            "operator-only routes that only contain); set false to opt out."
         ),
     )
     product_query_enabled: bool = False

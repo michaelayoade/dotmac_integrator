@@ -125,8 +125,8 @@ for a token to expire.
 
 ### Kill switch
 
-With `OPERATOR_KILLSWITCH_ROUTES_ENABLED=true` (off by default; set as a typed
-deploy parameter, never a host file) the operations surface adds four POST
+With `OPERATOR_KILLSWITCH_ROUTES_ENABLED` (a typed bool, ON by default; set it
+false to opt out) the operations surface adds four POST
 routes. Each needs an operator token and a required `reason`, and writes an
 `integrator.*` audit row naming the operator:
 
