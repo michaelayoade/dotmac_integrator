@@ -218,7 +218,9 @@ jobs:
 
       # Release record (deploy design WP4): what was published, the version and
       # the exact companion descriptor bytes with their sha256. Exactly one
-      # image per version. A build artifact only: nothing new is published and
+      # image per version. deploy/companion/product.toml is pending (I3), so the
+      # record says so with --spec-pending; the script refuses once that file
+      # exists. A build artifact only: nothing new is published and
       # no new secret or permission is used.
       - name: Produce release record
         run: |
@@ -228,6 +230,7 @@ jobs:
             --revision "${GITHUB_SHA}" \
             --version "${{ inputs.version }}" \
             --descriptor deploy/companion/deploy-unit.toml \
+            --spec-pending \
             --out release-record
 
       - name: Upload the release record
