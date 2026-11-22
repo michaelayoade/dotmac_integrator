@@ -75,6 +75,7 @@ from fastapi.routing import APIRoute
 
 from dotmac_integrator.operator_auth import OperationReason, require_operator
 from dotmac_integrator.product_auth import (
+    require_product_dispatch,
     require_product_provision,
     require_product_query,
 )
@@ -202,7 +203,9 @@ def audit_routes(app: FastAPI, *, metrics_path: str | None = None) -> list[str]:
         guarded = require_operator in _dependency_calls(route)
         calls = _dependency_calls(route)
         product_guarded = (
-            require_product_query in calls or require_product_provision in calls
+            require_product_query in calls
+            or require_product_provision in calls
+            or require_product_dispatch in calls
         )
 
         if route_class is RouteClass.OPERATOR:

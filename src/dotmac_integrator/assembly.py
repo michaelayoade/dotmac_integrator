@@ -70,6 +70,7 @@ from dotmac_integrator import (
     health,
     ingress,
     operations,
+    outbound,
     product_contracts,
     product_port,
     provision_api,
@@ -88,6 +89,7 @@ from dotmac_integrator.operator_auth import (
 )
 from dotmac_integrator.product_auth import (
     ProductAuthenticator,
+    ProductDispatchPrincipal,
     ProductProvisionPrincipal,
     ProductQueryPrincipal,
 )
@@ -263,6 +265,21 @@ def create_app(
                 result.model_dump(mode="json"),
                 status_code=_PRODUCT_QUERY_STATUS_CODES[result.status],
             )
+
+    if settings.product_dispatch_enabled:
+
+        @app.post("/product/v1/dispatches", tags=["product-integration"])
+        def product_dispatch(
+            body: outbound.DispatchBody,
+            principal: ProductDispatchPrincipal,
+        ) -> JSONResponse:
+            result = outbound.submit_dispatch(
+                engine,
+                principal,
+                body,
+                wait_seconds=settings.outbound_wait_seconds,
+            )
+            return JSONResponse(result, status_code=200 if result["terminal"] else 202)
 
     if settings.product_provision_enabled:
         assert provision_dispatcher is not None
@@ -548,7 +565,12 @@ def create_app(
         body: OperationReason,
         actor: Operator,
     ) -> dict[str, Any]:
-        return operations.release_expired_leases(engine, actor, body.reason)
+        return operations.release_expired_leases(
+            engine,
+            actor,
+            body.reason,
+            outbound_ambiguity=settings.outbound_pump_enabled,
+        )
 
     @app.post("/operations/deliveries/{delivery_id}/replay", tags=["operations"])
     def replay_delivery(

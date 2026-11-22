@@ -26,11 +26,13 @@ process that re-read a store every N seconds would put that store back on the
 path of everything it authenticates. `POST /operations/secrets/refresh` is the
 whole rotation mechanism.
 
-The outbound dispatch pump is deliberately NOT here. It cannot be written
-honestly until a real connector exists to dispatch to, and a pump written
-against no connector would be shaped by guesses. Polling is different: a16
-publishes its complete provider-neutral execution seam, and installed connector
-metadata supplies the implementation without a provider branch here.
+The outbound dispatch pump is here, behind `OUTBOUND_PUMP_ENABLED` (default
+off), and is driven by the module's prepare/invoke/settle (`outbound.py`). It
+was held back until a connector shape existed to dispatch to; it is built
+against the SPI's DELIVERY mode and a fake connector in its tests, and the
+first real one is a separate release. Polling is different: a16 publishes its
+complete provider-neutral execution seam, and installed connector metadata
+supplies the implementation without a provider branch here.
 
 ## Which receipt pump runs is decided by the port, not by a second flag
 
@@ -51,7 +53,14 @@ import logging
 
 from sqlalchemy.engine import Engine
 
-from dotmac_integrator import delivery, operations, polling, provisioning, telemetry
+from dotmac_integrator import (
+    delivery,
+    operations,
+    outbound,
+    polling,
+    provisioning,
+    telemetry,
+)
 from dotmac_integrator.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -72,6 +81,7 @@ class Worker:
         self._delivery_task: asyncio.Task[None] | None = None
         self._polling_task: asyncio.Task[None] | None = None
         self._provision_task: asyncio.Task[None] | None = None
+        self._outbound_task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         #: Unix time of the last COMPLETED sweep. `None` until one finishes —
         #: seeding it at construction would make a worker that has never run
@@ -121,6 +131,11 @@ class Worker:
             self._settings.worker_poll_seconds,
             self._settings.worker_batch_size,
         )
+        if self._settings.outbound_pump_enabled:
+            self._outbound_task = asyncio.create_task(
+                self._outbound_forever(), name="outbound-delivery"
+            )
+            logger.info("outbound delivery pump started")
         if not delivery.product_port_installed():
             # Loud, and NOT a fallback. A deployment receiving provider events
             # with nowhere to deliver them is accumulating a backlog behind a
@@ -148,7 +163,13 @@ class Worker:
 
     async def stop(self) -> None:
         self._stopping.set()
-        for name in ("_delivery_task", "_provision_task", "_polling_task", "_task"):
+        for name in (
+            "_outbound_task",
+            "_delivery_task",
+            "_provision_task",
+            "_polling_task",
+            "_task",
+        ):
             task = getattr(self, name)
             if task is None:
                 continue
@@ -190,6 +211,26 @@ class Worker:
                 logger.exception("receipt delivery pass failed; continuing")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    async def _outbound_forever(self) -> None:
+        interval = self._settings.worker_poll_seconds
+        while not self._stopping.is_set():
+            try:
+                await asyncio.to_thread(self._outbound_once)
+            except Exception:
+                logger.error("outbound delivery pass failed before completion")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+
+    def _outbound_once(self) -> None:
+        counted = outbound.deliver_due_outbound(
+            self._engine, self._settings.worker_batch_size
+        )
+        if counted["selected"]:
+            logger.info("outbound delivery pass: %s", sorted(counted.items()))
+        redacted = outbound.redact_expired_payloads(self._engine, self._settings)
+        if redacted:
+            logger.info("redacted %s outbound payload(s)", redacted)
 
     async def _poll_forever(self) -> None:
         interval = self._settings.worker_poll_seconds
@@ -262,7 +303,9 @@ class Worker:
     def _sweep_once(self) -> None:
         # The TIMED variant, which records no actor: a schedule is not a
         # person, and an audit row naming one would be a lie about who decided.
-        released = operations.sweep_expired_leases(self._engine)
+        released = operations.sweep_expired_leases(
+            self._engine, outbound_ambiguity=self._settings.outbound_pump_enabled
+        )
         # Stamped AFTER the sweep returns, never before. A timestamp written on
         # entry would keep advancing while every sweep failed, and the stall
         # alert would report a healthy worker doing nothing.

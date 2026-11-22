@@ -78,7 +78,17 @@ def require_product_provision(
     return _require(request, x_api_key, scope="integration:provision")
 
 
+def require_product_dispatch(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+) -> ProductPrincipal:
+    return _require(request, x_api_key, scope="integration:dispatch")
+
+
 ProductQueryPrincipal = Annotated[ProductPrincipal, Depends(require_product_query)]
 ProductProvisionPrincipal = Annotated[
     ProductPrincipal, Depends(require_product_provision)
+]
+ProductDispatchPrincipal = Annotated[
+    ProductPrincipal, Depends(require_product_dispatch)
 ]

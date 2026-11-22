@@ -123,6 +123,34 @@ Set `revoked_at` on the `platform_sessions` row, or `is_active = false` on the
 operational point of a session table, and it is why revocation does not wait
 for a token to expire.
 
+### Outbound dispatch and the pump
+
+Both are off by default. `PRODUCT_DISPATCH_ENABLED` mounts
+`POST /product/v1/dispatches` for a caller holding `integration:dispatch`, which
+is bound to exactly ONE binding id. The body carries `dispatch_id` (the
+idempotency key: the same key and content returns the existing delivery and
+never queues a second), the binding id, `event_type` and `payload`. The answer is
+the current state after waiting at most 20 s: `pending`, `in_flight`,
+`delivered`, `failed` or `ambiguous` (HTTP 202 until terminal). `ambiguous` means
+the message MAY have been sent; the product must not resend it.
+
+`OUTBOUND_PUMP_ENABLED` runs the pump (module prepare/invoke/settle). It refuses
+to boot unless the module's lease is longer than `OUTBOUND_DATA_BUDGET_SECONDS`
+(set it to at least the connector's declared send budget) and unless
+`OUTBOUND_REPLAY_EVIDENCE_RETENTION_DAYS` (greater than
+`OUTBOUND_PAYLOAD_RETENTION_DAYS`, default 7) and `OUTBOUND_LEGAL_POLICY_OWNER`
+are set. A delivered payload is redacted after the retention period.
+
+An ambiguous delivery is terminal. A process killed mid-send leaves an expired
+lease, which is recorded as ambiguous (never retryable). The replay route
+refuses it; a person requeues one deliberately:
+
+```bash
+python -m dotmac_integrator.requeue_ambiguous --delivery-id <uuid> \
+  --operator-email <email> --reason "<why>"            # dry run, changes nothing
+python -m dotmac_integrator.requeue_ambiguous ... --accept-possible-duplicate
+```
+
 ---
 
 ## Bringing up the product port

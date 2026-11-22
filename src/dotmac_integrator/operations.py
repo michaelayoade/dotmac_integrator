@@ -49,7 +49,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dotmac_integrator import runtime_policy, secret_loading, telemetry
+from dotmac_integrator import outbound, runtime_policy, secret_loading, telemetry
 from dotmac_integrator.manifest import INTEGRATOR_AUDIT_ACTIONS
 from dotmac_integrator.operator_auth import OperatorIdentity
 from dotmac_integrator.secret_resolver import (
@@ -726,7 +726,11 @@ def enable_installation(
 
 
 def release_expired_leases(
-    engine: Engine, actor: OperatorIdentity, reason: str
+    engine: Engine,
+    actor: OperatorIdentity,
+    reason: str,
+    *,
+    outbound_ambiguity: bool = False,
 ) -> dict[str, Any]:
     """Sweep leases whose holder died, at an operator's request.
 
@@ -738,13 +742,19 @@ def release_expired_leases(
     `leases.released` event records the count and the ids but has no `reason`
     field — a gap raised with the module rather than papered over here.
     """
+    ambiguous = outbound.mark_stranded_ambiguous(engine) if outbound_ambiguity else 0
     with Session(engine) as db:
         released = integration.release_expired_leases(db, actor_admin_id=actor.admin_id)
         db.commit()
-    return {"released": released, "reason": reason, "actor": actor.label}
+    return {
+        "released": released,
+        "ambiguous": ambiguous,
+        "reason": reason,
+        "actor": actor.label,
+    }
 
 
-def sweep_expired_leases(engine: Engine) -> int:
+def sweep_expired_leases(engine: Engine, *, outbound_ambiguity: bool = False) -> int:
     """The TIMED sweep. No actor, because a schedule is not a person.
 
     Separate from `release_expired_leases` rather than an optional argument:
@@ -752,6 +762,10 @@ def sweep_expired_leases(engine: Engine) -> int:
     its timer" and "someone reclaimed it" is exactly what a reader of the trail
     needs, and a default parameter hides which one happened.
     """
+    if outbound_ambiguity:
+        # BEFORE the module's blanket release, which would make the same
+        # stranded outbound row retryable and send it twice.
+        outbound.mark_stranded_ambiguous(engine)
     with Session(engine) as db:
         released = integration.release_expired_leases(db)
         db.commit()
@@ -774,6 +788,16 @@ def replay_delivery(
         if delivery is None:
             telemetry.counters.record_refusal("not_found")
             raise HTTPException(404, f"no delivery {delivery_id}")
+        if delivery.state == "reconciliation_required":
+            # The module would accept this. An ambiguous delivery may already
+            # have landed, so requeueing it needs the explicit acknowledgement
+            # of `python -m dotmac_integrator.requeue_ambiguous`, not a route.
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                "delivery outcome is ambiguous; requeue only with "
+                "`requeue_ambiguous --accept-possible-duplicate`",
+            )
         try:
             replayed = integration.replay_delivery(
                 db, delivery, actor_admin_id=actor.admin_id, reason=reason
