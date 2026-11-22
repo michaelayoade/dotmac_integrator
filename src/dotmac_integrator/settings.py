@@ -337,7 +337,10 @@ class Settings(BaseSettings):
     outbound_lease_margin_seconds: int = Field(
         default=30,
         ge=0,
-        description=("Headroom the lease must keep over OUTBOUND_DATA_BUDGET_SECONDS."),
+        description=(
+            "Headroom the lease must keep over OUTBOUND_DATA_BUDGET_SECONDS: "
+            "the database connection wait when the result is recorded."
+        ),
     )
     outbound_max_waiters: int = Field(
         default=32,

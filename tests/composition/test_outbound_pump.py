@@ -725,3 +725,87 @@ def test_the_pump_holds_rows_of_a_refused_installation_and_sends_once_after_enab
     _pump(world)
     assert sorted(world.plugin.calls) == sorted([f"free-{action}", key, f"{key}-late"])
     assert _state(world.engine, key) == "delivered"
+
+
+class _PluginB(_Plugin):
+    """A second connector, which the pump's registry will NOT carry."""
+
+    manifest = ConnectorManifest(
+        connector_key="fake_delivery_b",
+        version="0.0.1",
+        spi_range=SpiRange.parse(">=1.3,<2.0"),
+        capabilities=(
+            CapabilityDeclaration(
+                capability_id=CAPABILITY, modes=frozenset({ConnectorMode.DELIVERY})
+            ),
+        ),
+        secret_bindings=(),
+        egress=EgressDeclaration(hosts=()),
+    )
+
+
+def _next_attempts(engine: Engine, like: str) -> dict[str, datetime]:
+    with Session(engine) as db:
+        rows = db.execute(
+            text(
+                "SELECT idempotency_key, next_attempt_at "
+                "FROM mod_intg.delivery_attempts WHERE idempotency_key LIKE :p"
+            ),
+            {"p": like},
+        ).all()
+    return {str(k): v for k, v in rows}
+
+
+def test_an_unusable_connector_does_not_starve_another_installation(
+    world: Any,
+) -> None:
+    """MED-A: installation A's connector is not in the pump's registry, so
+    `prepare` refuses every A row with DispatchUnavailable, and no state filter
+    can see that. 25 such rows are due before B's one row."""
+    batch = 20
+    full = integration.ConnectorRegistry(plugins=(world.plugin, _PluginB()))  # type: ignore[arg-type]
+    with Session(world.engine) as db:
+        installation = integration.create_draft(
+            db, registry=full, connector_key="fake_delivery_b", name="unusable-a"
+        )
+        integration.put_config_revision(
+            db, installation, registry=full, config={}, secret_refs={}
+        )
+        binding = integration.add_binding(
+            db, installation, registry=full, capability_id=CAPABILITY
+        )
+        integration.enable(db, installation, registry=full)
+        integration.set_binding_enabled(
+            db, installation, binding, registry=full, enabled=True
+        )
+        db.commit()
+        a_binding = binding.id
+    a_principal = ProductPrincipal(
+        "academy-a", frozenset({"integration:dispatch"}), frozenset({a_binding})
+    )
+    for n in range(batch + 5):
+        outbound.submit_dispatch(
+            world.engine,
+            a_principal,
+            _body(a_binding, f"unusable-a-{n}"),
+            wait_seconds=0,
+            capabilities=CAPABILITIES,
+        )
+    _submit(world, "usable-b-0")  # due after every A row
+    before = _next_attempts(world.engine, "unusable-a-%")
+    assert len(before) == batch + 5
+
+    counts = outbound.deliver_due_outbound(
+        world.engine,
+        batch,
+        registry=world.registry,  # carries fake_delivery only
+        capabilities=CAPABILITIES,
+        resolver=dict,
+    )
+    assert counts["settled"] == 1
+    assert counts["refused"] == 1  # one probe, then A is skipped for the pass
+    assert _state(world.engine, "usable-b-0") == "delivered"
+    assert world.plugin.calls == ["usable-b-0"]
+    for n in range(batch + 5):
+        assert _state(world.engine, f"unusable-a-{n}") == "pending"
+    assert _next_attempts(world.engine, "unusable-a-%") == before

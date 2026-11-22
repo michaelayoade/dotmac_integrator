@@ -317,6 +317,17 @@ def _capabilities() -> Any:
 
 
 def select_due(engine: Engine, limit: int) -> list[UUID]:
+    """Queued ids of enabled bindings and installations; see `_select_due_rows`."""
+    return [row[0] for row in _select_due_rows(engine, limit)]
+
+
+def _select_due_rows(
+    engine: Engine,
+    limit: int,
+    *,
+    exclude_ids: frozenset[UUID] = frozenset(),
+    exclude_installations: frozenset[UUID] = frozenset(),
+) -> list[tuple[UUID, UUID]]:
     """Queued ids, WITHOUT a lock: a hint only (hard rule 24). It never selects
     `in_flight`, so an expired lease is never re-driven from here.
 
@@ -327,14 +338,18 @@ def select_due(engine: Engine, limit: int) -> list[UUID]:
     binding (MED-1). Leaving them out costs nothing: the row keeps its
     `next_attempt_at`, so after re-enable it is due immediately, in its original
     order, and is delivered once. Intake is not gated, so the backlog still
-    accrues while disabled (B14)."""
+    accrues while disabled (B14).
+
+    Returns `(delivery_id, installation_id)`. The exclusions let a pass refill
+    its batch after an installation-level refusal that SQL cannot predict (see
+    `deliver_due_outbound`)."""
     now = datetime.now(UTC)
     binding = integration.CapabilityBinding
     installation = integration.ConnectorInstallation
     with Session(engine) as db:
         return list(
             db.execute(
-                select(integration.DeliveryAttempt.id)
+                select(integration.DeliveryAttempt.id, installation.id)
                 .join(
                     binding,
                     binding.id == integration.DeliveryAttempt.capability_binding_id,
@@ -343,6 +358,8 @@ def select_due(engine: Engine, limit: int) -> list[UUID]:
                 .where(
                     binding.state == "enabled",
                     installation.state == "enabled",
+                    installation.id.not_in(exclude_installations),
+                    integration.DeliveryAttempt.id.not_in(exclude_ids),
                     integration.DeliveryAttempt.state.in_(_QUEUED),
                     integration.DeliveryAttempt.capability_binding_id.is_not(None),
                     integration.DeliveryAttempt.next_attempt_at <= now,
@@ -350,7 +367,7 @@ def select_due(engine: Engine, limit: int) -> list[UUID]:
                 .order_by(integration.DeliveryAttempt.next_attempt_at)
                 .limit(limit)
             )
-            .scalars()
+            .tuples()
             .all()
         )
 
@@ -428,26 +445,57 @@ def deliver_due_outbound(
     resolver: Callable[[Mapping[str, str]], Mapping[str, str]] = resolve_secrets,
     data_budget_seconds: int = 0,
 ) -> dict[str, int]:
-    """One bounded pass over the module's due set. Identifier-free counts."""
+    """One bounded pass over the module's due set. Identifier-free counts.
+
+    Installation-level refusals that SQL cannot predict (the connector plugin is
+    missing or incompatible, or its pinned manifest is no longer accepted, which
+    `prepare` raises as `DispatchUnavailable`) persist until an operator acts and
+    leave the row untouched. Left alone, the earliest-due rows of such an
+    installation would fill every batch. So once a row is `refused` or `failed`,
+    that installation's remaining rows are skipped for the rest of the pass and
+    the batch is refilled from the others. Chosen over a per-binding row cap
+    because it spends no attempt on a known-bad installation, covers every
+    refusal class (and a deterministic failure), and needs no tuning value. Only
+    the pass is affected: the skipped rows are not written, keep their
+    `next_attempt_at`, and are tried again on the next pass."""
     reg = registry if registry is not None else integration.discover()
-    ids = select_due(engine, limit)
-    counts = {"selected": len(ids), "settled": 0, "lost": 0, "refused": 0, "failed": 0}
-    for delivery_id in ids:
-        try:
-            result = drive_one(
-                engine,
-                delivery_id,
-                registry=reg,
-                capabilities=capabilities,
-                resolver=resolver,
-                data_budget_seconds=data_budget_seconds,
-            )
-        except integration.LostClaim:
-            result = "lost"
-        except Exception:
-            result = "failed"
-            logger.error("outbound delivery pass item failed")
-        counts[result] += 1
+    counts = {"selected": 0, "settled": 0, "lost": 0, "refused": 0, "failed": 0}
+    seen: set[UUID] = set()
+    skipped: set[UUID] = set()
+    remaining = limit
+    while remaining > 0:
+        rows = _select_due_rows(
+            engine,
+            remaining,
+            exclude_ids=frozenset(seen),
+            exclude_installations=frozenset(skipped),
+        )
+        if not rows:
+            break
+        counts["selected"] += len(rows)
+        for delivery_id, installation_id in rows:
+            seen.add(delivery_id)
+            if installation_id in skipped:
+                continue
+            try:
+                result = drive_one(
+                    engine,
+                    delivery_id,
+                    registry=reg,
+                    capabilities=capabilities,
+                    resolver=resolver,
+                    data_budget_seconds=data_budget_seconds,
+                )
+            except integration.LostClaim:
+                result = "lost"
+            except Exception:
+                result = "failed"
+                logger.error("outbound delivery pass item failed")
+            counts[result] += 1
+            if result in ("refused", "failed"):
+                skipped.add(installation_id)
+            else:
+                remaining -= 1
     return counts
 
 
