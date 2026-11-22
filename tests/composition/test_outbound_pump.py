@@ -633,7 +633,6 @@ def _set_installation(w: Any, installation_id: UUID, action: str) -> None:
             integration.quarantine(db, installation, reason="test", actor="t")
         elif action == "release":
             integration.release_quarantine(db, installation, reason="test", actor="t")
-            integration.enable(db, installation, registry=w.registry)
         elif action == "enable":
             integration.enable(db, installation, registry=w.registry)
         db.commit()
