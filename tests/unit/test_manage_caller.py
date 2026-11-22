@@ -150,7 +150,7 @@ class _FakeSession:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def get(self, model: object, identifier: UUID) -> Any:
+    def get(self, model: object, identifier: UUID, **_kw: object) -> Any:
         if model is integration.ConnectorConfigRevision:
             return self.w.revision
         return self.w.rows.get(identifier)
@@ -224,6 +224,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         puts=[],
         commits=0,
         activated=True,
+        latest=("integrator.manage.binding_disabled", "academy"),
         registry=SimpleNamespace(get=lambda _k: manifest),
     )
 
@@ -237,6 +238,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         manage, "write_platform_audit_event", lambda _db, **kw: w.audits.append(kw)
     )
     monkeypatch.setattr(manage, "_operator_has_activated", lambda _db, _b: w.activated)
+    monkeypatch.setattr(manage, "_latest_state_event", lambda _db, _b, _i: w.latest)
     monkeypatch.setattr(integration, "put_config_revision", put)
     yield w
 
@@ -286,11 +288,6 @@ def test_an_empty_grant_list_refuses_everything(world: SimpleNamespace) -> None:
         ("PUT", f"{BASE}/config", {"json": {**body, "config": {"from_address": "x"}}}),
         ("POST", f"{BASE}/bindings/{BINDING}/disable", {"json": body}),
         ("POST", f"{BASE}/bindings/{BINDING}/enable", {"json": body}),
-        (
-            "POST",
-            f"{BASE}/bindings/{BINDING}/test-send",
-            {"json": {**body, "to_address": "a@example.test"}},
-        ),
     ):
         assert client.request(method, path, headers=HEADERS, **kw).status_code == 403
     assert world.audits == [] and world.puts == []
@@ -317,6 +314,7 @@ def test_read_returns_state_names_and_counts_only(world: SimpleNamespace) -> Non
     assert body["secrets"] == {"credential": "unresolved"}
     assert body["config"] == {"from_address": "a@example.test"}  # host not shown
     assert "file://" not in response.text and "relay.example" not in response.text
+    assert "state_reason" not in response.text
 
 
 def test_set_config_carries_everything_it_was_not_given(world: SimpleNamespace) -> None:
@@ -482,50 +480,84 @@ def test_the_manage_key_is_not_an_operator(world: SimpleNamespace) -> None:
         assert response.status_code == 401, path
 
 
-def test_test_send_is_unwired_by_default_and_validates_the_address(
-    world: SimpleNamespace,
+@pytest.mark.parametrize(
+    "latest",
+    [
+        ("integrator.binding.disabled", None),  # an operator disabled it
+        ("integrator.manage.binding_disabled", "another-app"),
+        ("integrator.installation.quarantine_released", None),
+        ("integrator.installation.configured", None),
+        ("integrator.manage.config_set", "academy"),
+        None,
+    ],
+)
+def test_the_caller_cannot_undo_what_an_operator_or_the_module_did(
+    world: SimpleNamespace, latest: tuple[str, object] | None
 ) -> None:
-    client = _client(world, GRANT)
-    path = f"{BASE}/bindings/{BINDING}/test-send"
-    ok = {"reason": "r", "to_address": "person@example.test"}
-    assert client.post(path, headers=HEADERS, json=ok).status_code == 503
-    for bad in (
-        "not-an-address",
-        "a@b@c",
-        "a b@example.test",
-        "x@example.test,y@example.test",
-    ):
-        response = client.post(
-            path, headers=HEADERS, json={"reason": "r", "to_address": bad}
+    world.binding.state = "disabled"
+    world.latest = latest
+    response = _client(world, GRANT).post(
+        f"{BASE}/bindings/{BINDING}/enable", headers=HEADERS, json={"reason": "r"}
+    )
+    assert response.status_code == 409
+    assert world.binding.state == "disabled"
+    assert world.audits == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "verify_certificate",
+        "ca_file",
+        "tlsInsecure",
+        "trust_store",
+        "security_mode",
+        "mx_host",
+        "smarthost",
+        "connect_timeout",
+        "cert_fingerprint",
+        "api_key",
+        "cipher_suite",
+    ],
+)
+def test_tls_trust_keys_are_destination_keys(key: str) -> None:
+    assert config_key_is_egress(key)
+    with pytest.raises(ValidationError):
+        ManageGrant(
+            installation_id=INSTALLATION, connector_key=CONNECTOR, config_keys=(key,)
         )
-        assert response.status_code == 422, bad
 
 
-def test_test_send_calls_the_injected_sender_once(world: SimpleNamespace) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def sender(engine: Any, **kw: Any) -> dict[str, Any]:
-        calls.append(kw)
-        return {"queued": True}
-
-    app = create_app(
-        build_settings(
-            product_manage_enabled=True,
-            product_query_callers=(_manage_caller(GRANT),),
-        ),
-        manage_test_sender=sender,
+@pytest.mark.parametrize(
+    "value",
+    [{"a": 1}, ["x"], None, 1.5, "x" * 321],
+)
+def test_config_values_are_bounded_scalars(
+    world: SimpleNamespace, value: object
+) -> None:
+    response = _client(world, GRANT).put(
+        f"{BASE}/config",
+        headers=HEADERS,
+        json={"reason": "r", "config": {"display_name": value}},
     )
-    app.state.product_query_authenticator = ProductAuthenticator(
-        app.state.settings.product_query_callers, secret_lookup=lambda _r: KEY
+    assert response.status_code == 422
+    assert world.puts == []
+
+
+def test_scalar_config_values_are_accepted(world: SimpleNamespace) -> None:
+    response = _client(world, GRANT).put(
+        f"{BASE}/config",
+        headers=HEADERS,
+        json={"reason": "r", "config": {"display_name": "Academy"}},
     )
-    integration.discover = lambda: world.registry  # type: ignore[assignment,misc]
-    response = TestClient(app).post(
+    assert response.status_code == 200
+
+
+def test_the_test_send_route_is_gone(world: SimpleNamespace) -> None:
+    response = _client(world, GRANT).post(
         f"{BASE}/bindings/{BINDING}/test-send",
         headers=HEADERS,
-        json={"reason": "check", "to_address": "person@example.test"},
+        json={"reason": "r", "to_address": "a@example.test"},
     )
-    assert response.status_code == 200, response.text
-    assert len(calls) == 1 and calls[0]["to_address"] == "person@example.test"
-    assert world.audits[0]["action"] == "integrator.manage.test_send"
-    assert world.audits[0]["details"]["to_domain"] == "example.test"
-    assert "person@" not in str(world.audits[0])
+    assert response.status_code == 403  # the catch-all, never a send
+    assert world.audits == []

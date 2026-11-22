@@ -10,7 +10,8 @@ those routes, in the same split as `operations.py`: `assembly.py` only adapts.
 
 reads: readiness, one installation's state and bindings, secret status by NAME
 only, delivery counts by state; set non-egress configuration; disable or enable
-its OWN binding; test-send through an injected sender.
+its OWN binding. There is no test-send route: Academy sends its operator.test
+message through the dispatch intake like any other mail.
 
 ## What it can never do, and where that is enforced
 
@@ -30,6 +31,11 @@ its OWN binding; test-send through an injected sender.
   "ever activated" marker (`enabled_at` is cleared by a disable), so the fact is
   read from the operator's audit row `integrator.binding.enabled`. No such row
   means an operator never activated it, and enable is refused.
+* **Undo an operator.** Re-enable is allowed only when the LATEST state-changing
+  audit event for the binding (or its installation) is this same caller's own
+  `integrator.manage.binding_disabled`. An operator disable, a quarantine, a
+  configuration change or any module invalidation after that needs the
+  operator, so a compromised product cannot re-open what an operator closed.
 
 ## Attribution
 
@@ -41,18 +47,17 @@ caller's own user is, and must not let a row suggest it did.
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any
 from uuid import UUID
 
 import dotmac_integration as integration
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.models_platform import PlatformAuditEvent
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, StringConstraints
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from sqlalchemy import func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -67,8 +72,6 @@ __all__ = [
     "ConfigBody",
     "ManageActor",
     "ReasonBody",
-    "ManageTestSendBody",
-    "ManageTestSender",
     "require_manage_installation",
 ]
 
@@ -91,41 +94,22 @@ class ReasonBody(BaseModel):
     asserted_actor: _Asserted | None = None
 
 
+_Scalar = str | int | bool
+
+
 class ConfigBody(ReasonBody):
-    config: dict[str, object]
+    """Scalar values only: no nested object, array or null (bounded)."""
 
-
-class ManageTestSendBody(ReasonBody):
-    to_address: str
+    config: dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=64)],
+        Annotated[str, StringConstraints(max_length=320)] | int | bool,
+    ] = Field(min_length=1, max_length=20)
 
 
 #: `integrator.binding.enabled` is written only by the OPERATOR enable route
 #: (`operations.enable_binding`), which is what makes it a usable record that an
 #: operator performed the first activation.
 _OPERATOR_ACTIVATION_ACTION = "integrator.binding.enabled"
-
-_ADDRESS = re.compile(
-    r"^[^@\s<>,;\"'\\\x00-\x1f]{1,64}@[^@\s<>,;\"'\\\x00-\x1f]{1,255}$"
-)
-
-
-class ManageTestSender(Protocol):
-    """Whatever turns a test-send into a queued delivery on the caller's binding.
-
-    Injected rather than built here: the payload a delivery capability accepts is
-    declared by the product-owned capability contract, not by this assembly
-    (hard rule 27). Without one the route answers 503 and sends nothing.
-    """
-
-    def __call__(
-        self,
-        engine: Engine,
-        *,
-        installation_id: UUID,
-        binding_id: UUID,
-        to_address: str,
-        request_key: str,
-    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,9 +177,15 @@ def require_manage_installation(
 
 
 def _load_installation(
-    db: Session, principal: ProductPrincipal, identifier: UUID
+    db: Session,
+    principal: ProductPrincipal,
+    identifier: UUID,
+    *,
+    lock: bool = False,
 ) -> Any:
-    installation = db.get(integration.ConnectorInstallation, identifier)
+    installation = db.get(
+        integration.ConnectorInstallation, identifier, with_for_update=lock
+    )
     if installation is None:
         raise HTTPException(404, "installation not found")
     if installation.connector_key != _grant(principal, identifier).connector_key:
@@ -268,7 +258,6 @@ def installation_view(
                 "id": str(installation.id),
                 "connector_key": installation.connector_key,
                 "state": installation.state,
-                "state_reason": installation.state_reason,
             },
             "bindings": [
                 {
@@ -296,7 +285,7 @@ def set_config(
     actor: ManageActor,
     installation_id: str,
     *,
-    config: dict[str, object],
+    config: Mapping[str, object],
     reason: str,
 ) -> dict[str, Any]:
     identifier = require_manage_installation(principal, installation_id)
@@ -312,7 +301,7 @@ def set_config(
             raise HTTPException(403, "configuration key is not managed by this caller")
     registry = integration.discover()
     with Session(engine) as db:
-        installation = _load_installation(db, principal, identifier)
+        installation = _load_installation(db, principal, identifier, lock=True)
         if installation.state == "quarantined":
             # The module's configuration write resets the installation to
             # `draft`, which would leave a quarantine without the operator's
@@ -393,7 +382,7 @@ def disable_own_binding(
     identifier = require_manage_installation(principal, installation_id)
     registry = integration.discover()
     with Session(engine) as db:
-        installation = _load_installation(db, principal, identifier)
+        installation = _load_installation(db, principal, identifier, lock=True)
         binding = _load_binding(db, principal, installation, binding_id)
         try:
             integration.set_binding_enabled(
@@ -431,6 +420,50 @@ def _operator_has_activated(db: Session, binding_id: UUID) -> bool:
     return found is not None
 
 
+#: Events that change whether a binding may serve: its own enables/disables
+#: and the installation-level changes that disable or invalidate it.
+_BINDING_STATE_ACTIONS = (
+    "integrator.binding.enabled",
+    "integrator.binding.disabled",
+    "integrator.manage.binding_enabled",
+    "integrator.manage.binding_disabled",
+)
+_INSTALLATION_STATE_ACTIONS = (
+    "integrator.installation.configured",
+    "integrator.installation.enabled",
+    "integrator.installation.disabled",
+    "integrator.installation.quarantined",
+    "integrator.installation.quarantine_released",
+    "integrator.manage.config_set",
+)
+_OWN_DISABLE_ACTION = "integrator.manage.binding_disabled"
+
+
+def _latest_state_event(
+    db: Session, binding_id: UUID, installation_id: UUID
+) -> tuple[str, object] | None:
+    """The most recent state-changing audit event, as `(action, principal)`."""
+    row = db.execute(
+        select(PlatformAuditEvent.action, PlatformAuditEvent.details)
+        .where(
+            or_(
+                (PlatformAuditEvent.entity_type == "capability_binding")
+                & (PlatformAuditEvent.entity_id == str(binding_id))
+                & PlatformAuditEvent.action.in_(_BINDING_STATE_ACTIONS),
+                (PlatformAuditEvent.entity_type == "connector_installation")
+                & (PlatformAuditEvent.entity_id == str(installation_id))
+                & PlatformAuditEvent.action.in_(_INSTALLATION_STATE_ACTIONS),
+            )
+        )
+        .order_by(PlatformAuditEvent.created_at.desc(), PlatformAuditEvent.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    details = row[1] if isinstance(row[1], dict) else {}
+    return str(row[0]), details.get("principal")
+
+
 def enable_own_binding(
     engine: Engine,
     principal: ProductPrincipal,
@@ -443,7 +476,7 @@ def enable_own_binding(
     identifier = require_manage_installation(principal, installation_id)
     registry = integration.discover()
     with Session(engine) as db:
-        installation = _load_installation(db, principal, identifier)
+        installation = _load_installation(db, principal, identifier, lock=True)
         binding = _load_binding(db, principal, installation, binding_id)
         if installation.state == "quarantined":
             raise HTTPException(409, "installation is quarantined; operator-only")
@@ -454,6 +487,13 @@ def enable_own_binding(
         if not _operator_has_activated(db, binding.id):
             raise HTTPException(
                 409, "binding was never activated; first activation is operator-only"
+            )
+        latest = _latest_state_event(db, binding.id, installation.id)
+        if latest != (_OWN_DISABLE_ACTION, actor.application):
+            raise HTTPException(
+                409,
+                "binding was not last disabled by this caller; "
+                "an operator re-enables it",
             )
         try:
             integration.set_binding_enabled(
@@ -480,52 +520,3 @@ def enable_own_binding(
         )
         db.commit()
         return {"id": str(binding.id), "state": binding.state}
-
-
-def valid_address(address: str) -> bool:
-    return bool(_ADDRESS.match(address)) and len(address) <= 254
-
-
-def test_send(
-    engine: Engine,
-    principal: ProductPrincipal,
-    actor: ManageActor,
-    installation_id: str,
-    binding_id: str,
-    *,
-    to_address: str,
-    reason: str,
-    sender: Callable[..., dict[str, Any]] | None,
-) -> dict[str, Any]:
-    identifier = require_manage_installation(principal, installation_id)
-    if not valid_address(to_address):
-        raise HTTPException(422, "to_address is not a plain address")
-    if sender is None:
-        raise HTTPException(503, "test send is not wired in this deployment")
-    with Session(engine) as db:
-        installation = _load_installation(db, principal, identifier)
-        binding = _load_binding(db, principal, installation, binding_id)
-        if installation.state != "enabled" or binding.state != "enabled":
-            raise HTTPException(409, "installation and binding must both be enabled")
-        _audit(
-            db,
-            actor,
-            action="integrator.manage.test_send",
-            entity_type="capability_binding",
-            entity_id=str(binding.id),
-            # The address is the caller's data; its DOMAIN is enough evidence.
-            details={
-                "reason": reason,
-                "installation_id": str(installation.id),
-                "to_domain": to_address.rpartition("@")[2].lower(),
-            },
-        )
-        db.commit()
-    result = sender(
-        engine,
-        installation_id=identifier,
-        binding_id=binding.id,
-        to_address=to_address,
-        request_key=f"manage-test:{actor.application}:{binding.id}:{reason[:60]}",
-    )
-    return dict(result)

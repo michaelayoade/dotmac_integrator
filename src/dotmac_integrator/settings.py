@@ -64,6 +64,31 @@ EGRESS_KEY_WORDS: frozenset[str] = frozenset(
         "password",
         "secret",
         "token",
+        # TLS trust: a key that weakens or redirects certificate checking lets a
+        # network attacker capture the credential without changing the host.
+        "verify",
+        "verification",
+        "cert",
+        "certs",
+        "certificate",
+        "certificates",
+        "ca",
+        "cacert",
+        "insecure",
+        "trust",
+        "truststore",
+        "security",
+        "secure",
+        "mx",
+        "smarthost",
+        "timeout",
+        "fingerprint",
+        "pin",
+        "pem",
+        "key",
+        "cipher",
+        "ciphers",
+        "protocol",
     }
 )
 

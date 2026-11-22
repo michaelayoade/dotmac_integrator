@@ -129,7 +129,6 @@ def create_app(
     settings: Settings | None = None,
     *,
     query_dispatcher: query.QueryDispatcher | None = None,
-    manage_test_sender: manage.ManageTestSender | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
 
@@ -346,28 +345,6 @@ def create_app(
                 installation_id,
                 binding_id,
                 reason=body.reason,
-            )
-
-        @app.post(
-            "/product/v1/manage/installations/{installation_id}"
-            "/bindings/{binding_id}/test-send",
-            tags=["product-integration"],
-        )
-        def manage_test_send(
-            installation_id: str,
-            binding_id: str,
-            body: manage.ManageTestSendBody,
-            principal: ProductManagePrincipal,
-        ) -> dict[str, Any]:
-            return manage.test_send(
-                engine,
-                principal,
-                _actor(principal, body.asserted_actor),
-                installation_id,
-                binding_id,
-                to_address=body.to_address,
-                reason=body.reason,
-                sender=manage_test_sender,
             )
 
         @app.api_route(

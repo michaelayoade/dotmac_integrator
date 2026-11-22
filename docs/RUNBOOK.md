@@ -135,8 +135,12 @@ routes answer it 401, anything it should not do under `/product/v1/manage/` is
 403. Destination keys (host, port, user, TLS, URL, credential, network target)
 are refused by name and cannot be allowlisted. A configuration change takes the
 installation back to `draft`; an operator re-validates it. Enabling a binding is
-refused when the installation is quarantined or not enabled, or when no operator
-`integrator.binding.enabled` audit row exists for it.
+refused when the installation is quarantined or not enabled, when no operator
+`integrator.binding.enabled` audit row exists for it, or unless the latest
+state-changing event is this caller's own `integrator.manage.binding_disabled`
+(it cannot undo an operator disable or a module invalidation). There is no
+test-send route: Academy sends its `operator.test` mail through the dispatch
+intake. Config values are bounded scalars.
 
 ---
 
