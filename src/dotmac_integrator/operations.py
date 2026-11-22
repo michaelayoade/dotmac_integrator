@@ -45,6 +45,7 @@ from uuid import UUID
 import dotmac_integration as integration
 from dotmac_kernel.audit import write_platform_audit_event
 from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -231,9 +232,11 @@ def _lifecycle_conflict(exc: Exception) -> HTTPException:
     return HTTPException(409, detail)
 
 
-def _installation(db: Session, raw: str) -> Any:
+def _installation(db: Session, raw: str, *, lock: bool = False) -> Any:
     identifier = _uuid(raw, "installation_id")
-    row = db.get(integration.ConnectorInstallation, identifier)
+    # `lock` takes SELECT ... FOR UPDATE so a state decision (quarantine,
+    # disable, enable) cannot be overwritten by a concurrent one.
+    row = db.get(integration.ConnectorInstallation, identifier, with_for_update=lock)
     if row is None:
         raise HTTPException(404, f"no installation {raw}")
     return row
@@ -468,7 +471,9 @@ def enable_binding(
     with Session(engine) as db:
         binding = _binding(db, binding_id)
         installation = db.get(
-            integration.ConnectorInstallation, binding.installation_id
+            integration.ConnectorInstallation,
+            binding.installation_id,
+            with_for_update=True,
         )
         if installation is None:  # pragma: no cover - protected by the FK
             raise HTTPException(409, "binding installation is missing")
@@ -511,6 +516,206 @@ def enable_binding(
                 else None
             ),
         }
+
+
+# ── Kill switch ─────────────────────────────────────────────────────────────
+#
+# Wrappers over `dotmac_integration.lifecycle`'s disable and quarantine
+# operations. The module owns every transition; the only thing added here is the
+# refusal to let `disable` ESCAPE a quarantine. The module's `disable` is an
+# unconditional state write, so aimed at a quarantined installation it would
+# land in `disabled` and skip the separately audited `release_quarantine`.
+
+
+def _installation_summary(installation: Any) -> dict[str, Any]:
+    return {
+        "id": str(installation.id),
+        "connector_key": installation.connector_key,
+        "state": installation.state,
+        "state_reason": installation.state_reason,
+    }
+
+
+def _census_block(rows: list[Any]) -> dict[str, Any]:
+    by_state: dict[str, int] = {}
+    by_connector: dict[str, dict[str, int]] = {}
+    for connector_key, state, count in rows:
+        by_state[str(state)] = by_state.get(str(state), 0) + int(count)
+        per = by_connector.setdefault(str(connector_key), {})
+        per[str(state)] = per.get(str(state), 0) + int(count)
+    return {
+        "total": sum(by_state.values()),
+        "by_state": dict(sorted(by_state.items())),
+        "by_connector": {
+            k: dict(sorted(v.items())) for k, v in sorted(by_connector.items())
+        },
+    }
+
+
+def binding_census(engine: Engine) -> dict[str, Any]:
+    """Counts of installations and bindings by state and connector key.
+
+    NAMES AND COUNTS ONLY: no id, no configuration, no secret reference or name.
+    The connector key is the one identifier, and it is a distribution name.
+    """
+    with Session(engine) as db:
+        installations = db.execute(
+            select(
+                integration.ConnectorInstallation.connector_key,
+                integration.ConnectorInstallation.state,
+                func.count(),
+            ).group_by(
+                integration.ConnectorInstallation.connector_key,
+                integration.ConnectorInstallation.state,
+            )
+        ).all()
+        bindings = db.execute(
+            select(
+                integration.ConnectorInstallation.connector_key,
+                integration.CapabilityBinding.state,
+                func.count(),
+            )
+            .join(
+                integration.ConnectorInstallation,
+                integration.ConnectorInstallation.id
+                == integration.CapabilityBinding.installation_id,
+            )
+            .group_by(
+                integration.ConnectorInstallation.connector_key,
+                integration.CapabilityBinding.state,
+            )
+        ).all()
+    return {
+        "installations": _census_block([tuple(r) for r in installations]),
+        "bindings": _census_block([tuple(r) for r in bindings]),
+    }
+
+
+def disable_binding(
+    engine: Engine,
+    binding_id: str,
+    *,
+    actor: OperatorIdentity,
+    reason: str,
+) -> dict[str, Any]:
+    """Turn one binding off. Reversible by `enable_binding`, which re-gates."""
+    registry = integration.discover()
+    with Session(engine) as db:
+        binding = _binding(db, binding_id)
+        installation = db.get(
+            integration.ConnectorInstallation,
+            binding.installation_id,
+            with_for_update=True,
+        )
+        if installation is None:  # pragma: no cover - protected by the FK
+            raise HTTPException(409, "binding installation is missing")
+        try:
+            integration.set_binding_enabled(
+                db,
+                installation,
+                binding,
+                registry=registry,
+                enabled=False,
+                actor=actor.label,
+            )
+        except (integration.LifecycleError, integration.ActivationRefused) as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.binding.disabled",
+            entity_type="capability_binding",
+            entity_id=str(binding.id),
+            details={
+                "reason": reason,
+                "installation_id": str(installation.id),
+                "capability_id": binding.capability_id,
+            },
+        )
+        db.commit()
+        return {
+            "id": str(binding.id),
+            "installation_id": str(installation.id),
+            "capability_id": binding.capability_id,
+            "state": binding.state,
+        }
+
+
+def disable_installation(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    with Session(engine) as db:
+        installation = _installation(db, installation_id, lock=True)
+        if installation.state in {"quarantined", "retired"}:
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                f"installation is {installation.state}; use the quarantine "
+                "release route, disable cannot leave quarantine"
+                if installation.state == "quarantined"
+                else f"installation is {installation.state}",
+            )
+        try:
+            integration.disable(db, installation, reason=reason, actor=actor.label)
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.disabled",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
+
+
+def quarantine_installation(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    with Session(engine) as db:
+        installation = _installation(db, installation_id, lock=True)
+        if installation.state == "retired":
+            raise HTTPException(409, "installation is retired")
+        try:
+            integration.quarantine(db, installation, reason=reason, actor=actor.label)
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.quarantined",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
+
+
+def release_installation_quarantine(
+    engine: Engine, installation_id: str, actor: OperatorIdentity, reason: str
+) -> dict[str, Any]:
+    """Lands in `disabled`, never `enabled` (module contract)."""
+    with Session(engine) as db:
+        installation = _installation(db, installation_id, lock=True)
+        try:
+            integration.release_quarantine(
+                db, installation, reason=reason, actor=actor.label
+            )
+        except integration.LifecycleError as exc:
+            raise _lifecycle_conflict(exc) from None
+        _record(
+            db,
+            actor,
+            action="integrator.installation.quarantine_released",
+            entity_type="connector_installation",
+            entity_id=str(installation.id),
+            details={"reason": reason},
+        )
+        db.commit()
+        return _installation_summary(installation)
 
 
 # ── Secret material ─────────────────────────────────────────────────────────
@@ -579,9 +784,19 @@ def enable_installation(
     """
     identifier = _uuid(installation_id, "installation_id")
     with Session(engine) as db:
-        installation = db.get(integration.ConnectorInstallation, identifier)
+        installation = db.get(
+            integration.ConnectorInstallation, identifier, with_for_update=True
+        )
         if installation is None:
             raise HTTPException(404, f"no installation {installation_id}")
+        if installation.state == "quarantined":
+            # A second way out of quarantine would skip the separately audited
+            # release, and bindings stay enabled through a quarantine.
+            telemetry.counters.record_refusal("not_repairable")
+            raise HTTPException(
+                409,
+                "installation is quarantined; use quarantine release, then enable",
+            )
 
         revision = (
             db.get(

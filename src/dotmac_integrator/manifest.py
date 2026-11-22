@@ -17,14 +17,18 @@ from dotmac_integrator import __version__
 INTEGRATOR_AUDIT_ACTION_PREFIX = "integrator"
 INTEGRATOR_AUDIT_ACTIONS: tuple[str, ...] = (
     "integrator.binding.configured",
+    "integrator.binding.disabled",
     "integrator.binding.enabled",
     "integrator.ingress_endpoint.minted",
     "integrator.delivery.ambiguous_on_lease_expiry",
     "integrator.delivery.requeued_after_ambiguity",
     "integrator.installation.configured",
+    "integrator.installation.disabled",
     "integrator.installation.drafted",
     "integrator.installation.enabled",
     "integrator.installation.enable_refused",
+    "integrator.installation.quarantine_released",
+    "integrator.installation.quarantined",
     "integrator.secrets.refreshed",
 )
 
