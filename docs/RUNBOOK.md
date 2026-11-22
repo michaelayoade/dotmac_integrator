@@ -132,8 +132,9 @@ key, the binding ids it may disable and enable and the non-egress config keys it
 may set. Everything comes from typed deploy parameters; the default is empty, and
 an empty list means the caller can do nothing. It is not an operator: operator
 routes answer it 401, anything it should not do under `/product/v1/manage/` is
-403. Destination keys (host, port, user, TLS, URL, credential, network target)
-are refused by name and cannot be allowlisted. A configuration change takes the
+403. Destination keys (host, port, user, TLS, URL, credential, network target and
+the exact key `address`, the SMTP connector's pinned egress address; sender
+labels such as `from_address` are not affected) are refused by name and cannot be allowlisted. A configuration change takes the
 installation back to `draft`; an operator re-validates it. Enabling a binding is
 refused when the installation is quarantined or not enabled, when no operator
 `integrator.binding.enabled` audit row exists for it, or unless the latest

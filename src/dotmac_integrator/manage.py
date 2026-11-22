@@ -16,7 +16,8 @@ message through the dispatch intake like any other mail.
 ## What it can never do, and where that is enforced
 
 * **Repoint the destination (§1d).** A key naming a host, port, user, TLS mode,
-  URL, credential or network target is refused 403 before any query
+  URL, credential or network target, or the exact key `address` (the SMTP
+  connector's pinned egress address), is refused 403 before any query
   (`settings.config_key_is_egress`), and a key outside the caller's explicit
   `config_keys` allowlist is refused too. The new revision is built FROM the
   current one: every key the caller did not name, the secret references and the

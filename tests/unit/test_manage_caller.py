@@ -593,3 +593,103 @@ def test_after_an_operator_disable_the_caller_can_neither_disable_nor_enable(
     assert len(world.audits) == 1, "a no-op disable wrote an audit row"
     assert client.post(f"{path}/enable", headers=HEADERS, json=body).status_code == 409
     assert world.binding.state == "disabled"
+
+
+# ── F-2: the exact key `address` is an egress key ──────────────────────────
+
+
+@pytest.mark.parametrize("key", ["address", "Address", " address "])
+def test_address_is_an_egress_key_but_sender_labels_are_not(key: str) -> None:
+    assert config_key_is_egress(key)
+    for label in ("from_address", "reply_to_address", "display_name"):
+        assert not config_key_is_egress(label)
+
+
+def test_a_grant_cannot_allowlist_address() -> None:
+    with pytest.raises(ValidationError, match="destination"):
+        ManageGrant(
+            installation_id=INSTALLATION,
+            connector_key=CONNECTOR,
+            config_keys=("address",),
+        )
+
+
+@pytest.mark.parametrize("value", ["198.51.100.7", "203.0.113.9/32"])
+def test_manage_refuses_setting_or_changing_address(
+    world: SimpleNamespace, value: str
+) -> None:
+    # Even alongside an allowed key, and even if the stored config has one.
+    world.revision.config_json = {**world.revision.config_json, "address": "192.0.2.1"}
+    response = _client(world, GRANT).put(
+        f"{BASE}/config",
+        headers=HEADERS,
+        json={"reason": "r", "config": {"display_name": "x", "address": value}},
+    )
+    assert response.status_code == 403
+    assert "operator-only" in response.text
+    assert world.puts == [] and world.audits == []
+    assert world.revision.config_json["address"] == "192.0.2.1"
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_manage_refuses_removing_address(world: SimpleNamespace, value: object) -> None:
+    world.revision.config_json = {**world.revision.config_json, "address": "192.0.2.1"}
+    response = _client(world, GRANT).put(
+        f"{BASE}/config",
+        headers=HEADERS,
+        json={"reason": "r", "config": {"address": value}},
+    )
+    assert response.status_code in {403, 422}
+    assert world.puts == [] and world.audits == []
+    assert world.revision.config_json["address"] == "192.0.2.1"
+
+
+def test_a_non_egress_key_is_still_allowed_and_address_is_carried_over(
+    world: SimpleNamespace,
+) -> None:
+    world.revision.config_json = {**world.revision.config_json, "address": "192.0.2.1"}
+    response = _client(world, GRANT).put(
+        f"{BASE}/config",
+        headers=HEADERS,
+        json={"reason": "r", "config": {"display_name": "Academy"}},
+    )
+    assert response.status_code == 200, response.text
+    assert world.puts[0]["config"]["address"] == "192.0.2.1"
+    assert world.puts[0]["config"]["display_name"] == "Academy"
+
+
+def test_the_operator_path_can_still_set_address(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator configuration (operations.configure_installation, behind
+    require_operator / platform_auth) never consults the manage egress check."""
+    from dotmac_integrator import operations
+
+    monkeypatch.setattr(operations, "Session", lambda _e: _FakeSession(world))
+    monkeypatch.setattr(
+        operations, "_installation", lambda _db, _raw: world.installation
+    )
+    monkeypatch.setattr(operations, "_record", lambda *_a, **_k: None)
+
+    def put(_db: Any, _inst: Any, **kw: Any) -> Any:
+        world.puts.append(kw)
+        revision = SimpleNamespace(
+            id=uuid4(),
+            revision=2,
+            schema_version="1",
+            config_digest="d",
+            validation_status="pending",
+        )
+        return revision, True
+
+    monkeypatch.setattr(integration, "put_config_revision", put)
+    operations.configure_installation(
+        None,  # type: ignore[arg-type]
+        str(INSTALLATION),
+        config={"address": "198.51.100.7"},
+        secret_refs={},
+        schema_version="1",
+        actor=SimpleNamespace(label="op"),  # type: ignore[arg-type]
+        reason="r",
+    )
+    assert world.puts[0]["config"] == {"address": "198.51.100.7"}

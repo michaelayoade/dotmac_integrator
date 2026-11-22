@@ -93,8 +93,16 @@ EGRESS_KEY_WORDS: frozenset[str] = frozenset(
 )
 
 
+#: Keys refused by EXACT name (case-insensitive), not as words. `address` is the
+#: SMTP connector's pinned /32 egress address, while `from_address` and
+#: `reply_to_address` are sender labels that stay manageable (F-2).
+EGRESS_KEY_EXACT: frozenset[str] = frozenset({"address"})
+
+
 def config_key_is_egress(key: str) -> bool:
     """True when `key` names a destination, a credential or a network target."""
+    if key.strip().lower() in EGRESS_KEY_EXACT:
+        return True
     spaced = (
         "".join(f" {c.lower()}" if c.isupper() else c for c in key)
         .replace("_", " ")
