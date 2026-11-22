@@ -7,7 +7,7 @@
 # NAMES, types and bounds only: no value, no secret, no host address.
 #
 # Runtime files only: there is deliberately no legacy-env-file table here.
-# Control's legacy_never list refuses one at parse for every descriptor under
+# Control refuses one at parse for every descriptor under
 # deploy/companion/. Secrets reach the container as files under
 # /run/dotmac/<product>/<role>/secrets, read through the secret_loading file
 # scheme; nothing is an environment file.
