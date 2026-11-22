@@ -247,16 +247,14 @@ def installation_view(
             .scalars()
             .all()
         )
-        counts = dict(
-            db.execute(
-                select(
-                    integration.DeliveryAttempt.state,
-                    func.count(),
-                )
+        counts: dict[str, int] = {
+            str(state): int(total)
+            for state, total in db.execute(
+                select(integration.DeliveryAttempt.state, func.count())
                 .where(integration.DeliveryAttempt.installation_id == installation.id)
                 .group_by(integration.DeliveryAttempt.state)
             ).all()
-        )
+        }
         report = secret_loading.last_report()
         names: dict[str, str] = {}
         if revision is not None:
@@ -285,7 +283,7 @@ def installation_view(
                 k: v for k, v in sorted(config.items()) if k in grant.config_keys
             },
             "secrets": names,
-            "delivery_counts": {str(k): int(v) for k, v in sorted(counts.items())},
+            "delivery_counts": dict(sorted(counts.items())),
         }
 
 
