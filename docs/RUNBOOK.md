@@ -156,10 +156,45 @@ the message MAY have been sent; the product must not resend it.
 
 `OUTBOUND_PUMP_ENABLED` runs the pump (module prepare/invoke/settle). It refuses
 to boot unless the module's lease is longer than `OUTBOUND_DATA_BUDGET_SECONDS`
-(set it to at least the connector's declared send budget) and unless
+plus `OUTBOUND_LEASE_MARGIN_SECONDS` and unless
 `OUTBOUND_REPLAY_EVIDENCE_RETENTION_DAYS` (greater than
 `OUTBOUND_PAYLOAD_RETENTION_DAYS`, default 7) and `OUTBOUND_LEGAL_POLICY_OWNER`
 are set. A delivered payload is redacted after the retention period.
+
+`OUTBOUND_DATA_BUDGET_SECONDS` is the connector's real wall-clock deadline for one
+send, not its nominal data timeout. The SMTP connector's `SEND_DEADLINE_SECONDS`
+is 240 and a TLS handshake in progress cannot be interrupted, so the worst case
+is about 255 s; the default is 256. The 30 s `OUTBOUND_LEASE_MARGIN_SECONDS`
+is for the wait on a database connection when the result is recorded after the
+send (the connection pool waits up to 30 s). The module's 300 s lease clears
+256 + 30. A lease no longer than the budget plus margin refuses to boot.
+
+**Re-check `OUTBOUND_DATA_BUDGET_SECONDS` against the connector's own deadline
+whenever the connector pin changes.** The connector publishes no manifest field
+for it, so this setting is self-attested: read the connector's
+`SEND_DEADLINE_SECONDS` plus its `DEFAULT_TIMEOUT_SECONDS` and keep the budget at
+or above that. A budget set too low passes the boot check while the real worst
+case still outlasts the lease.
+
+**What disabling does to queued dispatches.** Disabling a binding, or disabling
+or quarantining its installation, holds the queued rows: the pump does not
+select them (they are not refused row by row, so they cannot starve other
+bindings) and their schedule is untouched. Intake still accepts dispatches for a
+disabled binding (202, `pending`), subject to the per-binding hourly cap. After
+the binding or installation is enabled again (a quarantine is released first,
+which lands `disabled`, then enabled) the held rows are due at once and each is
+sent once. A backlog queued during a quarantine is therefore sent after release
+and enable. No route or tool cancels a held `pending` row today: to avoid
+sending it, keep the binding disabled and escalate. The global stop is
+`OUTBOUND_PUMP_ENABLED=false` plus a restart; queued rows, leases and retry
+schedules are left as they are. Rows already past `prepare` when a disable
+commits still finish.
+
+If a connector is unusable (its plugin is missing or incompatible, or the
+installation's pinned manifest is no longer accepted), `prepare` refuses its
+rows. The pump skips that installation for the rest of the pass and sends the
+others; the refused rows stay `pending` and unchanged until the connector or
+the manifest pin is fixed.
 
 An ambiguous delivery is terminal. A process killed mid-send leaves an expired
 lease, which is recorded as ambiguous (never retryable) at startup, on the timed

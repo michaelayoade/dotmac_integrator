@@ -322,11 +322,24 @@ class Settings(BaseSettings):
         description="How long the intake waits for a terminal state. At most 20.",
     )
     outbound_data_budget_seconds: int = Field(
-        default=120,
+        default=256,
         ge=1,
         description=(
-            "The connector's declared budget for the send itself. The module's "
-            "lease must exceed it or the pump refuses to start."
+            "The connector's real wall-clock deadline for one send. The SMTP "
+            "connector's SEND_DEADLINE_SECONDS is 240 and an uninterruptible "
+            "TLS handshake makes the worst case about 255 s, so the default is "
+            "256. The connector publishes no manifest field for it; keep this "
+            "in step with the connector pin. The module's lease must exceed "
+            "it plus OUTBOUND_LEASE_MARGIN_SECONDS or the pump refuses to "
+            "start."
+        ),
+    )
+    outbound_lease_margin_seconds: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "Headroom the lease must keep over OUTBOUND_DATA_BUDGET_SECONDS: "
+            "the database connection wait when the result is recorded."
         ),
     )
     outbound_max_waiters: int = Field(
@@ -689,10 +702,18 @@ def _outbound_problems(settings: Settings) -> list[str]:
     problems: list[str] = []
     if not settings.worker_enabled:
         problems.append("OUTBOUND_PUMP_ENABLED requires WORKER_ENABLED=true")
-    if DEFAULT_POLICY.lease_seconds <= settings.outbound_data_budget_seconds:
+    # Same rule as `outbound.lease_exceeds_budget` (not imported: outbound
+    # imports this module).
+    if (
+        DEFAULT_POLICY.lease_seconds
+        <= settings.outbound_data_budget_seconds
+        + settings.outbound_lease_margin_seconds
+    ):
         problems.append(
-            "the module's lease must be longer than OUTBOUND_DATA_BUDGET_SECONDS; "
-            "a send that outlasts its lease can be taken over and sent twice"
+            "the module's lease must be longer than OUTBOUND_DATA_BUDGET_SECONDS "
+            "plus OUTBOUND_LEASE_MARGIN_SECONDS (the connector's real "
+            "wall-clock deadline); a send that outlasts its lease can be taken "
+            "over and sent twice"
         )
     if (
         settings.outbound_replay_evidence_retention_days

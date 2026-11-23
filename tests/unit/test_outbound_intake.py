@@ -13,7 +13,11 @@ from pydantic import ValidationError
 from dotmac_integrator import outbound
 from dotmac_integrator.assembly import create_app
 from dotmac_integrator.product_auth import ProductAuthenticator, ProductPrincipal
-from dotmac_integrator.settings import ProductQueryCaller, validate_settings
+from dotmac_integrator.settings import (
+    ProductQueryCaller,
+    Settings,
+    validate_settings,
+)
 from tests.support import build_settings
 
 KEY = "dispatch-key-with-enough-entropy"
@@ -163,6 +167,56 @@ def test_a_budget_the_lease_does_not_exceed_refuses_the_pump() -> None:
     assert any("lease must be longer" in p for p in problems)
     assert outbound.lease_exceeds_budget(300, 120)
     assert not outbound.lease_exceeds_budget(120, 120)
+    assert outbound.lease_exceeds_budget(300, 256, 30)
+    assert not outbound.lease_exceeds_budget(286, 256, 30)
+
+
+def _pump_settings(**overrides: object) -> Settings:
+    return build_settings(
+        outbound_pump_enabled=True,
+        outbound_replay_evidence_retention_days=30,
+        outbound_legal_policy_owner="owner",
+        worker_enabled=True,
+        **overrides,
+    )
+
+
+def test_the_default_budget_covers_the_connector_worst_case() -> None:
+    """SEND_DEADLINE_SECONDS is 240 and the TLS handshake makes about 255 s."""
+    s = build_settings()
+    assert s.outbound_data_budget_seconds >= 255
+    assert s.outbound_lease_margin_seconds > 0
+    assert validate_settings(_pump_settings()) == []
+
+
+def test_startup_refuses_a_lease_too_short_for_the_connector_deadline() -> None:
+    from dotmac_integration import DEFAULT_POLICY
+
+    lease = DEFAULT_POLICY.lease_seconds
+    # Deadline alone fits under the lease, the margin does not: refused.
+    too_tight = validate_settings(
+        _pump_settings(
+            outbound_data_budget_seconds=lease - 5,
+            outbound_lease_margin_seconds=30,
+        )
+    )
+    assert any("OUTBOUND_LEASE_MARGIN_SECONDS" in p for p in too_tight)
+    # A connector deadline at or past the lease is refused.
+    assert validate_settings(_pump_settings(outbound_data_budget_seconds=lease))
+    # Exactly lease - 1 with no margin is allowed; the boundary is strict.
+    assert (
+        validate_settings(
+            _pump_settings(
+                outbound_data_budget_seconds=lease - 1,
+                outbound_lease_margin_seconds=0,
+            )
+        )
+        == []
+    )
+    # The pump off: nothing is checked (flags-off default stays inert).
+    assert (
+        validate_settings(build_settings(outbound_data_budget_seconds=lease * 10)) == []
+    )
 
 
 def test_the_pump_is_off_by_default() -> None:
