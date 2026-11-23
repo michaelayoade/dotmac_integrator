@@ -1,0 +1,158 @@
+# Generic Integrator companion deploy unit - schema dotmac.deploy_unit/1
+# (DRAFT, INERT).
+#
+# Sidecar to the companion's Foundation spec (design rev3 section 2.2). One
+# descriptor serves every host-local companion; the
+# per-deployment values are typed params entered in the Control UI. It holds
+# NAMES, types and bounds only: no value, no secret, no host address.
+#
+# Runtime files only: there is deliberately no legacy-env-file table here.
+# Control refuses one at parse for every descriptor under
+# deploy/companion/. Secrets reach the container as files under
+# /run/dotmac/<product>/<role>/secrets, read through the secret_loading file
+# scheme; nothing is an environment file.
+#
+# The Foundation spec this descriptor names, deploy/companion/product.toml, is
+# the I3 deliverable and does not exist yet. Until it does, this file is inert
+# and tests/architecture/test_deploy_unit_companion.py holds the pending state.
+# Binding by digest is the release record's job (product CI), not stored here.
+#
+# Merging this file changes no deployment and, in this repository, publishes
+# nothing: the image workflow is dispatch-only.
+
+schema = "dotmac.deploy_unit/1"
+product = "dotmac-integrator-companion"
+spec = "deploy/companion/product.toml"
+# The <product> segment of the approved OpenBao layout <env>/<product>.
+secrets_namespace = "erp-integrator"
+
+# Section 2.7 (D-1): every private image is transferred, never pulled. The
+# image lives in a private registry; no host holds a pull credential. Written
+# out so the default is visible; an absent table means the same. "pull" is
+# accepted only for a repository on Control's public_pull_repositories
+# allowlist, which this file cannot widen.
+[image]
+source = "transfer"
+
+# ---------------------------------------------------------------- params
+# Non-secret typed values only. `material` ties a param to a Foundation
+# runtime-material name in the companion spec.
+
+[params.deployment_id]
+type = "string"
+required_in = ["staging", "production"]
+material = "DEPLOYMENT_ID"
+pattern = "^[a-z0-9][a-z0-9-]{0,62}$"
+max_length = 63
+
+[params.platform_root_domain]
+type = "hostname"
+required_in = ["staging", "production"]
+material = "PLATFORM_ROOT_DOMAIN"
+max_length = 253
+
+# Off at install: the companion is live with zero tuples enabled.
+[params.product_query_enabled]
+type = "bool"
+default = false
+required_in = ["staging", "production"]
+material = "PRODUCT_QUERY_ENABLED"
+
+# Fixed on, so the operator kill switch is always reachable.
+[params.operator_killswitch_routes_enabled]
+type = "bool"
+default = true
+choices = [true]
+required_in = ["staging", "production"]
+material = "OPERATOR_KILLSWITCH_ROUTES_ENABLED"
+
+# Mirror is the safe mode; switching to write is a governed value change.
+[params.product_port_mode]
+type = "enum"
+default = "mirror"
+choices = ["mirror", "write"]
+required_in = ["staging", "production"]
+material = "PRODUCT_PORT_MODE"
+
+# The companion's own internal database network: a small declared subnet and a
+# fixed address, so a recreate cannot move it off the database host-access
+# line. Consumed by the companion topology and the access change set.
+[params.db_network_subnet]
+type = "cidr"
+required_in = ["staging", "production"]
+
+[params.db_network_address]
+type = "string"
+required_in = ["staging", "production"]
+pattern = "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"
+max_length = 15
+
+# Image identity for the planned release (Control pins and cross-checks both).
+[params.image_repository]
+type = "image_repository"
+required_in = ["staging", "production"]
+
+[params.image_digest]
+type = "image_digest"
+required_in = ["staging", "production"]
+
+# -------------------------------------------------------------- bindings
+# One role per credential: the serving role never receives the owner or backup
+# credential. The value of each binding is a secret_ref of the form
+# bao://<env>/<product>/kv/<role>/<binding>, held in Control, never here.
+[[bindings]]
+name = "DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["api"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = false
+
+[[bindings]]
+name = "JWT_SECRET"
+kind = "key"
+roles = ["api"]
+writer = "generated"
+rotation = "copy_only"
+single_use = false
+
+[[bindings]]
+name = "METRICS_TOKEN"
+kind = "token"
+roles = ["api"]
+writer = "generated"
+rotation = "copy_only"
+single_use = false
+
+# Single-use per deploy: minted for the one genesis or upgrade migrate.
+[[bindings]]
+name = "MIGRATION_DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["migrate"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = true
+
+[[bindings]]
+name = "BACKUP_DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["backup"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = false
+
+# ---------------------------------------------------------------- health
+# Gate order the runner must pass, mapped onto Foundation probes and hooks. No
+# new gate engine. The companion is released only after its primary is healthy
+# and may fail without taking the primary down.
+[health]
+gates = [
+  "migrate",
+  "grant_mirror",
+  "heads",
+  "live",
+  "ready",
+  "composition_equals_pins",
+  "runtime_policy_digest",
+  "census_zero_enabled",
+]
